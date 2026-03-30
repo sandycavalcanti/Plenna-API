@@ -1,10 +1,14 @@
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@prisma/client";
+import prismaClientPackage from "@prisma/client";
 import { Pool } from "pg";
 import { env } from "./env.js";
 
+const { PrismaClient } = prismaClientPackage;
+
+type PrismaClientInstance = InstanceType<typeof PrismaClient>;
+
 type PrismaRuntime = {
-	client: PrismaClient;
+	client: PrismaClientInstance;
 	pool: Pool;
 };
 

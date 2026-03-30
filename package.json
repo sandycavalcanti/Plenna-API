@@ -8,6 +8,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
+    "postinstall": "prisma generate",
     "test-db": "tsx src/test-db.ts"
   },
   "repository": {
