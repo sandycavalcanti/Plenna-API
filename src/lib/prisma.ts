@@ -1,9 +1,27 @@
 import { PrismaPg } from "@prisma/adapter-pg";
-import prismaClientPackage from "@prisma/client";
+import type { PrismaClient as PrismaClientType } from "@prisma/client";
+import * as prismaClientPackage from "@prisma/client";
 import { Pool } from "pg";
 import { env } from "./env.js";
 
-const { PrismaClient } = prismaClientPackage;
+type MaybePrismaClientCtor =
+	| (new (options?: { adapter?: PrismaPg }) => PrismaClientType)
+	| undefined;
+
+// Prisma's module shape can vary between ESM/CJS toolchains; resolve safely.
+const PrismaClientCtor =
+	(prismaClientPackage as { PrismaClient?: MaybePrismaClientCtor }).PrismaClient ??
+	(
+		prismaClientPackage as {
+			default?: { PrismaClient?: MaybePrismaClientCtor };
+		}
+	).default?.PrismaClient;
+
+if (!PrismaClientCtor) {
+	throw new Error("Unable to load PrismaClient from @prisma/client");
+}
+
+const PrismaClient = PrismaClientCtor;
 
 type PrismaClientInstance = InstanceType<typeof PrismaClient>;
 
