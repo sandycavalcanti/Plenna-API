@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "postinstall": "prisma generate",
-    "test-db": "tsx src/test-db.ts"
+    "test-db": "tsx src/test-db.ts",
+    "db": "prisma db pull && prisma generate"
   },
   "repository": {
     "type": "git",

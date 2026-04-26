@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { UsersService } from "./user.service.js";
 import { createUserSchema, updateUserSchema } from "./user.schemas.js";
+import { AuthRequest } from "../auth/auth.middleware.js";
 
 export class UsersController {
 
@@ -35,6 +36,17 @@ export class UsersController {
     }
   }
 
+  static async findByEmail(req: Request, res: Response) {
+    try {
+      const email = String(req.params.email);
+      const user = await UsersService.findByEmail(email);
+
+      return res.json(user);
+    } catch (error: any) {
+      return res.status(404).json({ error: error.message });
+    }
+  }
+
   static async update(req: Request, res: Response) {
     try {
       const id = Number(req.params.id);
@@ -55,6 +67,21 @@ export class UsersController {
       return res.status(204).send();
     } catch (error: any) {
       return res.status(404).json({ error: error.message });
+    }
+  }
+
+  static async findUserByToken(req: Request, res: Response) {
+    try {
+      const authReq = req as AuthRequest;
+
+      if (!authReq.userId) {
+        return res.status(401).json({ error: "Token inválido" });
+      }
+
+      const user = await UsersService.findUserByToken(authReq.userId);
+      return res.json(user);
+    } catch (error: any) {
+      return res.status(401).json({ error: error.message });
     }
   }
 

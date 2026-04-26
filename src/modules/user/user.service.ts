@@ -52,6 +52,20 @@ export class UsersService {
     return this.removePassword(user);
   }
 
+  // GET BY EMAIL
+  static async findByEmail(email: string) {
+    const user = await prisma.tb_usuario.findFirst({
+      where: {
+        usuario_email: email,
+        usuario_deleted_at: null
+      }
+    });
+
+    if (!user) throw new Error("Usuário não encontrado");
+
+    return this.removePassword(user);
+  }
+
   // UPDATE
   static async update(id: number, data: UpdateUserDTO) {
     await this.findById(id);
@@ -78,6 +92,19 @@ export class UsersService {
         usuario_deleted_at: new Date()
       }
     });
+  }
+  
+  static async findUserByToken(userId: number) {
+    const user = await prisma.tb_usuario.findFirst({
+      where: {
+        usuario_id: userId,
+        usuario_deleted_at: null
+      }
+    });
+
+    if (!user) throw new Error("Usuário não encontrado");
+
+    return this.removePassword(user);
   }
 
   // helper

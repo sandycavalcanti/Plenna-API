@@ -18,7 +18,7 @@ export class AuthController {
   static async login(req: Request, res: Response) {
     try {
       const data = loginSchema.parse(req.body);
-      const result = await AuthService.login(data.email, data.password);
+      const result = await AuthService.login(data.email, data.senha);
 
       return res.json(result);
     } catch (err: any) {

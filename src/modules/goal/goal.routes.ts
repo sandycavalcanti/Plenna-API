@@ -1,0 +1,8 @@
+import { Router } from "express";
+import {GoalController } from "./goal.controller.js";
+import { authMiddleware } from "../auth/auth.middleware.js";
+
+export const goalRouter = Router();
+
+goalRouter.post("/", authMiddleware, GoalController.create);
+goalRouter.get("/", authMiddleware, GoalController.findAllByUserId);

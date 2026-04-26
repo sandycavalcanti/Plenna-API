@@ -1,11 +1,11 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
   previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
   provider = "postgresql"
-  schemas  = ["BD_PLENNA"]
+  schemas  = ["public"]
 }
 
 model tb_ai_anotacao {
@@ -14,9 +14,9 @@ model tb_ai_anotacao {
   ai_anotacao_texto      String
   ai_anotacao_created_at DateTime   @db.Timestamp(6)
   ai_anotacao_updated_at DateTime   @db.Timestamp(6)
-  tb_usuario             tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_usuario             tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_categoria {
@@ -27,7 +27,7 @@ model tb_categoria {
   tb_compra                 tb_compra[]
   tb_preferencias_categoria tb_preferencias_categoria[]
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_compra {
@@ -39,18 +39,18 @@ model tb_compra {
   compra_horario       DateTime                  @db.Timestamp(6)
   compra_fonte         compra_fonte_enum
   compra_classificacao compra_classificacao_enum
-  compra_acima_limite  Boolean
+  compra_acima_limite  Int                       @db.SmallInt
   compra_anotacao      String?                   @db.VarChar(200)
   compra_created_at    DateTime                  @db.Timestamp(6)
   compra_updated_at    DateTime                  @db.Timestamp(6)
   compra_deleted_at    DateTime?                 @db.Timestamp(6)
-  tb_categoria         tb_categoria              @relation(fields: [categoria_id], references: [categoria_id], onDelete: Cascade, onUpdate: NoAction)
-  tb_forma_pagamento   tb_forma_pagamento        @relation(fields: [forma_pagamento_id], references: [forma_pagamento_id], onDelete: Cascade, onUpdate: NoAction)
-  tb_usuario           tb_usuario                @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_categoria         tb_categoria              @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_forma_pagamento   tb_forma_pagamento        @relation(fields: [forma_pagamento_id], references: [forma_pagamento_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_usuario           tb_usuario                @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra_item       tb_compra_item[]
   tb_feedback          tb_feedback[]
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_compra_item {
@@ -60,22 +60,22 @@ model tb_compra_item {
   compra_item_valor      Decimal   @db.Decimal(10, 2)
   compra_item_created_at DateTime  @db.Timestamp(6)
   compra_item_updated_at DateTime  @db.Timestamp(6)
-  tb_compra              tb_compra @relation(fields: [compra_id], references: [compra_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_compra              tb_compra @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_consentimento {
   consentimento_id         Int                   @id @default(autoincrement())
   consentimento_tipo_id    Int
   usuario_id               Int
-  consentimento_status     Boolean
+  consentimento_status     Int                   @db.SmallInt
   consentimento_created_at DateTime              @db.Timestamp(6)
   consentimento_updated_at DateTime              @db.Timestamp(6)
-  tb_consentimento_tipo    tb_consentimento_tipo @relation(fields: [consentimento_tipo_id], references: [consentimento_tipo_id], onDelete: Cascade, onUpdate: NoAction)
-  tb_usuario               tb_usuario            @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_consentimento_tipo    tb_consentimento_tipo @relation(fields: [consentimento_tipo_id], references: [consentimento_tipo_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_usuario               tb_usuario            @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_consentimento_tipo {
@@ -85,7 +85,7 @@ model tb_consentimento_tipo {
   consentimento_tipo_updated_at DateTime           @db.Timestamp(6)
   tb_consentimento              tb_consentimento[]
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_email_integracao {
@@ -96,21 +96,21 @@ model tb_email_integracao {
   email_integracao_token_expira_em DateTime            @db.Timestamp(6)
   email_integracao_created_at      DateTime            @db.Timestamp(6)
   email_integracao_updated_at      DateTime            @db.Timestamp(6)
-  tb_usuario                       tb_usuario          @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_usuario                       tb_usuario          @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_feedback {
   feedback_ia_id            Int                         @id @default(autoincrement())
   compra_id                 Int
   feedback_classificacao    feedback_classificacao_enum
-  feedback_usuario_discorda Boolean
+  feedback_usuario_discorda Int                         @db.SmallInt
   feedback_created_at       DateTime                    @db.Timestamp(6)
   feedback_updated_at       DateTime                    @db.Timestamp(6)
-  tb_compra                 tb_compra                   @relation(fields: [compra_id], references: [compra_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_compra                 tb_compra                   @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_forma_pagamento {
@@ -120,7 +120,7 @@ model tb_forma_pagamento {
   forma_pagamento_created_at DateTime    @db.Timestamp(6)
   tb_compra                  tb_compra[]
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_historico {
@@ -129,38 +129,39 @@ model tb_historico {
   historico_nome       String        @db.VarChar(45)
   historico_created_at DateTime      @db.Timestamp(6)
   historico_updated_at DateTime      @db.Timestamp(6)
-  tb_usuario           tb_usuario    @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_usuario           tb_usuario    @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
   tb_mensagem          tb_mensagem[]
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_mensagem {
   mensagem_id            Int          @id @default(autoincrement())
   historico_id           Int
-  mensagem_remetente     Boolean
+  mensagem_remetente     Int          @db.SmallInt
   mensagem_texto         String
   mensagem_imagem        Bytes?
-  mensagem_possui_imagem Boolean
+  mensagem_possui_imagem Int          @db.SmallInt
   mensagem_created_at    DateTime     @db.Timestamp(6)
   mensagem_updated_at    DateTime     @db.Timestamp(6)
-  tb_historico           tb_historico @relation(fields: [historico_id], references: [historico_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_historico           tb_historico @relation(fields: [historico_id], references: [historico_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_meta {
   meta_id         Int        @id @default(autoincrement())
   usuario_id      Int
-  meta_nome       String     @db.VarChar(45)
+  meta_titulo     String     @db.VarChar(45)
   meta_descricao  String
   meta_valor      Decimal    @db.Decimal(10, 2)
-  meta_data       DateTime   @db.Date
+  meta_data       DateTime?  @db.Date
+  meta_completado Boolean?   @default(false)
   meta_created_at DateTime   @db.Timestamp(6)
   meta_updated_at DateTime   @db.Timestamp(6)
-  tb_usuario      tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_usuario      tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_metricas_comportamento {
@@ -175,36 +176,9 @@ model tb_metricas_comportamento {
   metricas_comportamento_periodo_referencia    DateTime   @db.Timestamp(6)
   metricas_comportamento_created_at            DateTime   @db.Timestamp(6)
   metricas_comportamento_updated_at            DateTime   @db.Timestamp(6)
-  tb_usuario                                   tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_usuario                                   tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
-}
-
-model tb_preferencias {
-  preferencias_id            Int                         @id @default(autoincrement())
-  usuario_id                 Int
-  preferencias_meta_valor    Decimal?                    @db.Decimal(10, 2)
-  preferencias_meta_tempo    Decimal?                    @db.Decimal(10, 2)
-  preferencias_limite_compra Decimal?                    @db.Decimal(10, 2)
-  preferencias_created_at    DateTime                    @db.Timestamp(6)
-  preferencias_updated_at    DateTime                    @db.Timestamp(6)
-  tb_usuario                 tb_usuario                  @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
-  tb_preferencias_categoria  tb_preferencias_categoria[]
-
-  @@schema("BD_PLENNA")
-}
-
-model tb_preferencias_categoria {
-  preferencias_categoria_id          Int             @id @default(autoincrement())
-  categoria_id                       Int
-  preferencias_id                    Int
-  preferencias_categoria_meta_mensal Decimal         @db.Decimal(10, 2)
-  preferencias_categoria_created_at  DateTime        @db.Timestamp(6)
-  preferencias_categoria_updated_at  DateTime        @db.Timestamp(6)
-  tb_categoria                       tb_categoria    @relation(fields: [categoria_id], references: [categoria_id], onDelete: Cascade, onUpdate: NoAction)
-  tb_preferencias                    tb_preferencias @relation(fields: [preferencias_id], references: [preferencias_id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_tempo_uso {
@@ -215,31 +189,52 @@ model tb_tempo_uso {
   tempo_uso_data       DateTime   @db.Timestamp(6)
   tempo_uso_created_at DateTime   @db.Timestamp(6)
   tempo_uso_updated_at DateTime   @db.Timestamp(6)
-  tb_usuario           tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  tb_usuario           tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 model tb_usuario {
-  usuario_id                Int                         @id @default(autoincrement())
-  usuario_email             String                      @unique @db.VarChar(64)
-  usuario_senha             String                      @db.VarChar(255)
-  usuario_nome              String                      @db.VarChar(45)
-  usuario_status            Boolean
-  usuario_created_at        DateTime                    @db.Timestamp(6)
-  usuario_updated_at        DateTime                    @db.Timestamp(6)
-  usuario_deleted_at        DateTime?                   @db.Timestamp(6)
-  tb_ai_anotacao            tb_ai_anotacao[]
-  tb_compra                 tb_compra[]
-  tb_consentimento          tb_consentimento[]
-  tb_email_integracao       tb_email_integracao[]
-  tb_historico              tb_historico[]
-  tb_meta                   tb_meta[]
-  tb_metricas_comportamento tb_metricas_comportamento[]
-  tb_preferencias           tb_preferencias[]
-  tb_tempo_uso              tb_tempo_uso[]
+  usuario_id                         Int                         @id @default(autoincrement())
+  usuario_email                      String                      @unique @db.VarChar(64)
+  usuario_senha                      String                      @db.VarChar(255)
+  usuario_nome                       String                      @db.VarChar(45)
+  usuario_telefone                   String?                     @db.VarChar(20)
+  usuario_data_nascimento            DateTime?                   @db.Date
+  usuario_status                     Boolean
+  usuario_preferencias_limite_compra Int?
+  usuario_preferencias_meta_valor    Decimal?                    @db.Decimal(10, 2)
+  usuario_preferencias_meta_tempo    Int?
+  usuario_gatilho_consumo            String?                     @db.VarChar(45)
+  usuario_tempo_tela                 String?                     @db.VarChar(20)
+  usuario_incomodo_consumo           String?                     @db.VarChar(45)
+  usuario_created_at                 DateTime                    @db.Timestamp(6)
+  usuario_updated_at                 DateTime                    @db.Timestamp(6)
+  usuario_deleted_at                 DateTime?                   @db.Timestamp(6)
+  tb_ai_anotacao                     tb_ai_anotacao[]
+  tb_compra                          tb_compra[]
+  tb_consentimento                   tb_consentimento[]
+  tb_email_integracao                tb_email_integracao[]
+  tb_historico                       tb_historico[]
+  tb_meta                            tb_meta[]
+  tb_metricas_comportamento          tb_metricas_comportamento[]
+  tb_preferencias_categoria          tb_preferencias_categoria[]
+  tb_tempo_uso                       tb_tempo_uso[]
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
+}
+
+model tb_preferencias_categoria {
+  preferencias_categoria_id          Int          @id @default(autoincrement())
+  tb_usuario_id                      Int
+  categoria_id                       Int
+  preferencias_categoria_meta_mensal Decimal      @db.Decimal(10, 2)
+  preferencias_categoria_created_at  DateTime     @db.Timestamp(6)
+  preferencias_categoria_updated_at  DateTime     @db.Timestamp(6)
+  tb_categoria                       tb_categoria @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_usuario                         tb_usuario   @relation(fields: [tb_usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
 }
 
 enum compra_classificacao_enum {
@@ -247,7 +242,7 @@ enum compra_classificacao_enum {
   IMPULSIVA
   NAO_IMPULSIVA @map("NAO IMPULSIVA")
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 enum compra_fonte_enum {
@@ -256,19 +251,19 @@ enum compra_fonte_enum {
   APP
   SITE
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 enum email_provedor_enum {
   GMAIL
   OUTLOOK
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
 
 enum feedback_classificacao_enum {
   IMPULSIVA
   NAO_IMPULSIVA @map("NAO IMPULSIVA")
 
-  @@schema("BD_PLENNA")
+  @@schema("public")
 }
