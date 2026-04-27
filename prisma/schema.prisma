@@ -226,13 +226,13 @@ model tb_usuario {
 
 model tb_preferencias_categoria {
   preferencias_categoria_id          Int          @id @default(autoincrement())
-  tb_usuario_id                      Int
+  usuario_id                         Int
   categoria_id                       Int
   preferencias_categoria_meta_mensal Decimal      @db.Decimal(10, 2)
   preferencias_categoria_created_at  DateTime     @db.Timestamp(6)
   preferencias_categoria_updated_at  DateTime     @db.Timestamp(6)
   tb_categoria                       tb_categoria @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
-  tb_usuario                         tb_usuario   @relation(fields: [tb_usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_usuario                         tb_usuario   @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@schema("public")
 }

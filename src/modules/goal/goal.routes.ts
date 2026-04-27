@@ -6,3 +6,4 @@ export const goalRouter = Router();
 
 goalRouter.post("/", authMiddleware, GoalController.create);
 goalRouter.get("/", authMiddleware, GoalController.findAllByUserId);
+goalRouter.put("/check", authMiddleware, GoalController.checkGoal);
