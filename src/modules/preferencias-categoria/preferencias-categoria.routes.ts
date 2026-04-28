@@ -5,6 +5,7 @@ import { PreferenciasCategoriaController } from './preferencias-categoria.contro
 export const preferenciasCategoriaRouter = Router();
 
 preferenciasCategoriaRouter.post('/', authMiddleware, PreferenciasCategoriaController.create);
+preferenciasCategoriaRouter.post('/bulk', authMiddleware, PreferenciasCategoriaController.createMany);
 preferenciasCategoriaRouter.get('/', authMiddleware, PreferenciasCategoriaController.findAllByUserId);
 preferenciasCategoriaRouter.get('/:id', authMiddleware, PreferenciasCategoriaController.findById);
 preferenciasCategoriaRouter.put('/:id', authMiddleware, PreferenciasCategoriaController.update);

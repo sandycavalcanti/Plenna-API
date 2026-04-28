@@ -1,6 +1,6 @@
 import { Response } from 'express';
 import { AuthRequest } from '../auth/auth.middleware.js';
-import { createPreferenciaCategoriaSchema, updatePreferenciaCategoriaSchema } from './preferencias-categoria.schemas.js';
+import { createPreferenciaCategoriaSchema, createPreferenciasCategoriaBulkSchema, updatePreferenciaCategoriaSchema } from './preferencias-categoria.schemas.js';
 import { PreferenciasCategoriaService } from './preferencias-categoria.service.js';
 
 export class PreferenciasCategoriaController {
@@ -11,6 +11,21 @@ export class PreferenciasCategoriaController {
       }
       const data = createPreferenciaCategoriaSchema.parse(req.body);
       const created = await PreferenciasCategoriaService.create(req.userId, data);
+      return res.status(201).json(created);
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
+    }
+  }
+
+  static async createMany(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Token inválido' });
+      }
+
+      const data = createPreferenciasCategoriaBulkSchema.parse(req.body);
+      const created = await PreferenciasCategoriaService.createMany(req.userId, data.preferencias);
+
       return res.status(201).json(created);
     } catch (error: any) {
       return res.status(400).json({ error: error.message });

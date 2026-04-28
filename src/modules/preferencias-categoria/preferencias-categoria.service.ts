@@ -16,6 +16,20 @@ export class PreferenciasCategoriaService {
     });
   }
 
+  static async createMany(userId: number, preferencias: CreatePreferenciaCategoriaDTO[]) {
+    const now = new Date();
+
+    return prisma.tb_preferencias_categoria.createMany({
+      data: preferencias.map((data) => ({
+        usuario_id: userId,
+        categoria_id: data.categoriaId,
+        preferencias_categoria_meta_mensal: data.metaMensal,
+        preferencias_categoria_created_at: now,
+        preferencias_categoria_updated_at: now,
+      })),
+    });
+  }
+
   static async findAllByUserId(userId: number) {
     const preferencias = await prisma.tb_preferencias_categoria.findMany({
       where: { usuario_id: userId },
