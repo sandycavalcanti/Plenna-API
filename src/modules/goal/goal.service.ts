@@ -46,4 +46,41 @@ export class GoalService {
     });
     return updatedGoal;
   }
+
+  // UPDATE
+  static async update(userId: number, goalId: number, data: UpdateGoalDTO) {
+    const goal = await prisma.tb_meta.findFirst({
+      where: {
+        meta_id: goalId,
+        usuario_id: userId,
+      },
+    });
+    if (!goal) throw new Error('Meta não encontrada');
+
+    return prisma.tb_meta.update({
+      where: { meta_id: goalId },
+      data: {
+        meta_titulo: data.titulo,
+        meta_descricao: data.descricao,
+        meta_valor: data.valor,
+        meta_data: data.data,
+        meta_updated_at: new Date(),
+      },
+    });
+  }
+
+  // DELETE
+  static async delete(userId: number, goalId: number) {
+    const goal = await prisma.tb_meta.findFirst({
+      where: {
+        meta_id: goalId,
+        usuario_id: userId,
+      },
+    });
+    if (!goal) throw new Error('Meta não encontrada');
+
+    await prisma.tb_meta.delete({
+      where: { meta_id: goalId },
+    });
+  }
 }

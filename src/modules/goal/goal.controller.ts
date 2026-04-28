@@ -47,4 +47,31 @@ export class GoalController {
       return res.status(400).json({ error: error.message });
     }
   }
+
+  static async update(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Token inválido' });
+      }
+      const id = Number(req.params.id);
+      const data = updateGoalSchema.parse(req.body);
+      const updated = await GoalService.update(req.userId, id, data);
+      return res.status(200).json(updated);
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
+    }
+  }
+
+  static async delete(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Token inválido' });
+      }
+      const id = Number(req.params.id);
+      await GoalService.delete(req.userId, id);
+      return res.status(204).send();
+    } catch (error: any) {
+      return res.status(404).json({ error: error.message });
+    }
+  }
 }

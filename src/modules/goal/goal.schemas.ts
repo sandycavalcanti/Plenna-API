@@ -1,5 +1,5 @@
-import { z } from "zod";
-import { meta } from "zod/v4/core";
+import { z } from 'zod';
+import { meta } from 'zod/v4/core';
 
 export const createGoalSchema = z.object({
   titulo: z.string().min(2),
@@ -18,7 +18,6 @@ export const updateGoalSchema = z.object({
   descricao: z.string().max(400).optional(),
   valor: z.number().positive().optional(),
   data: z.coerce.date().optional(),
-  completado: z.boolean().optional(),
 });
 
 export type CreateGoalDTO = z.infer<typeof createGoalSchema>;

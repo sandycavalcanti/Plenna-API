@@ -47,22 +47,26 @@ export class UsersController {
     }
   }
 
-  static async update(req: Request, res: Response) {
+  static async update(req: AuthRequest, res: Response) {
     try {
-      const id = Number(req.params.id);
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Token inválido' });
+      }
       const data = updateUserSchema.parse(req.body);
 
-      const user = await UsersService.update(id, data);
+      const user = await UsersService.update(req.userId, data);
       return res.json(user);
     } catch (error: any) {
       return res.status(400).json({ error: error.message });
     }
   }
 
-  static async delete(req: Request, res: Response) {
+  static async delete(req: AuthRequest, res: Response) {
     try {
-      const id = Number(req.params.id);
-      await UsersService.delete(id);
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Token inválido' });
+      }
+      await UsersService.delete(req.userId);
 
       return res.status(204).send();
     } catch (error: any) {

@@ -16,12 +16,12 @@ export class UsersService {
       throw new Error("Email já cadastrado");
     }
     // Hash da senha
-    const passwordHash = await bcrypt.hash(data.password, SALT_ROUNDS);
+    const passwordHash = await bcrypt.hash(data.senha, SALT_ROUNDS);
     const user = await prisma.tb_usuario.create({
       data: {
         usuario_email: data.email,
         usuario_senha: passwordHash,
-        usuario_nome: data.name,
+        usuario_nome: data.nome,
         usuario_status: true,
         usuario_created_at: new Date(),
         usuario_updated_at: new Date()
@@ -73,8 +73,15 @@ export class UsersService {
     const updated = await prisma.tb_usuario.update({
       where: { usuario_id: id },
       data: {
-        usuario_nome: data.name,
-        usuario_status: data.status,
+        usuario_nome: data.nome,
+        usuario_telefone: data.telefone,
+        usuario_data_nascimento: data.dataNascimento,
+        usuario_preferencias_limite_compra: data.preferenciasLimiteCompra,
+        usuario_preferencias_meta_valor: data.preferenciasMetaValor,
+        usuario_preferencias_meta_tempo: data.preferenciasMetaTempo,
+        usuario_gatilho_consumo: data.gatilhoConsumo,
+        usuario_tempo_tela: data.tempoTela,
+        usuario_incomodo_consumo: data.incomodoConsumo,
         usuario_updated_at: new Date()
       }
     });
@@ -89,6 +96,7 @@ export class UsersService {
     await prisma.tb_usuario.update({
       where: { usuario_id: id },
       data: {
+        usuario_status: false,
         usuario_deleted_at: new Date()
       }
     });
