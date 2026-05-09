@@ -10,8 +10,8 @@ export class AuthService {
     senha: string;
     nome: string;
     limiteCompra?: number;
-    metaValor: number;
-    metaTempo: number;
+    metaValor?: number;
+    metaTempo?: number;
   }) {
     const userExists = await prisma.tb_usuario.findUnique({
       where: { usuario_email: data.email },
