@@ -177,6 +177,7 @@ model tb_integracao {
   usuario_id                  Int
   integracao_nome             String              @db.VarChar(45)
   integracao_provedor         email_provedor_enum
+  integracao_access_token     String              @db.VarChar(255)
   integracao_refresh_token    String              @db.VarChar(255)
   integracao_token_expira_em  DateTime            @db.Timestamp(6)
   integracao_data_criacao     DateTime            @default(now()) @db.Timestamp(6)
