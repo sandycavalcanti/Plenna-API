@@ -12,8 +12,6 @@ export class GoalService {
         meta_descricao: data.descricao,
         meta_valor: data.valor,
         meta_data: data.data,
-        meta_created_at: now,
-        meta_updated_at: now,
       },
     });
     return goal;
@@ -23,7 +21,7 @@ export class GoalService {
   static async findAllByUserId(userId: number) {
     const goals = await prisma.tb_meta.findMany({
       where: { usuario_id: userId },
-      orderBy: { meta_created_at: 'desc' },
+      orderBy: { meta_data_criacao: 'desc' },
     });
     return goals;
   }

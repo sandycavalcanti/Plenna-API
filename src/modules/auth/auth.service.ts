@@ -9,9 +9,9 @@ export class AuthService {
     email: string;
     senha: string;
     nome: string;
-    preferenciasLimiteCompra?: number;
-    preferenciasMetaValor: number;
-    preferenciasMetaTempo: number;
+    limiteCompra?: number;
+    metaValor: number;
+    metaTempo: number;
   }) {
     const userExists = await prisma.tb_usuario.findUnique({
       where: { usuario_email: data.email },
@@ -26,12 +26,9 @@ export class AuthService {
         usuario_email: data.email,
         usuario_senha: hash,
         usuario_nome: data.nome,
-        usuario_status: true,
-        usuario_preferencias_limite_compra: data.preferenciasLimiteCompra,
-        usuario_preferencias_meta_valor: data.preferenciasMetaValor,
-        usuario_preferencias_meta_tempo: data.preferenciasMetaTempo,
-        usuario_created_at: new Date(),
-        usuario_updated_at: new Date(),
+        usuario_limite_compra: data.limiteCompra,
+        usuario_meta_valor_mensal: data.metaValor,
+        usuario_meta_tempo: data.metaTempo,
       },
     });
 

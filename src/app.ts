@@ -4,8 +4,11 @@ import type { NextFunction, Request, Response } from 'express';
 import { usersRouter } from './modules/user/user.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { goalRouter } from './modules/goal/goal.routes.js';
-import { preferenciasCategoriaRouter } from './modules/preferencias-categoria/preferencias-categoria.routes.js';
+import { preferenciasCategoriaRouter } from './modules/preferencia/preferencia.routes.js';
 import { categoryRouter } from './modules/category/category.routes.js';
+import { tempoUsoRouter } from './modules/tempo-uso/tempo-uso.routes.js';
+import { emailRouter } from './modules/email/email.routes.js';
+import { formaPagamentoRouter } from './modules/forma-pagamento/forma-pagamento.routes.js';
 
 const app = express();
 
@@ -15,8 +18,11 @@ app.use(express.json());
 app.use('/users', usersRouter);
 app.use('/auth', authRouter);
 app.use('/goals', goalRouter);
-app.use('/preferencias-categoria', preferenciasCategoriaRouter);
+app.use('/preferencia', preferenciasCategoriaRouter);
 app.use('/categories', categoryRouter);
+app.use('/tempo-uso', tempoUsoRouter);
+app.use('/email', emailRouter);
+app.use('/formas-pagamento', formaPagamentoRouter);
 
 app.get('/', (_req, res) => {
   res.json({

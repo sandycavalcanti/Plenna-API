@@ -10,9 +10,10 @@ export const updateUserSchema = z.object({
   nome: z.string().min(2).optional(),
   telefone: z.string().optional(),
   dataNascimento: z.string().optional(),
-  preferenciasLimiteCompra: z.number().optional(),
-  preferenciasMetaValor: z.number().optional(),
-  preferenciasMetaTempo: z.number().int().optional(),
+  limiteCompra: z.number().optional(),
+  metaValorMensal: z.number().optional(),
+  metaValorCompra: z.number().optional(),
+  metaTempo: z.number().int().optional(),
   gatilhoConsumo: z.string().optional(),
   tempoTela: z.string().optional(),
   incomodoConsumo: z.string().optional()

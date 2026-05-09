@@ -1,19 +1,18 @@
-import bcrypt from "bcrypt";
-import { prisma } from "../../lib/prisma.js";
-import { CreateUserDTO, UpdateUserDTO } from "./user.schemas.js";
+import bcrypt from 'bcrypt';
+import { prisma } from '../../lib/prisma.js';
+import { CreateUserDTO, UpdateUserDTO } from './user.schemas.js';
 
 const SALT_ROUNDS = 10;
 
 export class UsersService {
-
   // CREATE
   static async create(data: CreateUserDTO) {
     // Verificar se o email já existe
     const emailExists = await prisma.tb_usuario.findUnique({
-      where: { usuario_email: data.email }
+      where: { usuario_email: data.email },
     });
     if (emailExists) {
-      throw new Error("Email já cadastrado");
+      throw new Error('Email já cadastrado');
     }
     // Hash da senha
     const passwordHash = await bcrypt.hash(data.senha, SALT_ROUNDS);
@@ -24,8 +23,8 @@ export class UsersService {
         usuario_nome: data.nome,
         usuario_status: true,
         usuario_created_at: new Date(),
-        usuario_updated_at: new Date()
-      }
+        usuario_updated_at: new Date(),
+      },
     });
     return this.removePassword(user);
   }
@@ -33,7 +32,6 @@ export class UsersService {
   // LIST
   static async findAll() {
     const users = await prisma.tb_usuario.findMany({
-      where: { usuario_deleted_at: null }
     });
     return users.map(this.removePassword);
   }
@@ -43,11 +41,11 @@ export class UsersService {
     const user = await prisma.tb_usuario.findFirst({
       where: {
         usuario_id: id,
-        usuario_deleted_at: null
-      }
+        usuario_deleted_at: null,
+      },
     });
 
-    if (!user) throw new Error("Usuário não encontrado");
+    if (!user) throw new Error('Usuário não encontrado');
 
     return this.removePassword(user);
   }
@@ -57,11 +55,11 @@ export class UsersService {
     const user = await prisma.tb_usuario.findFirst({
       where: {
         usuario_email: email,
-        usuario_deleted_at: null
-      }
+        usuario_deleted_at: null,
+      },
     });
 
-    if (!user) throw new Error("Usuário não encontrado");
+    if (!user) throw new Error('Usuário não encontrado');
 
     return this.removePassword(user);
   }
@@ -76,14 +74,15 @@ export class UsersService {
         usuario_nome: data.nome,
         usuario_telefone: data.telefone,
         usuario_data_nascimento: data.dataNascimento,
-        usuario_preferencias_limite_compra: data.preferenciasLimiteCompra,
-        usuario_preferencias_meta_valor: data.preferenciasMetaValor,
-        usuario_preferencias_meta_tempo: data.preferenciasMetaTempo,
+        usuario_limite_compra: data.limiteCompra,
+        usuario_meta_valor_mensal: data.metaValorMensal,
+        usuario_meta_valor_compra: data.metaValorCompra,
+        usuario_meta_tempo: data.metaTempo,
         usuario_gatilho_consumo: data.gatilhoConsumo,
         usuario_tempo_tela: data.tempoTela,
         usuario_incomodo_consumo: data.incomodoConsumo,
-        usuario_updated_at: new Date()
-      }
+        usuario_updated_at: new Date(),
+      },
     });
 
     return this.removePassword(updated);
@@ -97,20 +96,20 @@ export class UsersService {
       where: { usuario_id: id },
       data: {
         usuario_status: false,
-        usuario_deleted_at: new Date()
-      }
+        usuario_deleted_at: new Date(),
+      },
     });
   }
-  
+
   static async findUserByToken(userId: number) {
     const user = await prisma.tb_usuario.findFirst({
       where: {
         usuario_id: userId,
-        usuario_deleted_at: null
-      }
+        usuario_deleted_at: null,
+      },
     });
 
-    if (!user) throw new Error("Usuário não encontrado");
+    if (!user) throw new Error('Usuário não encontrado');
 
     return this.removePassword(user);
   }

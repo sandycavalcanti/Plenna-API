@@ -4,9 +4,9 @@ export const registerSchema = z.object({
   email: z.string().email(),
   senha: z.string().min(6),
   nome: z.string().min(2),
-  preferenciasLimiteCompra: z.number().optional(),
-  preferenciasMetaValor: z.number(),
-  preferenciasMetaTempo: z.number()
+  limiteCompra: z.number().optional(),
+  metaValor: z.number(),
+  metaTempo: z.number()
 });
 
 export const loginSchema = z.object({

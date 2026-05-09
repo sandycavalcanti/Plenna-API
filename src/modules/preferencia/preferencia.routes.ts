@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware } from '../auth/auth.middleware.js';
-import { PreferenciasCategoriaController } from './preferencias-categoria.controller.js';
+import { PreferenciasCategoriaController } from './preferencia.controller.js';
 
 export const preferenciasCategoriaRouter = Router();
 

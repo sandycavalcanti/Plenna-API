@@ -1,17 +1,15 @@
 import { prisma } from '../../lib/prisma.js';
-import { CreatePreferenciaCategoriaDTO, UpdatePreferenciaCategoriaDTO } from './preferencias-categoria.schemas.js';
+import { CreatePreferenciaCategoriaDTO, UpdatePreferenciaCategoriaDTO } from './preferencia.schemas.js';
 
 export class PreferenciasCategoriaService {
   static async create(userId: number, data: CreatePreferenciaCategoriaDTO) {
     const now = new Date();
 
-    return prisma.tb_preferencias_categoria.create({
+    return prisma.tb_preferencia.create({
       data: {
         usuario_id: userId,
         categoria_id: data.categoriaId,
-        preferencias_categoria_meta_mensal: data.metaMensal,
-        preferencias_categoria_created_at: now,
-        preferencias_categoria_updated_at: now,
+        preferencia_meta: data.metaMensal,
       },
     });
   }
@@ -19,21 +17,19 @@ export class PreferenciasCategoriaService {
   static async createMany(userId: number, preferencias: CreatePreferenciaCategoriaDTO[]) {
     const now = new Date();
 
-    return prisma.tb_preferencias_categoria.createMany({
+    return prisma.tb_preferencia.createMany({
       data: preferencias.map((data) => ({
         usuario_id: userId,
         categoria_id: data.categoriaId,
-        preferencias_categoria_meta_mensal: data.metaMensal,
-        preferencias_categoria_created_at: now,
-        preferencias_categoria_updated_at: now,
+        preferencia_meta: data.metaMensal,
       })),
     });
   }
 
   static async findAllByUserId(userId: number) {
-    const preferencias = await prisma.tb_preferencias_categoria.findMany({
+    const preferencias = await prisma.tb_preferencia.findMany({
       where: { usuario_id: userId },
-      orderBy: { preferencias_categoria_created_at: 'desc' },
+      orderBy: { preferencia_data_criacao: 'desc' },
       include: {
         tb_categoria: {
           select: {
@@ -50,9 +46,9 @@ export class PreferenciasCategoriaService {
   }
 
   static async findById(userId: number, preferenciaId: number) {
-    const preferencia = await prisma.tb_preferencias_categoria.findFirst({
+    const preferencia = await prisma.tb_preferencia.findFirst({
       where: {
-        preferencias_categoria_id: preferenciaId,
+        preferencia_id: preferenciaId,
         usuario_id: userId,
       },
     });
@@ -65,12 +61,11 @@ export class PreferenciasCategoriaService {
   static async update(userId: number, preferenciaId: number, data: UpdatePreferenciaCategoriaDTO) {
     await this.findById(userId, preferenciaId);
 
-    return prisma.tb_preferencias_categoria.update({
-      where: { preferencias_categoria_id: preferenciaId },
+    return prisma.tb_preferencia.update({
+      where: { preferencia_id: preferenciaId },
       data: {
         categoria_id: data.categoriaId,
-        preferencias_categoria_meta_mensal: data.metaMensal,
-        preferencias_categoria_updated_at: new Date(),
+        preferencia_meta: data.metaMensal,
       },
     });
   }
@@ -78,8 +73,8 @@ export class PreferenciasCategoriaService {
   static async delete(userId: number, preferenciaId: number) {
     await this.findById(userId, preferenciaId);
 
-    await prisma.tb_preferencias_categoria.delete({
-      where: { preferencias_categoria_id: preferenciaId },
+    await prisma.tb_preferencia.delete({
+      where: { preferencia_id: preferenciaId },
     });
   }
 }

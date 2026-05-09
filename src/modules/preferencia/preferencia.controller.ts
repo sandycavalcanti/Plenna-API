@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { AuthRequest } from '../auth/auth.middleware.js';
-import { createPreferenciaCategoriaSchema, createPreferenciasCategoriaBulkSchema, updatePreferenciaCategoriaSchema } from './preferencias-categoria.schemas.js';
-import { PreferenciasCategoriaService } from './preferencias-categoria.service.js';
+import { createPreferenciaCategoriaSchema, createPreferenciasCategoriaBulkSchema, updatePreferenciaCategoriaSchema } from './preferencia.schemas.js';
+import { PreferenciasCategoriaService } from './preferencia.service.js';
 
 export class PreferenciasCategoriaController {
   static async create(req: AuthRequest, res: Response) {
