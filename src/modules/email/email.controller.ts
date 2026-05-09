@@ -17,13 +17,10 @@ export class EmailController {
   static async callback(req: any, res: Response) {
     try {
       const { code, state } = req.query;
-
       const tokens = await EmailService.exchangeCodeForTokens(code);
       const email = await EmailService.getGoogleUserEmail(tokens.access_token);
-
       await EmailService.saveIntegration(Number(state), email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
-
-      return res.redirect('plenna://oauth-success');
+      return res.redirect('https://plenna-api-orpin.vercel.app/oauth-success.html');
     } catch (error: any) {
       console.error(error.response?.data || error);
       return res.redirect('plenna://oauth-error');
