@@ -5,8 +5,8 @@ export const registerSchema = z.object({
   senha: z.string().min(6),
   nome: z.string().min(2),
   limiteCompra: z.number().optional(),
-  metaValor: z.number(),
-  metaTempo: z.number()
+  metaValor: z.number().optional(),
+  metaTempo: z.number().optional()
 });
 
 export const loginSchema = z.object({

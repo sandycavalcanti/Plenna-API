@@ -22,8 +22,7 @@ export class UsersService {
         usuario_senha: passwordHash,
         usuario_nome: data.nome,
         usuario_status: true,
-        usuario_created_at: new Date(),
-        usuario_updated_at: new Date(),
+        usuario_data_criacao: new Date(),
       },
     });
     return this.removePassword(user);
@@ -31,8 +30,7 @@ export class UsersService {
 
   // LIST
   static async findAll() {
-    const users = await prisma.tb_usuario.findMany({
-    });
+    const users = await prisma.tb_usuario.findMany({});
     return users.map(this.removePassword);
   }
 
@@ -41,7 +39,7 @@ export class UsersService {
     const user = await prisma.tb_usuario.findFirst({
       where: {
         usuario_id: id,
-        usuario_deleted_at: null,
+        usuario_status: true,
       },
     });
 
@@ -55,7 +53,7 @@ export class UsersService {
     const user = await prisma.tb_usuario.findFirst({
       where: {
         usuario_email: email,
-        usuario_deleted_at: null,
+        usuario_status: true,
       },
     });
 
@@ -67,22 +65,22 @@ export class UsersService {
   // UPDATE
   static async update(id: number, data: UpdateUserDTO) {
     await this.findById(id);
+    const updateData: any = {};
+
+    if (data.nome !== undefined) updateData.usuario_nome = data.nome;
+    if (data.telefone !== undefined) updateData.usuario_telefone = data.telefone;
+    if (data.dataNascimento !== undefined) updateData.usuario_data_nascimento = data.dataNascimento;
+    if (data.limiteCompra !== undefined) updateData.usuario_limite_compra = data.limiteCompra;
+    if (data.metaValorMensal !== undefined) updateData.usuario_meta_valor_mensal = data.metaValorMensal;
+    if (data.metaValorCompra !== undefined) updateData.usuario_meta_valor_compra = data.metaValorCompra;
+    if (data.metaTempo !== undefined) updateData.usuario_meta_tempo = data.metaTempo;
+    if (data.gatilhoConsumo !== undefined) updateData.usuario_gatilho_consumo = data.gatilhoConsumo;
+    if (data.tempoTela !== undefined) updateData.usuario_tempo_tela = data.tempoTela;
+    if (data.incomodoConsumo !== undefined) updateData.usuario_incomodo_consumo = data.incomodoConsumo;
 
     const updated = await prisma.tb_usuario.update({
       where: { usuario_id: id },
-      data: {
-        usuario_nome: data.nome,
-        usuario_telefone: data.telefone,
-        usuario_data_nascimento: data.dataNascimento,
-        usuario_limite_compra: data.limiteCompra,
-        usuario_meta_valor_mensal: data.metaValorMensal,
-        usuario_meta_valor_compra: data.metaValorCompra,
-        usuario_meta_tempo: data.metaTempo,
-        usuario_gatilho_consumo: data.gatilhoConsumo,
-        usuario_tempo_tela: data.tempoTela,
-        usuario_incomodo_consumo: data.incomodoConsumo,
-        usuario_updated_at: new Date(),
-      },
+      data: updateData,
     });
 
     return this.removePassword(updated);
@@ -96,7 +94,6 @@ export class UsersService {
       where: { usuario_id: id },
       data: {
         usuario_status: false,
-        usuario_deleted_at: new Date(),
       },
     });
   }
@@ -105,7 +102,7 @@ export class UsersService {
     const user = await prisma.tb_usuario.findFirst({
       where: {
         usuario_id: userId,
-        usuario_deleted_at: null,
+        usuario_status: true,
       },
     });
 

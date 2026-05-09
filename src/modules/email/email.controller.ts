@@ -18,18 +18,15 @@ export class EmailController {
     try {
       const { code, state } = req.query;
 
-      if (!code || !state) return res.status(400).send('Callback inválido');
-
       const tokens = await EmailService.exchangeCodeForTokens(code);
-      if (!tokens.refresh_token) throw new Error('Refresh token não recebido. Revogue o acesso e tente novamente.');
       const email = await EmailService.getGoogleUserEmail(tokens.access_token);
 
       await EmailService.saveIntegration(Number(state), email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
 
-      res.send('Email conectado com sucesso 🎉 Pode fechar.');
+      return res.redirect('plenna://oauth-success');
     } catch (error: any) {
       console.error(error.response?.data || error);
-      res.send('Erro ao conectar email 😢');
+      return res.redirect('plenna://oauth-error');
     }
   }
 }
