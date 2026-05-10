@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import { authMiddleware } from '../auth/auth.middleware.js';
 import { PreferenciasCategoriaController } from './preferencia.controller.js';
-
 export const preferenciasCategoriaRouter = Router();
-
 preferenciasCategoriaRouter.post('/', authMiddleware, PreferenciasCategoriaController.create);
 preferenciasCategoriaRouter.post('/bulk', authMiddleware, PreferenciasCategoriaController.createMany);
 preferenciasCategoriaRouter.put('/bulk', authMiddleware, PreferenciasCategoriaController.replaceMany);

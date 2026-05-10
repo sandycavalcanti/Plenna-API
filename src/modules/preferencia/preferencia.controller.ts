@@ -32,6 +32,21 @@ export class PreferenciasCategoriaController {
     }
   }
 
+  static async replaceMany(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Token inválido' });
+      }
+
+      const data = createPreferenciasCategoriaBulkSchema.parse(req.body);
+      const result = await PreferenciasCategoriaService.replaceMany(req.userId, data.preferencias);
+
+      return res.status(200).json(result);
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
+    }
+  }
+
   static async findAllByUserId(req: AuthRequest, res: Response) {
     try {
       if (!req.userId) {
