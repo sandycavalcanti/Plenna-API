@@ -39,7 +39,6 @@ export class GoalService {
       where: { meta_id: data.meta_id },
       data: {
         meta_completado: data.completado,
-        meta_updated_at: new Date(),
       },
     });
     return updatedGoal;
@@ -62,7 +61,6 @@ export class GoalService {
         meta_descricao: data.descricao,
         meta_valor: data.valor,
         meta_data: data.data,
-        meta_updated_at: new Date(),
       },
     });
   }

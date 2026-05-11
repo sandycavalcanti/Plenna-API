@@ -194,7 +194,7 @@ model tb_metricas {
   metricas_media_valor_compra Decimal    @db.Decimal(10, 2)
   metricas_frequencia_compra  Int
   metricas_media_tempo        Decimal    @db.Decimal(10, 2)
-  metricas_acima_limite       Boolean
+  metricas_acima_limite       Boolean        @default(false)
   metricas_periodo_referencia DateTime   @db.Timestamp(6)
   metricas_data_criacao       DateTime   @default(now()) @db.Timestamp(6)
   tb_usuario                  tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
