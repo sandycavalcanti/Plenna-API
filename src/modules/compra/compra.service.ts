@@ -24,7 +24,7 @@ export class CompraService {
           usuario_status: true,
         },
         select: {
-          usuario_meta_valor_mensal: true,
+          usuario_meta_valor_compra: true,
         },
       });
 
@@ -54,8 +54,8 @@ export class CompraService {
       }
 
       const totalCents = data.items.reduce((sum, item) => sum + toCents(item.valor), 0);
-      const monthlyLimitCents = user.usuario_meta_valor_mensal ? toCents(user.usuario_meta_valor_mensal) : null;
-      const compraAcimaLimite = monthlyLimitCents === null ? false : totalCents > monthlyLimitCents;
+  const purchaseLimitCents = user.usuario_meta_valor_compra ? toCents(user.usuario_meta_valor_compra) : null;
+  const compraAcimaLimite = purchaseLimitCents === null ? false : totalCents > purchaseLimitCents;
 
       const compra = await tx.tb_compra.create({
         data: {
@@ -127,7 +127,7 @@ export class CompraService {
           usuario_status: true,
         },
         select: {
-          usuario_meta_valor_mensal: true,
+          usuario_meta_valor_compra: true,
         },
       });
 
@@ -160,8 +160,8 @@ export class CompraService {
 
       const purchaseDate = data.compraHorario ?? existingCompra.compra_horario;
       const totalCents = data.items.reduce((sum, item) => sum + toCents(item.valor), 0);
-      const monthlyLimitCents = user.usuario_meta_valor_mensal ? toCents(user.usuario_meta_valor_mensal) : null;
-      const compraAcimaLimite = monthlyLimitCents === null ? false : totalCents > monthlyLimitCents;
+      const purchaseLimitCents = user.usuario_meta_valor_compra ? toCents(user.usuario_meta_valor_compra) : null;
+      const compraAcimaLimite = purchaseLimitCents === null ? false : totalCents > purchaseLimitCents;
 
       await tx.tb_compra_item.deleteMany({
         where: {

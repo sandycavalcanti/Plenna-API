@@ -10,6 +10,7 @@ import { tempoUsoRouter } from './modules/tempo-uso/tempo-uso.routes.js';
 import { emailRouter } from './modules/email/email.routes.js';
 import { formaPagamentoRouter } from './modules/forma-pagamento/forma-pagamento.routes.js';
 import { compraRouter } from './modules/compra/compra.routes.js';
+import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use('/tempo-uso', tempoUsoRouter);
 app.use('/email', emailRouter);
 app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);
+app.use('/dashboard', dashboardRouter);
 
 app.get('/', (_req, res) => {
   res.json({
