@@ -86,7 +86,11 @@ export class CompraService {
       const compraComItens = await tx.tb_compra.findFirst({
         where: { compra_id: compra.compra_id },
         include: {
-          tb_compra_item: true,
+          tb_compra_item: {
+            include: {
+              tb_categoria: true,
+            },
+          },
         },
       });
 
@@ -105,7 +109,11 @@ export class CompraService {
           usuario_id: userId,
         },
         include: {
-          tb_compra_item: true,
+          tb_compra_item: {
+            include: {
+              tb_categoria: true,
+            },
+          },
         },
       });
 
@@ -199,7 +207,11 @@ export class CompraService {
       const compra = await tx.tb_compra.findFirst({
         where: { compra_id: compraId },
         include: {
-          tb_compra_item: true,
+          tb_compra_item: {
+            include: {
+              tb_categoria: true,
+            },
+          },
         },
       });
 
@@ -245,7 +257,11 @@ export class CompraService {
     return prisma.tb_compra.findMany({
       where: { usuario_id: userId },
       include: {
-        tb_compra_item: true,
+        tb_compra_item: {
+          include: {
+            tb_categoria: true,
+          },
+        },
       },
       orderBy: {
         compra_horario: 'desc',
@@ -260,7 +276,11 @@ export class CompraService {
         usuario_id: userId,
       },
       include: {
-        tb_compra_item: true,
+        tb_compra_item: {
+          include: {
+            tb_categoria: true,
+          },
+        },
       },
     });
 
