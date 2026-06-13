@@ -1,10 +1,10 @@
-import { Request, Response } from "express";
-import { UsersService } from "./user.service.js";
-import { createUserSchema, updateUserSchema } from "./user.schemas.js";
-import { AuthRequest } from "../auth/auth.middleware.js";
+import { Request, Response } from 'express';
+import { UsersService } from './user.service.js';
+import { createUserSchema, updateUserSchema } from './user.schemas.js';
+import { AuthRequest } from '../auth/auth.middleware.js';
+import { handleError } from '../../utils/handleError.js';
 
 export class UsersController {
-
   static async create(req: Request, res: Response) {
     try {
       const data = createUserSchema.parse(req.body);
@@ -12,7 +12,7 @@ export class UsersController {
 
       return res.status(201).json(user);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -21,7 +21,7 @@ export class UsersController {
       const users = await UsersService.findAll();
       return res.json(users);
     } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      return handleError(res, 500, error);
     }
   }
 
@@ -32,7 +32,7 @@ export class UsersController {
 
       return res.json(user);
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 
@@ -43,7 +43,7 @@ export class UsersController {
 
       return res.json(user);
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 
@@ -57,7 +57,7 @@ export class UsersController {
       const user = await UsersService.update(req.userId, data);
       return res.json(user);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -70,23 +70,22 @@ export class UsersController {
 
       return res.status(204).send();
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 
-  static async findUserByToken(req: Request, res: Response) {
+  static async findByToken(req: Request, res: Response) {
     try {
       const authReq = req as AuthRequest;
 
       if (!authReq.userId) {
-        return res.status(401).json({ error: "Token inválido" });
+        return res.status(401).json({ error: 'Token inválido' });
       }
 
-      const user = await UsersService.findUserByToken(authReq.userId);
+      const user = await UsersService.findByToken(authReq.userId);
       return res.json(user);
     } catch (error: any) {
-      return res.status(401).json({ error: error.message });
+      return handleError(res, 401, error);
     }
   }
-
 }

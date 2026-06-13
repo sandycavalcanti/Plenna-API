@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../auth/auth.middleware.js';
 import { createPreferenciaCategoriaSchema, createPreferenciasCategoriaBulkSchema, updatePreferenciaCategoriaSchema } from './preferencia.schemas.js';
 import { PreferenciasCategoriaService } from './preferencia.service.js';
+import { handleError } from '../../utils/handleError.js';
 
 export class PreferenciasCategoriaController {
   static async create(req: AuthRequest, res: Response) {
@@ -13,7 +14,7 @@ export class PreferenciasCategoriaController {
       const created = await PreferenciasCategoriaService.create(req.userId, data);
       return res.status(201).json(created);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -28,7 +29,7 @@ export class PreferenciasCategoriaController {
 
       return res.status(201).json(created);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -43,7 +44,7 @@ export class PreferenciasCategoriaController {
 
       return res.status(200).json(result);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -55,7 +56,7 @@ export class PreferenciasCategoriaController {
       const preferencias = await PreferenciasCategoriaService.findAllByUserId(req.userId);
       return res.status(200).json(preferencias);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -70,7 +71,7 @@ export class PreferenciasCategoriaController {
 
       return res.status(200).json(preferencia);
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 
@@ -84,7 +85,7 @@ export class PreferenciasCategoriaController {
       const updated = await PreferenciasCategoriaService.update(req.userId, id, data);
       return res.status(200).json(updated);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -97,7 +98,7 @@ export class PreferenciasCategoriaController {
       await PreferenciasCategoriaService.delete(req.userId, id);
       return res.status(204).send();
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 }

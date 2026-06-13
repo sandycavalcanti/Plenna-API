@@ -1,9 +1,9 @@
-import { Request, Response } from "express";
-import { AuthService } from "./auth.service.js";
-import { registerSchema, loginSchema } from "./auth.schemas.js";
+import { Request, Response } from 'express';
+import { AuthService } from './auth.service.js';
+import { registerSchema, loginSchema } from './auth.schemas.js';
+import { handleError } from '../../utils/handleError.js';
 
 export class AuthController {
-
   static async register(req: Request, res: Response) {
     try {
       const data = registerSchema.parse(req.body);
@@ -11,7 +11,7 @@ export class AuthController {
 
       return res.status(201).json(user);
     } catch (err: any) {
-      return res.status(400).json({ error: err.message });
+      return handleError(res, 400, err);
     }
   }
 
@@ -22,7 +22,7 @@ export class AuthController {
 
       return res.json(result);
     } catch (err: any) {
-      return res.status(401).json({ error: err.message });
+      return handleError(res, 401, err);
     }
   }
 }

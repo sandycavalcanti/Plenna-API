@@ -98,7 +98,7 @@ export class UsersService {
     });
   }
 
-  static async findUserByToken(userId: number) {
+  static async findByToken(userId: number) {
     const user = await prisma.tb_usuario.findFirst({
       where: {
         usuario_id: userId,

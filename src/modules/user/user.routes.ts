@@ -8,6 +8,6 @@ usersRouter.post('/', UsersController.create);
 usersRouter.get('/', UsersController.findAll);
 usersRouter.get('/id/:id', UsersController.findById);
 usersRouter.get('/email/:email', UsersController.findByEmail);
-usersRouter.get('/user', authMiddleware, UsersController.findUserByToken);
+usersRouter.get('/user', authMiddleware, UsersController.findByToken);
 usersRouter.put('/', authMiddleware, UsersController.update);
 usersRouter.delete('/', authMiddleware, UsersController.delete);

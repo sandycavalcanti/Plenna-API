@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { authMiddleware, type AuthRequest } from '../auth/auth.middleware.js';
 import { CompraService } from './compra.service.js';
 import { createCompraSchema, updateCompraSchema } from './compra.schemas.js';
+import { handleError } from '../../utils/handleError.js';
 
 function getStatusCode(error: unknown) {
   if (!(error instanceof Error)) {
@@ -79,7 +80,7 @@ export class CompraController {
       const compras = await CompraService.findAllByUserId(req.userId);
       return res.json(compras);
     } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      return handleError(res, 500, error);
     }
   }
 

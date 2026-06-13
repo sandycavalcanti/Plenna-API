@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { AuthRequest } from '../auth/auth.middleware.js';
 import { createTempoUsoSchema, updateTempoUsoSchema } from './tempo-uso.schemas.js';
 import { TempoUsoService } from './tempo-uso.service.js';
+import { handleError } from '../../utils/handleError.js';
 
 export class TempoUsoController {
   static async create(req: AuthRequest, res: Response) {
@@ -11,7 +12,7 @@ export class TempoUsoController {
       const tempo = await TempoUsoService.create(req.userId, data);
       return res.status(201).json(tempo);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -21,7 +22,7 @@ export class TempoUsoController {
       const tempos = await TempoUsoService.findAllByUserId(req.userId);
       return res.json(tempos);
     } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      return handleError(res, 500, error);
     }
   }
 
@@ -32,7 +33,7 @@ export class TempoUsoController {
       const tempo = await TempoUsoService.findById(req.userId, id);
       return res.json(tempo);
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 
@@ -44,7 +45,7 @@ export class TempoUsoController {
       const updated = await TempoUsoService.update(req.userId, id, data);
       return res.json(updated);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -55,7 +56,7 @@ export class TempoUsoController {
       await TempoUsoService.delete(req.userId, id);
       return res.status(204).send();
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 }

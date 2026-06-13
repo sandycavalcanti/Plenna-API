@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { GoalService } from './goal.service.js';
 import { checkGoalSchema, createGoalSchema, updateGoalSchema } from './goal.schemas.js';
 import { AuthRequest } from '../auth/auth.middleware.js';
+import { handleError } from '../../utils/handleError.js';
 
 export class GoalController {
   static async create(req: AuthRequest, res: Response) {
@@ -15,7 +16,7 @@ export class GoalController {
       const goal = await GoalService.create(userId, data);
       return res.status(201).json(goal);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -29,7 +30,7 @@ export class GoalController {
       const goals = await GoalService.findAllByUserId(userId);
       return res.status(200).json(goals);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -44,7 +45,7 @@ export class GoalController {
       const goals = await GoalService.checkGoal(userId, data);
       return res.status(200).json(goals);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -58,7 +59,7 @@ export class GoalController {
       const updated = await GoalService.update(req.userId, id, data);
       return res.status(200).json(updated);
     } catch (error: any) {
-      return res.status(400).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -71,7 +72,7 @@ export class GoalController {
       await GoalService.delete(req.userId, id);
       return res.status(204).send();
     } catch (error: any) {
-      return res.status(404).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 }
