@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma.js';
 import { CreateTempoUsoDTO, UpdateTempoUsoDTO } from './tempo-uso.schemas.js';
+import { AppError } from '../../errors/AppError.js';
 
 export class TempoUsoService {
   static async create(userId: number, data: CreateTempoUsoDTO) {
@@ -27,7 +28,7 @@ export class TempoUsoService {
     const tempo = await prisma.tb_tempo_uso.findFirst({
       where: { tempo_uso_id: id, usuario_id: userId },
     });
-    if (!tempo) throw new Error('Registro de tempo não encontrado');
+    if (!tempo) throw new AppError('Registro de tempo não encontrado', 404);
     return tempo;
   }
 
@@ -35,7 +36,7 @@ export class TempoUsoService {
     const tempo = await prisma.tb_tempo_uso.findFirst({
       where: { tempo_uso_id: id, usuario_id: userId },
     });
-    if (!tempo) throw new Error('Registro de tempo não encontrado');
+    if (!tempo) throw new AppError('Registro de tempo não encontrado', 404);
 
     return prisma.tb_tempo_uso.update({
       where: { tempo_uso_id: id },
@@ -51,7 +52,7 @@ export class TempoUsoService {
     const tempo = await prisma.tb_tempo_uso.findFirst({
       where: { tempo_uso_id: id, usuario_id: userId },
     });
-    if (!tempo) throw new Error('Registro de tempo não encontrado');
+    if (!tempo) throw new AppError('Registro de tempo não encontrado', 404);
 
     await prisma.tb_tempo_uso.delete({ where: { tempo_uso_id: id } });
   }

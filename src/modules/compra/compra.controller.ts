@@ -4,26 +4,6 @@ import { CompraService } from './compra.service.js';
 import { createCompraSchema, updateCompraSchema } from './compra.schemas.js';
 import { handleError } from '../../utils/handleError.js';
 
-function getStatusCode(error: unknown) {
-  if (!(error instanceof Error)) {
-    return 500;
-  }
-
-  if (error.message.includes('não encontrada')) {
-    return 404;
-  }
-
-  if (error.message.includes('não pertence ao usuário')) {
-    return 403;
-  }
-
-  if (error.message.includes('não informado') || error.message.includes('inválido') || error.message.includes('não encontrada')) {
-    return 400;
-  }
-
-  return 400;
-}
-
 export class CompraController {
   static async create(req: AuthRequest, res: Response) {
     try {
@@ -36,7 +16,7 @@ export class CompraController {
 
       return res.status(201).json(result);
     } catch (error: any) {
-      return res.status(getStatusCode(error)).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -52,7 +32,7 @@ export class CompraController {
 
       return res.json(result);
     } catch (error: any) {
-      return res.status(getStatusCode(error)).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -67,7 +47,7 @@ export class CompraController {
 
       return res.status(204).send();
     } catch (error: any) {
-      return res.status(getStatusCode(error)).json({ error: error.message });
+      return handleError(res, 400, error);
     }
   }
 
@@ -95,7 +75,7 @@ export class CompraController {
 
       return res.json(compra);
     } catch (error: any) {
-      return res.status(getStatusCode(error)).json({ error: error.message });
+      return handleError(res, 404, error);
     }
   }
 }

@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma.js';
 import { CreatePreferenciaCategoriaDTO, UpdatePreferenciaCategoriaDTO } from './preferencia.schemas.js';
+import { AppError } from '../../errors/AppError.js';
 
 export class PreferenciasCategoriaService {
   static async create(userId: number, data: CreatePreferenciaCategoriaDTO) {
@@ -82,7 +83,7 @@ export class PreferenciasCategoriaService {
       },
     });
 
-    if (!preferencia) throw new Error('Preferência de categoria não encontrada');
+    if (!preferencia) throw new AppError('Preferência de categoria não encontrada', 404);
 
     return preferencia;
   }

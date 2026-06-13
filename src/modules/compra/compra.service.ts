@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
 import { MetricasService, getMonthBounds } from './metricas.service.js';
+import { AppError } from '../../errors/AppError.js';
 
 function toCents(value: Prisma.Decimal | number | string) {
   return Math.round(Number(value) * 100);
@@ -29,7 +30,7 @@ export class CompraService {
       });
 
       if (!user) {
-        throw new Error('Usuário não encontrado');
+        throw new AppError('Usuário não encontrado', 404);
       }
 
       const formaPagamento = await tx.tb_forma_pagamento.findUnique({
@@ -37,7 +38,7 @@ export class CompraService {
       });
 
       if (!formaPagamento) {
-        throw new Error('Forma de pagamento não encontrada');
+        throw new AppError('Forma de pagamento não encontrada', 404);
       }
 
       const categoriaIds = [...new Set(data.items.map((item) => item.categoriaId))];
@@ -50,7 +51,7 @@ export class CompraService {
       });
 
       if (categoriasEncontradas !== categoriaIds.length) {
-        throw new Error('Categoria não encontrada');
+        throw new AppError('Categoria não encontrada', 404);
       }
 
       const totalCents = data.items.reduce((sum, item) => sum + toCents(item.valor), 0);
@@ -118,7 +119,7 @@ export class CompraService {
       });
 
       if (!existingCompra) {
-        throw new Error('Compra não encontrada');
+        throw new AppError('Compra não encontrada', 404);
       }
 
       const user = await tx.tb_usuario.findFirst({
@@ -132,7 +133,7 @@ export class CompraService {
       });
 
       if (!user) {
-        throw new Error('Usuário não encontrado');
+        throw new AppError('Usuário não encontrado', 404);
       }
 
       if (data.formaPagamentoId !== undefined) {
@@ -141,7 +142,7 @@ export class CompraService {
         });
 
         if (!formaPagamento) {
-          throw new Error('Forma de pagamento não encontrada');
+          throw new AppError('Forma de pagamento não encontrada', 404);
         }
       }
 
@@ -155,7 +156,7 @@ export class CompraService {
       });
 
       if (categoriasEncontradas !== categoriaIds.length) {
-        throw new Error('Categoria não encontrada');
+        throw new AppError('Categoria não encontrada', 404);
       }
 
       const purchaseDate = data.compraHorario ?? existingCompra.compra_horario;
@@ -232,7 +233,7 @@ export class CompraService {
       });
 
       if (!existingCompra) {
-        throw new Error('Compra não encontrada');
+        throw new AppError('Compra não encontrada', 404);
       }
 
       await tx.tb_compra_item.deleteMany({
@@ -285,7 +286,7 @@ export class CompraService {
     });
 
     if (!compra) {
-      throw new Error('Compra não encontrada');
+      throw new AppError('Compra não encontrada', 404);
     }
 
     return compra;

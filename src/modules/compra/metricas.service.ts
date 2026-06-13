@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { AppError } from '../../errors/AppError.js';
 
 function getMonthBounds(referenceDate: Date) {
   const start = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1));
@@ -51,7 +52,7 @@ export class MetricasService {
     ]);
 
     if (!user) {
-      throw new Error('Usuário não encontrado');
+      throw new AppError('Usuário não encontrado', 404);
     }
 
     const totalCents = purchases.reduce((sum: number, purchase: { compra_valor: Prisma.Decimal | number | string }) => {

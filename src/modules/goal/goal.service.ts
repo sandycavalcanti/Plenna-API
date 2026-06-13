@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma.js';
 import { CheckGoalDTO, CreateGoalDTO, UpdateGoalDTO } from './goal.schemas.js';
+import { AppError } from '../../errors/AppError.js';
 
 export class GoalService {
   // CREATE
@@ -34,7 +35,7 @@ export class GoalService {
         usuario_id: userId,
       },
     });
-    if (!goal) throw new Error('Meta não encontrada');
+    if (!goal) throw new AppError('Meta não encontrada', 404);
     const updatedGoal = await prisma.tb_meta.update({
       where: { meta_id: data.meta_id },
       data: {
@@ -52,7 +53,7 @@ export class GoalService {
         usuario_id: userId,
       },
     });
-    if (!goal) throw new Error('Meta não encontrada');
+    if (!goal) throw new AppError('Meta não encontrada', 404);
 
     return prisma.tb_meta.update({
       where: { meta_id: goalId },
@@ -73,7 +74,7 @@ export class GoalService {
         usuario_id: userId,
       },
     });
-    if (!goal) throw new Error('Meta não encontrada');
+    if (!goal) throw new AppError('Meta não encontrada', 404);
 
     await prisma.tb_meta.delete({
       where: { meta_id: goalId },

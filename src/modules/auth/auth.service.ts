@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../lib/prisma.js";
+import { AppError } from "../../errors/AppError.js";
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 
@@ -14,7 +15,7 @@ export class AuthService {
       where: { usuario_email: data.email },
     });
 
-    if (userExists) throw new Error("Email já cadastrado");
+    if (userExists) throw new AppError("Email já cadastrado", 400);
 
     const hash = await bcrypt.hash(data.senha, 10);
     
@@ -36,10 +37,10 @@ export class AuthService {
       where: { usuario_email: email },
     });
 
-    if (!user) throw new Error("Credenciais inválidas");
+    if (!user) throw new AppError("Credenciais inválidas", 401);
 
     const match = await bcrypt.compare(password, user.usuario_senha);
-    if (!match) throw new Error("Credenciais inválidas");
+    if (!match) throw new AppError("Credenciais inválidas", 401);
 
     const token = jwt.sign({ userId: user.usuario_id }, JWT_SECRET, {
       expiresIn: "7d",

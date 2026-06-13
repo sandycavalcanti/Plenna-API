@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt';
 import { prisma } from '../../lib/prisma.js';
 import { CreateUserDTO, UpdateUserDTO } from './user.schemas.js';
+import { AppError } from '../../errors/AppError.js';
 
 const SALT_ROUNDS = 10;
 
@@ -12,7 +13,7 @@ export class UsersService {
       where: { usuario_email: data.email },
     });
     if (emailExists) {
-      throw new Error('Email já cadastrado');
+      throw new AppError('Email já cadastrado', 400);
     }
     // Hash da senha
     const passwordHash = await bcrypt.hash(data.senha, SALT_ROUNDS);
@@ -43,7 +44,7 @@ export class UsersService {
       },
     });
 
-    if (!user) throw new Error('Usuário não encontrado');
+    if (!user) throw new AppError('Usuário não encontrado', 404);
 
     return this.removePassword(user);
   }
@@ -57,7 +58,7 @@ export class UsersService {
       },
     });
 
-    if (!user) throw new Error('Usuário não encontrado');
+    if (!user) throw new AppError('Usuário não encontrado', 404);
 
     return this.removePassword(user);
   }
@@ -106,7 +107,7 @@ export class UsersService {
       },
     });
 
-    if (!user) throw new Error('Usuário não encontrado');
+    if (!user) throw new AppError('Usuário não encontrado', 404);
 
     return this.removePassword(user);
   }
