@@ -4,5 +4,10 @@ import { authMiddleware } from '../auth/auth.middleware.js';
 
 export const emailRouter = Router();
 
-emailRouter.get('/connect', authMiddleware ,EmailController.connect);
+emailRouter.get('/connect', authMiddleware, EmailController.connect);
 emailRouter.get('/callback', EmailController.callback);
+emailRouter.post('/sync', authMiddleware, EmailController.sync);
+emailRouter.get('/sync/cron', EmailController.syncCron);
+emailRouter.post('/sync/cron', EmailController.syncCron);
+emailRouter.get('/gmail/messages', authMiddleware, EmailController.listMessages);
+emailRouter.get('/gmail/messages/:messageId', authMiddleware, EmailController.getMessage);

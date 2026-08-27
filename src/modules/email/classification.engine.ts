@@ -1,0 +1,115 @@
+import type { GmailMessageDetail } from './gmail.types.js';
+import type { EmailClassificationLabel } from './ai-provider.js';
+
+export type DeterministicEmailClassification =
+  | { outcome: 'COMPRA'; clear: true; confidence: 'ALTA' | 'MEDIA'; purchase: { establishment?: string | null; amount?: number | null; paymentMethodName?: string | null } }
+  | { outcome: 'PROPAGANDA'; clear: true; confidence: 'ALTA' | 'MEDIA'; categoryName?: string | null }
+  | { outcome: 'IGNORAR'; clear: true; confidence: 'BAIXA' }
+  | { outcome: 'AMBIGUA'; clear: false; confidence: 'BAIXA' | 'MEDIA' };
+
+const BUY_SIGNALS = ['pedido confirmado', 'pagamento aprovado', 'compra realizada', 'recebemos seu pedido', 'recibo', 'nota fiscal', 'nf-e', 'pedido #'];
+const PROMO_SIGNALS = ['oferta', 'desconto', 'promoção', 'cupom', 'frete grátis', 'marketing'];
+
+/**
+ * Normaliza texto para comparação textual insensível a caixa e acentos.
+ */
+function normalize(value: string | null | undefined) {
+  return (value ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+}
+
+/**
+ * Concatena apenas os campos mínimos necessários para a classificação.
+ */
+function buildHaystack(message: GmailMessageDetail) {
+  return [message.subject, message.from, message.snippet].map(normalize).join(' ');
+}
+
+/**
+ * Soma quantos sinais conhecidos existem na mensagem.
+ *
+ * Cada sinal também é normalizado antes da comparação para evitar falhas
+ * causadas por acentos ou capitalização.
+ */
+function scoreSignals(haystack: string, signals: string[]) {
+  return signals.reduce((score, signal) => score + (haystack.includes(normalize(signal)) ? 1 : 0), 0);
+}
+
+function extractAmount(haystack: string) {
+  const patterns = [
+    /R\$\s?(\d{1,3}(?:\.\d{3})*,\d{2})/,
+    /\b(\d{1,3}(?:\.\d{3})*,\d{2})\b/,
+    /\b(\d{1,3}(?:,\d{3})*\.\d{2})\b/,
+    /\b(\d+(?:[.,]\d{2}))\b/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = haystack.match(pattern)?.[1];
+    if (match) {
+      const normalized = match.replace(/\./g, '').replace(',', '.');
+      const value = Number(normalized);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+  }
+
+  return null;
+}
+
+function hasMoney(haystack: string) {
+  return extractAmount(haystack) !== null;
+}
+
+function hasPromotionLabel(labelIds: string[] | undefined) {
+  return Boolean(labelIds?.includes('CATEGORY_PROMOTIONS'));
+}
+
+/**
+ * Classificador determinístico usado como primeira camada do pipeline.
+ */
+export class EmailClassificationEngine {
+  static classify(message: GmailMessageDetail): DeterministicEmailClassification {
+    const haystack = buildHaystack(message);
+    const buyScore = scoreSignals(haystack, BUY_SIGNALS);
+    const promoScore = scoreSignals(haystack, PROMO_SIGNALS);
+    const hasPromoLabel = hasPromotionLabel(message.labelIds);
+
+    if (buyScore > 0 && promoScore > 0) {
+      return { outcome: 'AMBIGUA', clear: false, confidence: 'MEDIA' };
+    }
+
+    if (buyScore >= 2 || (buyScore >= 1 && hasMoney(haystack) && promoScore === 0)) {
+      return {
+        outcome: 'COMPRA',
+        clear: true,
+        confidence: buyScore >= 2 ? 'ALTA' : 'MEDIA',
+        purchase: {
+          establishment: message.from ?? null,
+          amount: extractAmount(haystack),
+          paymentMethodName: null,
+        },
+      };
+    }
+
+    if (promoScore >= 2 || (promoScore >= 1 && hasPromoLabel && buyScore === 0)) {
+      return {
+        outcome: 'PROPAGANDA',
+        clear: true,
+        confidence: promoScore >= 2 ? 'ALTA' : 'MEDIA',
+        categoryName: null,
+      };
+    }
+
+    if (hasPromoLabel && buyScore === 0 && promoScore === 0) {
+      return { outcome: 'AMBIGUA', clear: false, confidence: 'BAIXA' };
+    }
+
+    if (buyScore > 0 || promoScore > 0) {
+      return { outcome: 'AMBIGUA', clear: false, confidence: 'MEDIA' };
+    }
+
+    return { outcome: 'IGNORAR', clear: true, confidence: 'BAIXA' };
+  }
+}
+
+export function isClassificationLabel(value: string): value is EmailClassificationLabel {
+  return value === 'COMPRA' || value === 'PROPAGANDA' || value === 'IGNORAR';
+}

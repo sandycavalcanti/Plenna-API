@@ -1,7 +1,13 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type { GastoCategoriaDTO, GastoFormaPagamentoDTO, ImpulsividadeDTO, LimiteComprasDTO, TempoVsGastoDTO } from './dashboard.schemas.js';
-
+/**
+ * Calcula o intervalo UTC correspondente ao mês de referência.
+ *
+ * O intervalo é semiaberto (`>= início` e `< início do próximo mês`),
+ * evitando problemas com diferentes quantidades de dias e milissegundos
+ * no final do mês.
+ */
 function getMonthBounds(referenceDate: Date = new Date()) {
   const start = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1));
   const end = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth() + 1, 1));
@@ -12,7 +18,12 @@ function getMonthBounds(referenceDate: Date = new Date()) {
 function toNumber(value: Prisma.Decimal | number | null | undefined) {
   return Number(value ?? 0);
 }
-
+/**
+ * Calcula os indicadores financeiros utilizados pelo dashboard.
+ *
+ * Apenas compras confirmadas participam das métricas de gasto, evitando
+ * que compras pendentes ou ignoradas alterem os indicadores do usuário.
+ */
 export class DashboardService {
   static async findGastosPorCategoria(userId: number): Promise<GastoCategoriaDTO[]> {
     const { start, end } = getMonthBounds();
@@ -21,6 +32,7 @@ export class DashboardService {
       where: {
         tb_compra: {
           usuario_id: userId,
+          compra_status: 'CONFIRMADA',
           compra_horario: {
             gte: start,
             lt: end,
@@ -54,6 +66,7 @@ export class DashboardService {
     const compras = await prisma.tb_compra.findMany({
       where: {
         usuario_id: userId,
+        compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
           lt: end,
@@ -72,7 +85,7 @@ export class DashboardService {
     const totalsByFormaPagamento = new Map<string, number>();
 
     for (const compra of compras) {
-      const formaPagamentoNome = compra.tb_forma_pagamento.forma_pagamento_nome;
+      const formaPagamentoNome = compra.tb_forma_pagamento?.forma_pagamento_nome ?? 'Sem forma de pagamento';
       const totalAtual = totalsByFormaPagamento.get(formaPagamentoNome) ?? 0;
       totalsByFormaPagamento.set(formaPagamentoNome, totalAtual + toNumber(compra.compra_valor));
     }
@@ -86,6 +99,7 @@ export class DashboardService {
     const grupos = await prisma.tb_compra.groupBy({
       where: {
         usuario_id: userId,
+        compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
           lt: end,
@@ -113,6 +127,7 @@ export class DashboardService {
     const grupos = await prisma.tb_compra.groupBy({
       where: {
         usuario_id: userId,
+        compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
           lt: end,
@@ -130,9 +145,9 @@ export class DashboardService {
     };
 
     for (const grupo of grupos) {
-      if (grupo.compra_acima_limite) {
+      if (grupo.compra_acima_limite === true) {
         resultado.acima_limite = grupo._count._all;
-      } else {
+      } else if (grupo.compra_acima_limite === false) {
         resultado.dentro_limite = grupo._count._all;
       }
     }
@@ -143,6 +158,8 @@ export class DashboardService {
   static async findTempoVsGasto(userId: number): Promise<TempoVsGastoDTO[]> {
     const { start, end } = getMonthBounds();
 
+    // As consultas são independentes e executadas em paralelo para reduzir
+    // o tempo total necessário para montar o indicador.
     const [temposUso, gastosPorApp] = await Promise.all([
       prisma.tb_tempo_uso.findMany({
         where: {
@@ -159,11 +176,12 @@ export class DashboardService {
       }),
       prisma.tb_compra.groupBy({
         where: {
-          usuario_id: userId,
-          compra_horario: {
-            gte: start,
-            lt: end,
-          },
+        usuario_id: userId,
+        compra_status: 'CONFIRMADA',
+        compra_horario: {
+          gte: start,
+          lt: end,
+        },
         },
         by: ['compra_fonte'],
         _sum: {
@@ -182,6 +200,7 @@ export class DashboardService {
     const gastoTotalPorApp = new Map<string, number>();
 
     for (const gasto of gastosPorApp) {
+      if (!gasto.compra_fonte) continue;
       gastoTotalPorApp.set(gasto.compra_fonte, toNumber(gasto._sum.compra_valor));
     }
 
