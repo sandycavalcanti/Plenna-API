@@ -47,10 +47,10 @@ export class CompraController {
     }
   }
   /**
-   * Confirma uma compra detectada automaticamente por e-mail.
+   * Ignora uma compra automática pendente que o usuário não deseja manter.
    *
-   * O usuário pode enviar correções ou complementar os dados extraídos
-   * automaticamente antes da confirmação definitiva da compra.
+   * A compra permanece registrada para deduplicação, mas deixa de participar
+   * do fluxo normal de confirmação.
    */
   static async ignore(req: AuthRequest, res: Response) {
     try {

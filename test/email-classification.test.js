@@ -74,3 +74,16 @@ test('mensagem neutra é ignorada e não chama IA', () => {
 
   assert.equal(result.outcome, 'IGNORAR');
 });
+
+test('bodyText também contribui para identificar compra', () => {
+  const result = EmailClassificationEngine.classify({
+    id: 'm7',
+    subject: 'Sua compra',
+    from: 'Loja <vendas@loja.com>',
+    snippet: 'Resumo curto',
+    bodyText: 'Pagamento aprovado e nota fiscal emitida no valor de R$ 199,90.',
+    labelIds: [],
+  });
+
+  assert.equal(result.outcome, 'COMPRA');
+});

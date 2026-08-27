@@ -75,6 +75,10 @@ function safeErrorMessage(error: unknown) {
   return message.slice(0, 255);
 }
 
+function truncatePromptText(value: string | null | undefined, limit = 1200) {
+  return (value ?? '').slice(0, limit);
+}
+
 async function createCompraFromMessage(
   userId: number,
   message: GmailMessageDetail,
@@ -146,6 +150,7 @@ function buildEmailClassificationPrompt(message: GmailMessageDetail) {
     `subject: ${message.subject ?? ''}`,
     `from: ${message.from ?? ''}`,
     `snippet: ${message.snippet ?? ''}`,
+    `bodyText: ${truncatePromptText(message.bodyText)}`,
   ].join('\n');
 }
 
@@ -156,6 +161,7 @@ function buildCategoryPrompt(message: GmailMessageDetail) {
     `subject: ${message.subject ?? ''}`,
     `from: ${message.from ?? ''}`,
     `snippet: ${message.snippet ?? ''}`,
+    `bodyText: ${truncatePromptText(message.bodyText)}`,
   ].join('\n');
 }
 

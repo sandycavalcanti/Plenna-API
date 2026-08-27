@@ -224,12 +224,117 @@ test('dashboard financeiro usa apenas compras confirmadas', async () => {
   prisma.tb_compra.findMany = originalFindMany;
 });
 
+test('MetricasService recalculateMonthlyMetrics ignora compras não confirmadas', async () => {
+  const { MetricasService } = await import('../dist/src/modules/compra/metricas.service.js');
+  const calls = [];
+  const db = {
+    tb_usuario: {
+      findFirst: async () => ({ usuario_meta_valor_mensal: null }),
+    },
+    tb_compra: {
+      findMany: async (args) => {
+        calls.push(args.where.compra_status);
+        return [];
+      },
+    },
+    tb_metricas: {
+      findFirst: async () => null,
+      create: async () => ({}),
+      update: async () => ({}),
+    },
+  };
+
+  await MetricasService.recalculateMonthlyMetrics(1, new Date('2026-08-10T12:00:00Z'), db);
+
+  assert.deepEqual(calls, ['CONFIRMADA']);
+});
+
 test('transição de compra impede caminhos inválidos', async () => {
   const originalFindFirst = prisma.tb_compra.findFirst;
   const originalUpdate = prisma.tb_compra.update;
   const originalTransaction = prisma.$transaction;
 
-  let current = { compra_status: 'AGUARDANDO_CONFIRMACAO' };
+  let current = {
+    compra_status: 'AGUARDANDO_CONFIRMACAO',
+    compra_horario: new Date('2026-08-10T12:00:00Z'),
+    compra_valor: 15,
+    compra_usuario_concorda: null,
+    compra_usuario_anotacao: null,
+    compra_classificacao: 'PENDENTE',
+    compra_email: true,
+    compra_fonte: null,
+    forma_pagamento_id: null,
+  };
+  prisma.tb_compra.findFirst = async () => current;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_forma_pagamento: {
+        findUnique: async () => ({ forma_pagamento_id: 1 }),
+      },
+      tb_categoria: {
+        count: async () => 0,
+      },
+      tb_compra: {
+        findFirst: async () => current,
+        findMany: async () => [],
+        update: async ({ data }) => {
+          current = { ...current, ...data };
+          return current;
+        },
+        create: async () => current,
+      },
+      tb_compra_item: {
+        deleteMany: async () => ({}),
+        createMany: async () => ({}),
+      },
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+  prisma.tb_compra.update = async ({ data }) => {
+    current = { ...current, ...data };
+    return current;
+  };
+
+  await CompraService.confirm(1, 10);
+  assert.equal(current.compra_status, 'CONFIRMADA');
+  await assert.rejects(() => CompraService.ignore(1, 10));
+
+  current = { compra_status: 'IGNORADA' };
+  await assert.rejects(() => CompraService.confirm(1, 10));
+
+  prisma.tb_compra.findFirst = originalFindFirst;
+  prisma.$transaction = originalTransaction;
+  prisma.tb_compra.update = originalUpdate;
+});
+
+test('confirmação recalcula métricas e retorna compra confirmada', async () => {
+  const originalFindFirst = prisma.tb_compra.findFirst;
+  const originalUpdate = prisma.tb_compra.update;
+  const originalTransaction = prisma.$transaction;
+  const metricasModule = await import('../dist/src/modules/compra/metricas.service.js');
+  const originalRecalc = metricasModule.MetricasService.recalculateMonthlyMetrics;
+
+  let current = {
+    compra_id: 20,
+    usuario_id: 1,
+    compra_status: 'AGUARDANDO_CONFIRMACAO',
+    compra_valor: 15,
+    compra_horario: new Date('2026-08-10T12:00:00Z'),
+    compra_usuario_concorda: null,
+    compra_usuario_anotacao: null,
+    compra_classificacao: 'PENDENTE',
+    compra_email: true,
+    compra_fonte: null,
+    forma_pagamento_id: null,
+  };
+  let recalcCalls = 0;
+
   prisma.tb_compra.findFirst = async () => current;
   prisma.$transaction = async (cb) =>
     cb({
@@ -254,20 +359,29 @@ test('transição de compra impede caminhos inválidos', async () => {
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
     });
   prisma.tb_compra.update = async ({ data }) => {
     current = { ...current, ...data };
     return current;
   };
+  metricasModule.MetricasService.recalculateMonthlyMetrics = async () => {
+    recalcCalls += 1;
+    return {};
+  };
 
-  await CompraService.confirm(1, 10);
-  assert.equal(current.compra_status, 'CONFIRMADA');
-  await assert.rejects(() => CompraService.ignore(1, 10));
+  const { CompraService } = await import('../dist/src/modules/compra/compra.service.js');
+  const result = await CompraService.confirm(1, 20);
 
-  current = { compra_status: 'IGNORADA' };
-  await assert.rejects(() => CompraService.confirm(1, 10));
+  assert.equal(result.compra.compra_status, 'CONFIRMADA');
+  assert.equal(recalcCalls, 1);
 
   prisma.tb_compra.findFirst = originalFindFirst;
   prisma.$transaction = originalTransaction;
   prisma.tb_compra.update = originalUpdate;
+  metricasModule.MetricasService.recalculateMonthlyMetrics = originalRecalc;
 });

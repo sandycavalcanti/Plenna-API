@@ -34,6 +34,7 @@ export class MetricasService {
       db.tb_compra.findMany({
         where: {
           usuario_id: userId,
+          compra_status: 'CONFIRMADA',
           compra_horario: {
             gte: start,
             lt: end,

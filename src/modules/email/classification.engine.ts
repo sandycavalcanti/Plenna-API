@@ -9,6 +9,7 @@ export type DeterministicEmailClassification =
 
 const BUY_SIGNALS = ['pedido confirmado', 'pagamento aprovado', 'compra realizada', 'recebemos seu pedido', 'recibo', 'nota fiscal', 'nf-e', 'pedido #'];
 const PROMO_SIGNALS = ['oferta', 'desconto', 'promoção', 'cupom', 'frete grátis', 'marketing'];
+const MAX_CLASSIFICATION_TEXT_LENGTH = 1200;
 
 /**
  * Normaliza texto para comparação textual insensível a caixa e acentos.
@@ -21,7 +22,9 @@ function normalize(value: string | null | undefined) {
  * Concatena apenas os campos mínimos necessários para a classificação.
  */
 function buildHaystack(message: GmailMessageDetail) {
-  return [message.subject, message.from, message.snippet].map(normalize).join(' ');
+  return [message.subject, message.from, message.snippet, message.bodyText?.slice(0, MAX_CLASSIFICATION_TEXT_LENGTH)]
+    .map(normalize)
+    .join(' ');
 }
 
 /**

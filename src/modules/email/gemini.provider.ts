@@ -67,7 +67,7 @@ export class GeminiProvider implements AIProvider {
     const parsed = parseJsonPayload(text, aiClassificationSchema);
 
     if (!isClassificationLabel(parsed.classificacao)) {
-      throw new Error('ClassificaÃ§Ã£o de IA invÃ¡lida');
+      throw new Error('Classificação de IA inválida');
     }
 
     return parsed;

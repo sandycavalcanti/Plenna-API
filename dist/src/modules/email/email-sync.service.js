@@ -60,6 +60,9 @@ function safeErrorMessage(error) {
     const message = error instanceof Error ? error.message : 'Erro desconhecido';
     return message.slice(0, 255);
 }
+function truncatePromptText(value, limit = 1200) {
+    return (value ?? '').slice(0, limit);
+}
 async function createCompraFromMessage(userId, message, extracted = {}) {
     const horario = parseDateFromMessage(message);
     if (!horario) {
@@ -126,6 +129,7 @@ function buildEmailClassificationPrompt(message) {
         `subject: ${message.subject ?? ''}`,
         `from: ${message.from ?? ''}`,
         `snippet: ${message.snippet ?? ''}`,
+        `bodyText: ${truncatePromptText(message.bodyText)}`,
     ].join('\n');
 }
 function buildCategoryPrompt(message) {
@@ -135,6 +139,7 @@ function buildCategoryPrompt(message) {
         `subject: ${message.subject ?? ''}`,
         `from: ${message.from ?? ''}`,
         `snippet: ${message.snippet ?? ''}`,
+        `bodyText: ${truncatePromptText(message.bodyText)}`,
     ].join('\n');
 }
 async function resolvePropagationCategory(aiProvider, message) {

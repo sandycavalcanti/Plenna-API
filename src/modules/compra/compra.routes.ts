@@ -10,7 +10,8 @@ compraRouter.use(authMiddleware);
 compraRouter.get('/', CompraController.findAllByUserId);
 // Rotas fixas devem ser declaradas antes de `/:compraId` para que valores
 // como "pending" não sejam interpretados como identificadores de compra.
-compraRouter.get('/pending', CompraController.findPendingByUserId);compraRouter.get('/:compraId', CompraController.findById);
+compraRouter.get('/pending', CompraController.findPendingByUserId);
+compraRouter.get('/:compraId', CompraController.findById);
 compraRouter.post('/', CompraController.create);
 compraRouter.put('/:compraId', CompraController.update);
 compraRouter.post('/:compraId/confirm', CompraController.confirm);
