@@ -18,6 +18,23 @@ function calculatePurchaseLimitMeta(value) {
     const cents = toCents(value);
     return Number.isFinite(cents) && cents > 0 ? cents : null;
 }
+function resolveCompraValor(explicitValue, items, fallbackValue) {
+    if (explicitValue !== null && explicitValue !== undefined) {
+        return new Prisma.Decimal(Number(explicitValue).toFixed(2));
+    }
+    if (items !== undefined) {
+        if (items.length === 0)
+            return null;
+        const totalCents = items.reduce((sum, item) => sum + toCents(item.valor), 0);
+        return fromCents(totalCents);
+    }
+    return fallbackValue;
+}
+function resolveMetricPeriods(previousDate, currentDate) {
+    const previousMonth = previousDate.getUTCFullYear() * 100 + previousDate.getUTCMonth();
+    const currentMonth = currentDate.getUTCFullYear() * 100 + currentDate.getUTCMonth();
+    return previousMonth === currentMonth ? [currentDate] : [previousDate, currentDate];
+}
 async function recalculatePurchaseLimit(tx, userId) {
     const user = await tx.tb_usuario.findFirst({
         where: { usuario_id: userId, usuario_status: true },
@@ -41,20 +58,13 @@ async function applyCompraConfirmation(tx, userId, compraId, data, existing) {
     }
     const compraHorario = data.compraHorario ?? existing.compra_horario;
     const compraClassificacao = data.compraClassificacao ?? existing.compra_classificacao;
-    const compraEmail = data.compraEmail ?? existing.compra_email;
     const compraFonte = data.compraFonte !== undefined ? data.compraFonte : existing.compra_fonte;
     const compraUsuarioConcorda = data.compraUsuarioConcorda ?? existing.compra_usuario_concorda;
     const compraUsuarioAnotacao = data.compraUsuarioAnotacao ?? existing.compra_usuario_anotacao;
-    const explicitValue = data.compraValor ?? null;
-    const computedValue = items
-        ? (items.length > 0 ? fromCents(items.reduce((sum, item) => sum + toCents(item.valor), 0)) : null)
-        : existing.compra_valor;
-    const compraValor = explicitValue !== null
-        ? new Prisma.Decimal(explicitValue.toFixed(2))
-        : computedValue;
+    const compraValor = resolveCompraValor(data.compraValor, items, existing.compra_valor);
     const purchaseLimitCents = await recalculatePurchaseLimit(tx, userId);
-    const compraAcimaLimite = compraValor !== null && purchaseLimitCents !== null
-        ? toCents(compraValor) > purchaseLimitCents
+    const compraAcimaLimite = purchaseLimitCents !== null
+        ? compraValor !== null && toCents(compraValor) > purchaseLimitCents
         : null;
     if (items) {
         await tx.tb_compra_item.deleteMany({ where: { compra_id: compraId } });
@@ -76,14 +86,13 @@ async function applyCompraConfirmation(tx, userId, compraId, data, existing) {
             compra_valor: compraValor,
             compra_horario: compraHorario,
             compra_fonte: compraFonte,
-            compra_email: compraEmail,
             compra_classificacao: compraClassificacao,
             compra_acima_limite: compraAcimaLimite,
             compra_usuario_concorda: compraUsuarioConcorda,
             compra_usuario_anotacao: compraUsuarioAnotacao,
         },
     });
-    return { compra, compraHorario };
+    return { compra, compraHorario, compraValor };
 }
 export class CompraService {
     /**
@@ -128,7 +137,6 @@ export class CompraService {
             const compraAcimaLimite = compraValor !== null && purchaseLimitCents !== null
                 ? toCents(compraValor) > purchaseLimitCents
                 : null;
-            const compraStatus = data.compraStatus ?? 'CONFIRMADA';
             const compra = await tx.tb_compra.create({
                 data: {
                     usuario_id: userId,
@@ -136,12 +144,12 @@ export class CompraService {
                     compra_valor: compraValor,
                     compra_horario: data.compraHorario,
                     compra_fonte: data.compraFonte ?? null,
-                    compra_email: data.compraEmail ?? false,
+                    compra_email: false,
                     compra_classificacao: data.compraClassificacao,
                     compra_acima_limite: compraAcimaLimite,
                     compra_usuario_concorda: data.compraUsuarioConcorda,
                     compra_usuario_anotacao: data.compraUsuarioAnotacao,
-                    compra_status: compraStatus,
+                    compra_status: 'CONFIRMADA',
                     compra_email_mensagem_id: null,
                 },
             });
@@ -166,7 +174,16 @@ export class CompraService {
             const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId } });
             if (!existing)
                 throw new AppError('Compra não encontrada', 404);
-            await applyCompraConfirmation(tx, userId, compraId, data, existing);
+            const result = await applyCompraConfirmation(tx, userId, compraId, data, existing);
+            if (result.compraValor === null) {
+                throw new AppError('Compra sem valor não pode ser confirmada', 400);
+            }
+            if (existing.compra_status === 'CONFIRMADA') {
+                const metricPeriods = resolveMetricPeriods(existing.compra_horario, result.compraHorario);
+                for (const period of metricPeriods) {
+                    await MetricasService.recalculateMonthlyMetrics(userId, period, tx);
+                }
+            }
             return { compra: await tx.tb_compra.findFirst({ where: { compra_id: compraId } }) };
         });
     }
@@ -187,15 +204,16 @@ export class CompraService {
                 throw new AppError('Compra ignorada não pode ser confirmada', 409);
             if (existing.compra_status === 'CONFIRMADA')
                 return { compra: existing };
-            if ((data?.compraValor ?? existing.compra_valor) === null) {
+            const result = await applyCompraConfirmation(tx, userId, compraId, data ?? {}, existing);
+            if (result.compraValor === null) {
                 throw new AppError('Compra sem valor não pode ser confirmada', 400);
             }
-            const result = await applyCompraConfirmation(tx, userId, compraId, data ?? {}, existing);
             const compra = await tx.tb_compra.update({
                 where: { compra_id: compraId },
                 data: { compra_status: 'CONFIRMADA' },
             });
-            const compraFinal = await MetricasService.recalculateMonthlyMetrics(userId, result.compraHorario, tx).then(() => compra);
+            await MetricasService.recalculateMonthlyMetrics(userId, result.compraHorario, tx);
+            const compraFinal = await tx.tb_compra.findFirst({ where: { compra_id: compraId } });
             return { compra: compraFinal };
         });
     }

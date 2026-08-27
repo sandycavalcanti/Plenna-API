@@ -17,6 +17,7 @@ const { GeminiProvider } = await import('../dist/src/modules/email/gemini.provid
 const { EmailService } = await import('../dist/src/modules/email/email.service.js');
 const { DashboardService } = await import('../dist/src/modules/dashboard/dashboard.service.js');
 const { CompraService } = await import('../dist/src/modules/compra/compra.service.js');
+const { createCompraSchema } = await import('../dist/src/modules/compra/compra.schemas.js');
 const { prisma } = await import('../dist/src/lib/prisma.js');
 const { env } = await import('../dist/src/lib/env.js');
 
@@ -82,6 +83,40 @@ test('cron com auth inválida rejeita', async () => {
   assert.equal(res.statusCode, 401);
 });
 
+test('callback OAuth redireciona para o app no sucesso', async () => {
+  const originalExchange = EmailService.exchangeCodeForTokens;
+  const originalEmail = EmailService.getGoogleUserEmail;
+  const originalSave = EmailService.saveIntegration;
+  EmailService.exchangeCodeForTokens = async () => ({ access_token: 'token', expires_in: 3600, refresh_token: 'refresh' });
+  EmailService.getGoogleUserEmail = async () => 'user@example.com';
+  EmailService.saveIntegration = async () => ({});
+
+  const req = { query: { code: 'abc', state: '1' } };
+  const res = fakeResponse();
+  await EmailController.callback(req, res);
+
+  assert.equal(res.body, `${env.apiBaseUrl}/oauth-success.html`);
+
+  EmailService.exchangeCodeForTokens = originalExchange;
+  EmailService.getGoogleUserEmail = originalEmail;
+  EmailService.saveIntegration = originalSave;
+});
+
+test('callback OAuth redireciona para o app no erro', async () => {
+  const originalExchange = EmailService.exchangeCodeForTokens;
+  EmailService.exchangeCodeForTokens = async () => {
+    throw new Error('falha');
+  };
+
+  const req = { query: { code: 'abc', state: '1' } };
+  const res = fakeResponse();
+  await EmailController.callback(req, res);
+
+  assert.equal(res.body, 'plenna://oauth-error');
+
+  EmailService.exchangeCodeForTokens = originalExchange;
+});
+
 test('GeminiProvider rejeita ausência de API key', async () => {
   const previous = env.geminiApiKey;
   env.geminiApiKey = '';
@@ -99,6 +134,54 @@ test('GeminiProvider rejeita resposta inválida', async () => {
   await assert.rejects(() => provider.classifyEmail('teste'));
   axios.post = originalPost;
   env.geminiApiKey = previous;
+});
+
+test('schema de compra manual rejeita controle de email/status', () => {
+  assert.throws(() => createCompraSchema.parse({
+    compraHorario: new Date('2026-08-10T12:00:00Z'),
+    compraClassificacao: 'PENDENTE',
+    compraEmail: true,
+    compraStatus: 'AGUARDANDO_CONFIRMACAO',
+  }));
+});
+
+test('compra manual é criada pelo backend como confirmada e não email', async () => {
+  const originalTransaction = prisma.$transaction;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_forma_pagamento: {
+        findUnique: async () => null,
+      },
+      tb_categoria: {
+        count: async () => 0,
+      },
+      tb_compra: {
+        create: async ({ data }) => data,
+        findMany: async () => [],
+      },
+      tb_compra_item: {
+        createMany: async () => ({}),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+
+  const result = await CompraService.create(1, {
+    compraHorario: new Date('2026-08-10T12:00:00Z'),
+    compraClassificacao: 'PENDENTE',
+    items: [],
+  });
+
+  assert.equal(result.compra.compra_email, false);
+  assert.equal(result.compra.compra_status, 'CONFIRMADA');
+
+  prisma.$transaction = originalTransaction;
 });
 
 test('sync clara não chama IA e adquire lock', async () => {
@@ -379,6 +462,164 @@ test('confirmação recalcula métricas e retorna compra confirmada', async () =
 
   assert.equal(result.compra.compra_status, 'CONFIRMADA');
   assert.equal(recalcCalls, 1);
+
+  prisma.tb_compra.findFirst = originalFindFirst;
+  prisma.$transaction = originalTransaction;
+  prisma.tb_compra.update = originalUpdate;
+  metricasModule.MetricasService.recalculateMonthlyMetrics = originalRecalc;
+});
+
+test('compra pendente com valor nulo pode ser confirmada quando items definem valor válido', async () => {
+  const originalFindFirst = prisma.tb_compra.findFirst;
+  const originalUpdate = prisma.tb_compra.update;
+  const originalTransaction = prisma.$transaction;
+  const originalRecalc = (await import('../dist/src/modules/compra/metricas.service.js')).MetricasService.recalculateMonthlyMetrics;
+  const recalcCalls = [];
+
+  let current = {
+    compra_id: 30,
+    usuario_id: 1,
+    compra_status: 'AGUARDANDO_CONFIRMACAO',
+    compra_valor: null,
+    compra_horario: new Date('2026-08-10T12:00:00Z'),
+    compra_usuario_concorda: null,
+    compra_usuario_anotacao: null,
+    compra_classificacao: 'PENDENTE',
+    compra_email: true,
+    compra_fonte: null,
+    forma_pagamento_id: null,
+  };
+
+  prisma.tb_compra.findFirst = async () => current;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_forma_pagamento: {
+        findUnique: async () => ({ forma_pagamento_id: 1 }),
+      },
+      tb_categoria: {
+        count: async () => 2,
+      },
+      tb_compra: {
+        findFirst: async () => current,
+        update: async ({ data }) => {
+          current = { ...current, ...data };
+          return current;
+        },
+        findMany: async () => [],
+        create: async () => current,
+      },
+      tb_compra_item: {
+        deleteMany: async () => ({}),
+        createMany: async () => ({}),
+      },
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+  prisma.tb_compra.update = async ({ data }) => {
+    current = { ...current, ...data };
+    return current;
+  };
+  (await import('../dist/src/modules/compra/metricas.service.js')).MetricasService.recalculateMonthlyMetrics = async (userId, date) => {
+    recalcCalls.push(date.toISOString());
+    return {};
+  };
+
+  const { CompraService } = await import('../dist/src/modules/compra/compra.service.js');
+  const result = await CompraService.confirm(1, 30, {
+    items: [
+      { categoriaId: 1, nome: 'Item A', valor: 50 },
+      { categoriaId: 2, nome: 'Item B', valor: 30 },
+    ],
+  });
+
+  assert.equal(result.compra.compra_status, 'CONFIRMADA');
+  assert.equal(Number(result.compra.compra_valor), 80);
+  assert.equal(recalcCalls.length >= 1, true);
+
+  prisma.tb_compra.findFirst = originalFindFirst;
+  prisma.$transaction = originalTransaction;
+  prisma.tb_compra.update = originalUpdate;
+  (await import('../dist/src/modules/compra/metricas.service.js')).MetricasService.recalculateMonthlyMetrics = originalRecalc;
+});
+
+test('edicao de compra confirmada recalcula métricas do mês antigo e novo', async () => {
+  const originalFindFirst = prisma.tb_compra.findFirst;
+  const originalUpdate = prisma.tb_compra.update;
+  const originalTransaction = prisma.$transaction;
+  const metricasModule = await import('../dist/src/modules/compra/metricas.service.js');
+  const originalRecalc = metricasModule.MetricasService.recalculateMonthlyMetrics;
+  const calls = [];
+
+  let current = {
+    compra_id: 40,
+    usuario_id: 1,
+    compra_status: 'CONFIRMADA',
+    compra_valor: 100,
+    compra_horario: new Date('2026-08-10T12:00:00Z'),
+    compra_usuario_concorda: null,
+    compra_usuario_anotacao: null,
+    compra_classificacao: 'PENDENTE',
+    compra_email: false,
+    compra_fonte: null,
+    forma_pagamento_id: null,
+  };
+
+  prisma.tb_compra.findFirst = async () => current;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_forma_pagamento: {
+        findUnique: async () => ({ forma_pagamento_id: 1 }),
+      },
+      tb_categoria: {
+        count: async () => 0,
+      },
+      tb_compra: {
+        findFirst: async () => current,
+        update: async ({ data }) => {
+          current = { ...current, ...data };
+          return current;
+        },
+        findMany: async () => [],
+        create: async () => current,
+      },
+      tb_compra_item: {
+        deleteMany: async () => ({}),
+        createMany: async () => ({}),
+      },
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+  prisma.tb_compra.update = async ({ data }) => {
+    current = { ...current, ...data };
+    return current;
+  };
+  metricasModule.MetricasService.recalculateMonthlyMetrics = async (userId, date) => {
+    calls.push(date.toISOString());
+    return {};
+  };
+
+  const { CompraService } = await import('../dist/src/modules/compra/compra.service.js');
+  await CompraService.update(1, 40, {
+    compraHorario: new Date('2026-09-05T12:00:00Z'),
+    compraClassificacao: 'PENDENTE',
+    compraValor: 120,
+  });
+
+  assert.equal(calls.length, 2);
+  assert.ok(calls.some((value) => value.startsWith('2026-08-')));
+  assert.ok(calls.some((value) => value.startsWith('2026-09-')));
 
   prisma.tb_compra.findFirst = originalFindFirst;
   prisma.$transaction = originalTransaction;

@@ -18,15 +18,16 @@ const compraBaseSchema = z.object({
     formaPagamentoId: z.coerce.number().int().positive().optional().nullable(),
     compraHorario: z.coerce.date(),
     compraFonte: z.string().min(1).max(45).optional().nullable(),
-    compraEmail: z.boolean().optional(),
     compraClassificacao: compraClassificacaoSchema,
-    compraStatus: compraStatusSchema.optional(),
     compraUsuarioConcorda: z.boolean().optional(),
     compraUsuarioAnotacao: z.string().optional(),
     compraValor: z.coerce.number().positive().optional().nullable(),
     items: z.array(compraItemSchema).optional(),
 });
-export const createCompraSchema = compraBaseSchema;
+export const createCompraSchema = compraBaseSchema.extend({
+    compraEmail: z.never().optional(),
+    compraStatus: z.never().optional(),
+});
 export const updateCompraSchema = compraBaseSchema.partial().extend({
     compraStatus: z.never().optional(),
     items: z.array(compraItemSchema).optional(),
