@@ -131,6 +131,19 @@ model tb_meta {
   @@schema("public")
 }
 
+model tb_redefinicao_senha {
+  redefinicao_senha_id           Int        @id @default(autoincrement())
+  usuario_id                     Int
+  redefinicao_senha_codigo_hash  String     @db.VarChar(255)
+  redefinicao_senha_expira_em    DateTime   @db.Timestamp(6)
+  redefinicao_senha_tentativas   Int        @default(0)
+  redefinicao_senha_usado        Boolean    @default(false)
+  redefinicao_senha_data_criacao DateTime   @default(now()) @db.Timestamp(6)
+  tb_usuario                     tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
 model tb_tempo_uso {
   tempo_uso_id           Int        @id @default(autoincrement())
   usuario_id             Int
@@ -168,6 +181,7 @@ model tb_usuario {
   tb_metricas               tb_metricas[]
   tb_preferencia            tb_preferencia[]
   tb_tempo_uso              tb_tempo_uso[]
+  tb_redefinicao_senha      tb_redefinicao_senha[]
 
   @@schema("public")
 }

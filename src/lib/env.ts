@@ -23,4 +23,11 @@ export const env = {
   isProduction: nodeEnv === "production",
   port,
   dbUrl: process.env.DIRECT_URL ?? requireEnv("DATABASE_URL"),
+  smtp: {
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+    from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+  },
 };
