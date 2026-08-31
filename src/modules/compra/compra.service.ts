@@ -182,13 +182,10 @@ export class CompraService {
         if (categoriasEncontradas !== categoriaIds.length) throw new AppError('Categoria não encontrada', 404);
       }
 
-      const totalCents = items.reduce((sum, item) => sum + toCents(item.valor), 0);
-      const explicitValue = data.compraValor ?? null;
-      const compraValor = explicitValue !== null
-        ? new Prisma.Decimal(explicitValue.toFixed(2))
-        : items.length > 0
-          ? fromCents(totalCents)
-          : null;
+      const compraValor = resolveCompraValor(data.compraValor, items, null);
+      if (compraValor === null) {
+        throw new AppError('Compra manual sem valor não pode ser criada', 400);
+      }
       const purchaseLimitCents = calculatePurchaseLimitMeta(user.usuario_meta_valor_compra);
       // `null` representa "não foi possível determinar". Isso é diferente de
       // `false`, que significa que a compra foi efetivamente considerada dentro do limite.
@@ -236,8 +233,8 @@ export class CompraService {
       if (!existing) throw new AppError('Compra não encontrada', 404);
       const result = await applyCompraConfirmation(tx, userId, compraId, data, existing);
 
-      if (result.compraValor === null) {
-        throw new AppError('Compra sem valor não pode ser confirmada', 400);
+      if (existing.compra_status === 'CONFIRMADA' && result.compraValor === null) {
+        throw new AppError('Compra confirmada deve possuir valor', 400);
       }
 
       if (existing.compra_status === 'CONFIRMADA') {

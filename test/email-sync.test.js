@@ -8,12 +8,15 @@ process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'client-secret';
 process.env.GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ?? 'https://example.com/callback';
 process.env.CRON_SECRET = process.env.CRON_SECRET ?? 'cron-secret';
+process.env.REQUESTY_API_KEY = process.env.REQUESTY_API_KEY ?? 'requesty-key';
 
 const axios = (await import('axios')).default;
 const { emailRouter } = await import('../dist/src/modules/email/email.routes.js');
 const { EmailController } = await import('../dist/src/modules/email/email.controller.js');
 const { EmailSyncService } = await import('../dist/src/modules/email/email-sync.service.js');
 const { GeminiProvider } = await import('../dist/src/modules/email/gemini.provider.js');
+const { RequestyProvider } = await import('../dist/src/modules/email/requesty.provider.js');
+const { EmailClassificationEngine } = await import('../dist/src/modules/email/classification.engine.js');
 const { EmailService } = await import('../dist/src/modules/email/email.service.js');
 const { DashboardService } = await import('../dist/src/modules/dashboard/dashboard.service.js');
 const { CompraService } = await import('../dist/src/modules/compra/compra.service.js');
@@ -117,23 +120,67 @@ test('callback OAuth redireciona para o app no erro', async () => {
   EmailService.exchangeCodeForTokens = originalExchange;
 });
 
-test('GeminiProvider rejeita ausência de API key', async () => {
-  const previous = env.geminiApiKey;
-  env.geminiApiKey = '';
-  const provider = new GeminiProvider();
+test('RequestyProvider rejeita ausência de API key', async () => {
+  const previous = env.requestyApiKey;
+  env.requestyApiKey = '';
+  const provider = new RequestyProvider();
   await assert.rejects(() => provider.classifyEmail('teste'));
-  env.geminiApiKey = previous;
+  env.requestyApiKey = previous;
 });
 
-test('GeminiProvider rejeita resposta inválida', async () => {
-  const previous = env.geminiApiKey;
-  env.geminiApiKey = 'key';
+test('RequestyProvider rejeita resposta inválida', async () => {
+  const previous = env.requestyApiKey;
+  env.requestyApiKey = 'key';
   const originalPost = axios.post;
-  axios.post = async () => ({ data: { candidates: [{ content: { parts: [{ text: 'not-json' }] } }] } });
-  const provider = new GeminiProvider();
+  axios.post = async () => ({ data: { choices: [{ message: { content: 'not-json' } }] } });
+  const provider = new RequestyProvider();
   await assert.rejects(() => provider.classifyEmail('teste'));
   axios.post = originalPost;
-  env.geminiApiKey = previous;
+  env.requestyApiKey = previous;
+});
+
+test('RequestyProvider classifica e sugere categoria a partir de choices[0].message.content', async () => {
+  const previous = env.requestyApiKey;
+  env.requestyApiKey = 'key';
+  const originalPost = axios.post;
+  const responses = [
+    { data: { choices: [{ message: { content: JSON.stringify({ classificacao: 'COMPRA', purchase: { amount: 10 } }) } }] } },
+    { data: { choices: [{ message: { content: JSON.stringify({ categoryName: 'Eletrônicos' }) } }] } },
+  ];
+  let index = 0;
+  axios.post = async () => responses[index++] ?? responses[responses.length - 1];
+
+  const provider = new RequestyProvider();
+  const classified = await provider.classifyEmail('teste');
+  const suggested = await provider.suggestCategory('teste');
+
+  assert.equal(classified.classificacao, 'COMPRA');
+  assert.equal(Number(classified.purchase.amount), 10);
+  assert.equal(suggested.categoryName, 'Eletrônicos');
+
+  axios.post = originalPost;
+  env.requestyApiKey = previous;
+});
+
+test('RequestyProvider converte 429 em erro genérico de rate limit', async () => {
+  const previous = env.requestyApiKey;
+  env.requestyApiKey = 'key';
+  const originalPost = axios.post;
+  axios.post = async () => {
+    const error = new Error('retry in 30 seconds');
+    error.response = {
+      status: 429,
+      data: { error: { message: 'Please retry in 30 seconds' } },
+      headers: { 'retry-after': '30' },
+    };
+    throw error;
+  };
+
+  const provider = new RequestyProvider();
+  await assert.rejects(() => provider.classifyEmail('teste'), (error) => error.name === 'AIRateLimitError');
+
+  axios.post = originalPost;
+  env.requestyApiKey = previous;
 });
 
 test('schema de compra manual rejeita controle de email/status', () => {
@@ -175,7 +222,7 @@ test('compra manual é criada pelo backend como confirmada e não email', async 
   const result = await CompraService.create(1, {
     compraHorario: new Date('2026-08-10T12:00:00Z'),
     compraClassificacao: 'PENDENTE',
-    items: [],
+    compraValor: 15,
   });
 
   assert.equal(result.compra.compra_email, false);
@@ -184,12 +231,265 @@ test('compra manual é criada pelo backend como confirmada e não email', async 
   prisma.$transaction = originalTransaction;
 });
 
+test('compra manual com compraValor válido funciona', async () => {
+  const originalTransaction = prisma.$transaction;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_forma_pagamento: {
+        findUnique: async () => null,
+      },
+      tb_categoria: {
+        count: async () => 0,
+      },
+      tb_compra: {
+        create: async ({ data }) => data,
+        findMany: async () => [],
+      },
+      tb_compra_item: {
+        createMany: async () => ({}),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+
+  const result = await CompraService.create(1, {
+    compraHorario: new Date('2026-08-10T12:00:00Z'),
+    compraClassificacao: 'PENDENTE',
+    compraValor: 42,
+  });
+
+  assert.equal(Number(result.compra.compra_valor), 42);
+  assert.equal(result.compra.compra_status, 'CONFIRMADA');
+
+  prisma.$transaction = originalTransaction;
+});
+
+test('compra manual apenas com items funciona', async () => {
+  const originalTransaction = prisma.$transaction;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_forma_pagamento: {
+        findUnique: async () => null,
+      },
+      tb_categoria: {
+        count: async ({ where }) => (where.categoria_id.in.length === 1 ? 1 : 2),
+      },
+      tb_compra: {
+        create: async ({ data }) => data,
+        findMany: async () => [],
+      },
+      tb_compra_item: {
+        createMany: async () => ({}),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+
+  const result = await CompraService.create(1, {
+    compraHorario: new Date('2026-08-10T12:00:00Z'),
+    compraClassificacao: 'PENDENTE',
+    items: [
+      { categoriaId: 1, nome: 'Item A', valor: 50 },
+      { categoriaId: 2, nome: 'Item B', valor: 30 },
+    ],
+  });
+
+  assert.equal(Number(result.compra.compra_valor), 80);
+  assert.equal(result.compra.compra_status, 'CONFIRMADA');
+
+  prisma.$transaction = originalTransaction;
+});
+
+test('compra manual sem valor e sem items falha', async () => {
+  const originalTransaction = prisma.$transaction;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_forma_pagamento: {
+        findUnique: async () => null,
+      },
+      tb_categoria: {
+        count: async () => 0,
+      },
+      tb_compra: {
+        create: async ({ data }) => data,
+        findMany: async () => [],
+      },
+      tb_compra_item: {
+        createMany: async () => ({}),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+
+  await assert.rejects(() => CompraService.create(1, {
+    compraHorario: new Date('2026-08-10T12:00:00Z'),
+    compraClassificacao: 'PENDENTE',
+  }));
+
+  prisma.$transaction = originalTransaction;
+});
+
+test('PUT de compra pendente com valor nulo pode alterar outros campos sem confirmar', async () => {
+  const originalFindFirst = prisma.tb_compra.findFirst;
+  const originalUpdate = prisma.tb_compra.update;
+  const originalTransaction = prisma.$transaction;
+
+  let current = {
+    compra_id: 50,
+    usuario_id: 1,
+    compra_status: 'AGUARDANDO_CONFIRMACAO',
+    compra_valor: null,
+    compra_horario: new Date('2026-08-10T12:00:00Z'),
+    compra_usuario_concorda: null,
+    compra_usuario_anotacao: null,
+    compra_classificacao: 'PENDENTE',
+    compra_email: true,
+    compra_fonte: null,
+    forma_pagamento_id: null,
+  };
+
+  prisma.tb_compra.findFirst = async () => current;
+  prisma.$transaction = async (cb) =>
+    cb({
+      tb_forma_pagamento: {
+        findUnique: async () => null,
+      },
+      tb_categoria: {
+        count: async () => 0,
+      },
+      tb_compra: {
+        findFirst: async () => current,
+        update: async ({ data }) => {
+          current = { ...current, ...data };
+          return current;
+        },
+        findMany: async () => [],
+        create: async () => current,
+      },
+      tb_compra_item: {
+        deleteMany: async () => ({}),
+        createMany: async () => ({}),
+      },
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    });
+  prisma.tb_compra.update = async ({ data }) => {
+    current = { ...current, ...data };
+    return current;
+  };
+
+  const result = await CompraService.update(1, 50, {
+    compraFonte: 'Nova fonte',
+  });
+
+  assert.equal(result.compra.compra_status, 'AGUARDANDO_CONFIRMACAO');
+  assert.equal(result.compra.compra_fonte, 'Nova fonte');
+  assert.equal(result.compra.compra_valor, null);
+
+  prisma.tb_compra.findFirst = originalFindFirst;
+  prisma.$transaction = originalTransaction;
+  prisma.tb_compra.update = originalUpdate;
+});
+
+test('compra confirmada não pode perder o valor no update', async () => {
+  const originalFindFirst = prisma.tb_compra.findFirst;
+  const originalUpdate = prisma.tb_compra.update;
+  const originalTransaction = prisma.$transaction;
+
+  let current = {
+    compra_id: 60,
+    usuario_id: 1,
+    compra_status: 'CONFIRMADA',
+    compra_valor: 100,
+    compra_horario: new Date('2026-08-10T12:00:00Z'),
+    compra_usuario_concorda: null,
+    compra_usuario_anotacao: null,
+    compra_classificacao: 'PENDENTE',
+    compra_email: false,
+    compra_fonte: 'Amazon',
+    forma_pagamento_id: null,
+  };
+  let draft = null;
+
+  prisma.tb_compra.findFirst = async () => current;
+  prisma.$transaction = async (cb) =>
+    (() => {
+      draft = { ...current };
+      return cb({
+      tb_forma_pagamento: {
+        findUnique: async () => null,
+      },
+      tb_categoria: {
+        count: async () => 0,
+      },
+      tb_compra: {
+        findFirst: async () => draft,
+        update: async ({ data }) => {
+          draft = { ...draft, ...data };
+          return draft;
+        },
+        findMany: async () => [],
+        create: async () => current,
+      },
+      tb_compra_item: {
+        deleteMany: async () => ({}),
+        createMany: async () => ({}),
+      },
+      tb_usuario: {
+        findFirst: async () => ({ usuario_meta_valor_compra: null }),
+      },
+      tb_metricas: {
+        findFirst: async () => null,
+        update: async () => ({}),
+        create: async () => ({}),
+      },
+    }).then((result) => {
+      current = draft;
+      return result;
+    });
+    })();
+
+  await assert.rejects(() => CompraService.update(1, 60, {
+    items: [],
+  }), { message: 'Compra confirmada deve possuir valor' });
+
+  assert.equal(current.compra_status, 'CONFIRMADA');
+  assert.equal(Number(current.compra_valor), 100);
+
+  prisma.tb_compra.findFirst = originalFindFirst;
+  prisma.$transaction = originalTransaction;
+});
+
 test('sync clara não chama IA e adquire lock', async () => {
   const originalFind = EmailService.findIntegrationByUserId;
   const originalToken = EmailService.getValidAccessToken;
   const originalList = EmailService.listMessages;
   const originalGet = EmailService.getMessage;
-  const originalClassify = GeminiProvider.prototype.classifyEmail;
+  const originalClassify = RequestyProvider.prototype.classifyEmail;
   const originalUpdateMany = prisma.tb_integracao.updateMany;
   const originalUpdate = prisma.tb_integracao.update;
   const originalCreate = prisma.tb_compra.create;
@@ -214,7 +514,7 @@ test('sync clara não chama IA e adquire lock', async () => {
     labelIds: [],
     internalDate: String(Date.parse('2026-08-10T12:00:00Z')),
   });
-  GeminiProvider.prototype.classifyEmail = async () => {
+  RequestyProvider.prototype.classifyEmail = async () => {
     classifyCalls += 1;
     return { classificacao: 'IGNORAR' };
   };
@@ -230,7 +530,7 @@ test('sync clara não chama IA e adquire lock', async () => {
   EmailService.getValidAccessToken = originalToken;
   EmailService.listMessages = originalList;
   EmailService.getMessage = originalGet;
-  GeminiProvider.prototype.classifyEmail = originalClassify;
+  RequestyProvider.prototype.classifyEmail = originalClassify;
   prisma.tb_integracao.updateMany = originalUpdateMany;
   prisma.tb_integracao.update = originalUpdate;
   prisma.tb_compra.create = originalCreate;
@@ -242,8 +542,8 @@ test('sync ambígua chama IA e falha não avança timestamp', async () => {
   const originalToken = EmailService.getValidAccessToken;
   const originalList = EmailService.listMessages;
   const originalGet = EmailService.getMessage;
-  const originalClassify = GeminiProvider.prototype.classifyEmail;
-  const originalSuggest = GeminiProvider.prototype.suggestCategory;
+  const originalClassify = RequestyProvider.prototype.classifyEmail;
+  const originalSuggest = RequestyProvider.prototype.suggestCategory;
   const originalUpdateMany = prisma.tb_integracao.updateMany;
   const originalUpdate = prisma.tb_integracao.update;
   const originalCreateCompra = prisma.tb_compra.create;
@@ -268,10 +568,10 @@ test('sync ambígua chama IA e falha não avança timestamp', async () => {
     labelIds: ['CATEGORY_PROMOTIONS'],
     internalDate: String(Date.parse('2026-08-10T12:00:00Z')),
   });
-  GeminiProvider.prototype.classifyEmail = async () => {
+  RequestyProvider.prototype.classifyEmail = async () => {
     throw new Error('IA indisponível');
   };
-  GeminiProvider.prototype.suggestCategory = async () => ({ categoryName: null });
+  RequestyProvider.prototype.suggestCategory = async () => ({ categoryName: null });
   prisma.tb_integracao.updateMany = async () => ({ count: 1 });
   prisma.tb_integracao.update = async ({ data }) => {
     updates.push(data);
@@ -288,11 +588,183 @@ test('sync ambígua chama IA e falha não avança timestamp', async () => {
   EmailService.getValidAccessToken = originalToken;
   EmailService.listMessages = originalList;
   EmailService.getMessage = originalGet;
-  GeminiProvider.prototype.classifyEmail = originalClassify;
-  GeminiProvider.prototype.suggestCategory = originalSuggest;
+  RequestyProvider.prototype.classifyEmail = originalClassify;
+  RequestyProvider.prototype.suggestCategory = originalSuggest;
   prisma.tb_integracao.updateMany = originalUpdateMany;
   prisma.tb_integracao.update = originalUpdate;
   prisma.tb_compra.create = originalCreateCompra;
+  prisma.tb_propaganda.create = originalCreateProp;
+});
+
+test('sync respeita limite máximo de mensagens por execução', async () => {
+  const originalEnvLimit = env.emailSyncMaxMessagesPerRun;
+  const originalFind = EmailService.findIntegrationByUserId;
+  const originalToken = EmailService.getValidAccessToken;
+  const originalList = EmailService.listMessages;
+  const originalGet = EmailService.getMessage;
+  const originalUpdateMany = prisma.tb_integracao.updateMany;
+  const originalUpdate = prisma.tb_integracao.update;
+  const originalCreate = prisma.tb_compra.create;
+  let createCalls = 0;
+
+  env.emailSyncMaxMessagesPerRun = 1;
+  EmailService.findIntegrationByUserId = async () => ({
+    integracao_id: 12,
+    usuario_id: 3,
+    integracao_email: 'user@example.com',
+    integracao_access_token: 'token',
+    integracao_refresh_token: 'refresh',
+    integracao_token_expira_em: new Date(Date.now() + 60_000),
+    integracao_ultima_sincronizacao_em: new Date('2026-08-01T09:00:00Z'),
+  });
+  EmailService.getValidAccessToken = async () => 'token';
+  EmailService.listMessages = async () => [{ id: 'm1' }, { id: 'm2' }];
+  EmailService.getMessage = async (accessToken, id) => ({
+    id,
+    subject: `Pedido confirmado ${id}`,
+    from: 'Loja <vendas@loja.com>',
+    snippet: 'Pagamento aprovado',
+    labelIds: [],
+    internalDate: String(Date.parse('2026-08-10T12:00:00Z')),
+  });
+  prisma.tb_integracao.updateMany = async () => ({ count: 1 });
+  prisma.tb_integracao.update = async () => ({});
+  prisma.tb_compra.create = async ({ data }) => {
+    createCalls += 1;
+    return data;
+  };
+
+  await assert.rejects(() => EmailSyncService.syncUser(3), /Limite de 1 mensagens por execução atingido/);
+  assert.equal(createCalls, 1);
+
+  env.emailSyncMaxMessagesPerRun = originalEnvLimit;
+  EmailService.findIntegrationByUserId = originalFind;
+  EmailService.getValidAccessToken = originalToken;
+  EmailService.listMessages = originalList;
+  EmailService.getMessage = originalGet;
+  prisma.tb_integracao.updateMany = originalUpdateMany;
+  prisma.tb_integracao.update = originalUpdate;
+  prisma.tb_compra.create = originalCreate;
+});
+
+test('rate limit do Gemini não gera sequência descontrolada de chamadas', async () => {
+  const originalFind = EmailService.findIntegrationByUserId;
+  const originalToken = EmailService.getValidAccessToken;
+  const originalList = EmailService.listMessages;
+  const originalGet = EmailService.getMessage;
+  const originalClassify = EmailClassificationEngine.classify;
+  const originalUpdateMany = prisma.tb_integracao.updateMany;
+  const originalUpdate = prisma.tb_integracao.update;
+  const originalPost = axios.post;
+  const originalRateLimitUntil = RequestyProvider.rateLimitedUntil;
+  let axiosCalls = 0;
+
+  RequestyProvider.rateLimitedUntil = 0;
+  EmailService.findIntegrationByUserId = async () => ({
+    integracao_id: 13,
+    usuario_id: 4,
+    integracao_email: 'user@example.com',
+    integracao_access_token: 'token',
+    integracao_refresh_token: 'refresh',
+    integracao_token_expira_em: new Date(Date.now() + 60_000),
+    integracao_ultima_sincronizacao_em: new Date('2026-08-01T09:00:00Z'),
+  });
+  EmailService.getValidAccessToken = async () => 'token';
+  EmailService.listMessages = async () => [{ id: 'm1' }];
+  EmailService.getMessage = async () => ({
+    id: 'm1',
+    subject: 'Atualização da conta',
+    from: 'Serviço <no-reply@service.com>',
+    snippet: 'Mensagem que não resolve sozinha',
+    labelIds: [],
+    internalDate: String(Date.parse('2026-08-10T12:00:00Z')),
+  });
+  EmailClassificationEngine.classify = () => ({ outcome: 'AMBIGUA' });
+  prisma.tb_integracao.updateMany = async () => ({ count: 1 });
+  prisma.tb_integracao.update = async () => ({});
+  axios.post = async () => {
+    axiosCalls += 1;
+    const error = new Error('Please retry in 60 seconds');
+    error.response = {
+      status: 429,
+      data: { message: 'Please retry in 60 seconds' },
+      headers: { 'retry-after': '60' },
+    };
+    throw error;
+  };
+
+  await assert.rejects(() => EmailSyncService.syncUser(4));
+  await assert.rejects(() => EmailSyncService.syncUser(4));
+  assert.equal(axiosCalls, 1);
+
+  RequestyProvider.rateLimitedUntil = originalRateLimitUntil;
+  EmailService.findIntegrationByUserId = originalFind;
+  EmailService.getValidAccessToken = originalToken;
+  EmailService.listMessages = originalList;
+  EmailService.getMessage = originalGet;
+  EmailClassificationEngine.classify = originalClassify;
+  prisma.tb_integracao.updateMany = originalUpdateMany;
+  prisma.tb_integracao.update = originalUpdate;
+  axios.post = originalPost;
+});
+
+test('falha de suggestCategory em propaganda clara não derruba o sync', async () => {
+  const originalFind = EmailService.findIntegrationByUserId;
+  const originalToken = EmailService.getValidAccessToken;
+  const originalList = EmailService.listMessages;
+  const originalGet = EmailService.getMessage;
+  const originalSuggest = RequestyProvider.prototype.suggestCategory;
+  const originalUpdateMany = prisma.tb_integracao.updateMany;
+  const originalUpdate = prisma.tb_integracao.update;
+  const originalCreateProp = prisma.tb_propaganda.create;
+  const updates = [];
+  let created = 0;
+
+  EmailService.findIntegrationByUserId = async () => ({
+    integracao_id: 14,
+    usuario_id: 5,
+    integracao_email: 'user@example.com',
+    integracao_access_token: 'token',
+    integracao_refresh_token: 'refresh',
+    integracao_token_expira_em: new Date(Date.now() + 60_000),
+    integracao_ultima_sincronizacao_em: new Date('2026-08-01T09:00:00Z'),
+  });
+  EmailService.getValidAccessToken = async () => 'token';
+  EmailService.listMessages = async () => [{ id: 'm1' }];
+  EmailService.getMessage = async () => ({
+    id: 'm1',
+    subject: 'Oferta imperdível com desconto',
+    from: 'Loja <promocoes@loja.com>',
+    snippet: 'Promoção e frete grátis',
+    labelIds: ['CATEGORY_PROMOTIONS'],
+    internalDate: String(Date.parse('2026-08-10T12:00:00Z')),
+  });
+  RequestyProvider.prototype.suggestCategory = async () => {
+    throw new Error('Falha temporária ao sugerir categoria');
+  };
+  prisma.tb_integracao.updateMany = async () => ({ count: 1 });
+  prisma.tb_integracao.update = async ({ data }) => {
+    updates.push(data);
+    return {};
+  };
+  prisma.tb_propaganda.create = async ({ data }) => {
+    created += 1;
+    return data;
+  };
+
+  const result = await EmailSyncService.syncUser(5);
+
+  assert.equal(result.created, 1);
+  assert.equal(created, 1);
+  assert.equal(updates.at(-1).integracao_sincronizacao_status, 'FINALIZADA');
+
+  EmailService.findIntegrationByUserId = originalFind;
+  EmailService.getValidAccessToken = originalToken;
+  EmailService.listMessages = originalList;
+  EmailService.getMessage = originalGet;
+  RequestyProvider.prototype.suggestCategory = originalSuggest;
+  prisma.tb_integracao.updateMany = originalUpdateMany;
+  prisma.tb_integracao.update = originalUpdate;
   prisma.tb_propaganda.create = originalCreateProp;
 });
 

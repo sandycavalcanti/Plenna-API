@@ -22,8 +22,11 @@ const port = Number(portRaw);
 // de trabalho realizada por uma única execução serverless.
 const emailSyncLookbackDaysRaw = process.env.EMAIL_SYNC_LOOKBACK_DAYS ?? "30";
 const emailSyncBatchSizeRaw = process.env.EMAIL_SYNC_BATCH_SIZE ?? "25";
+const emailSyncMaxMessagesPerRunRaw = process.env.EMAIL_SYNC_MAX_MESSAGES_PER_RUN ?? "25";
 const emailSyncMaxUsersPerRunRaw = process.env.EMAIL_SYNC_MAX_USERS_PER_RUN ?? "10";
+const requestyTimeoutMsRaw = process.env.REQUESTY_TIMEOUT_MS ?? "8000";
 const geminiTimeoutMsRaw = process.env.GEMINI_TIMEOUT_MS ?? "8000";
+const geminiRateLimitCooldownMsRaw = process.env.GEMINI_RATE_LIMIT_COOLDOWN_MS ?? "60000";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
@@ -67,11 +70,16 @@ export const env = {
   emailSyncEnabled: parseStrictBoolean("EMAIL_SYNC_ENABLED", emailSyncEnabledRaw),
   emailSyncLookbackDays: requirePositiveInteger("EMAIL_SYNC_LOOKBACK_DAYS", emailSyncLookbackDaysRaw),
   emailSyncBatchSize: requirePositiveInteger("EMAIL_SYNC_BATCH_SIZE", emailSyncBatchSizeRaw),
+  emailSyncMaxMessagesPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_MESSAGES_PER_RUN", emailSyncMaxMessagesPerRunRaw),
   emailSyncMaxUsersPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_USERS_PER_RUN", emailSyncMaxUsersPerRunRaw),
   cronSecret: process.env.CRON_SECRET ?? "",
+  requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
+  requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",
+  requestyTimeoutMs: requirePositiveInteger("REQUESTY_TIMEOUT_MS", requestyTimeoutMsRaw),
   // Gemini é opcional porque a classificação determinística continua disponível.
   // A ausência da chave só impede o fallback de IA em casos ambíguos.
   geminiApiKey: process.env.GEMINI_API_KEY ?? "",
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-1.5-flash",
   geminiTimeoutMs: requirePositiveInteger("GEMINI_TIMEOUT_MS", geminiTimeoutMsRaw),
+  geminiRateLimitCooldownMs: requirePositiveInteger("GEMINI_RATE_LIMIT_COOLDOWN_MS", geminiRateLimitCooldownMsRaw),
 };

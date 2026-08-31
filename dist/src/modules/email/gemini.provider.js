@@ -1,7 +1,10 @@
 import axios from 'axios';
 import { z } from 'zod';
 import { env } from '../../lib/env.js';
+import { AIRateLimitError } from './ai-provider.js';
 import { isClassificationLabel } from './classification.engine.js';
+export class GeminiRateLimitError extends AIRateLimitError {
+}
 const aiClassificationSchema = z.object({
     classificacao: z.enum(['COMPRA', 'PROPAGANDA', 'IGNORAR']),
     categoryName: z.string().nullable().optional(),
@@ -15,8 +18,35 @@ const aiCategorySchema = z.object({
     categoryName: z.string().nullable().optional(),
 });
 function extractText(data) {
-    const parts = data?.candidates?.[0]?.content?.parts ?? [];
-    return parts.map((part) => part.text ?? '').join('\n').trim();
+    const steps = data?.steps ?? [];
+    return steps
+        .flatMap((step) => step.content ?? [])
+        .filter((content) => content.type === 'text')
+        .map((content) => content.text ?? '')
+        .join('\n')
+        .trim();
+}
+function getRetryAfterMs(error) {
+    const retryAfterHeader = error?.response?.headers?.['retry-after'];
+    if (typeof retryAfterHeader === 'string') {
+        const seconds = Number(retryAfterHeader);
+        if (Number.isFinite(seconds) && seconds > 0) {
+            return Math.round(seconds * 1000);
+        }
+    }
+    const retryAfterMessage = String(error?.response?.data?.message ?? '');
+    const match = retryAfterMessage.match(/retry in\s+(\d+)\s*(ms|s|seconds)?/i);
+    if (match) {
+        const value = Number(match[1]);
+        const unit = (match[2] ?? 's').toLowerCase();
+        if (Number.isFinite(value) && value > 0) {
+            return unit === 'ms' ? value : value * 1000;
+        }
+    }
+    return env.geminiRateLimitCooldownMs;
+}
+function isRateLimited(error) {
+    return error?.response?.status === 429;
 }
 /**
  * Converte e valida a resposta textual produzida pelo modelo.
@@ -40,6 +70,11 @@ function parseJsonPayload(payload, schema) {
  * antes de ser utilizada pelo restante da aplicação.
  */
 export class GeminiProvider {
+    ensureAvailability() {
+        if (Date.now() < GeminiProvider.rateLimitedUntil) {
+            throw new GeminiRateLimitError('Gemini temporariamente indisponível por rate limit', GeminiProvider.rateLimitedUntil - Date.now());
+        }
+    }
     /**
      * Classifica uma mensagem que permaneceu ambígua após as regras locais.
      *
@@ -50,15 +85,32 @@ export class GeminiProvider {
         if (!env.geminiApiKey) {
             throw new Error('GEMINI_API_KEY ausente');
         }
-        const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.geminiModel}:generateContent?key=${env.geminiApiKey}`, {
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        }, { timeout: env.geminiTimeoutMs });
-        const text = extractText(response.data);
-        const parsed = parseJsonPayload(text, aiClassificationSchema);
-        if (!isClassificationLabel(parsed.classificacao)) {
-            throw new Error('Classificação de IA inválida');
+        this.ensureAvailability();
+        try {
+            const response = await axios.post('https://generativelanguage.googleapis.com/v1beta/interactions', {
+                model: env.geminiModel,
+                input: prompt,
+            }, {
+                timeout: env.geminiTimeoutMs,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': env.geminiApiKey,
+                },
+            });
+            const text = extractText(response.data);
+            const parsed = parseJsonPayload(text, aiClassificationSchema);
+            if (!isClassificationLabel(parsed.classificacao)) {
+                throw new Error('Classificação de IA inválida');
+            }
+            return parsed;
         }
-        return parsed;
+        catch (error) {
+            if (isRateLimited(error)) {
+                GeminiProvider.rateLimitedUntil = Date.now() + getRetryAfterMs(error);
+                throw new GeminiRateLimitError('Gemini respondeu 429', getRetryAfterMs(error));
+            }
+            throw error;
+        }
     }
     /**
      * Sugere uma categoria como fallback para propagandas.
@@ -70,10 +122,28 @@ export class GeminiProvider {
         if (!env.geminiApiKey) {
             throw new Error('GEMINI_API_KEY ausente');
         }
-        const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.geminiModel}:generateContent?key=${env.geminiApiKey}`, {
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        }, { timeout: env.geminiTimeoutMs });
-        const text = extractText(response.data);
-        return parseJsonPayload(text, aiCategorySchema);
+        this.ensureAvailability();
+        try {
+            const response = await axios.post('https://generativelanguage.googleapis.com/v1beta/interactions', {
+                model: env.geminiModel,
+                input: prompt,
+            }, {
+                timeout: env.geminiTimeoutMs,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': env.geminiApiKey,
+                },
+            });
+            const text = extractText(response.data);
+            return parseJsonPayload(text, aiCategorySchema);
+        }
+        catch (error) {
+            if (isRateLimited(error)) {
+                GeminiProvider.rateLimitedUntil = Date.now() + getRetryAfterMs(error);
+                throw new GeminiRateLimitError('Gemini respondeu 429', getRetryAfterMs(error));
+            }
+            throw error;
+        }
     }
 }
+GeminiProvider.rateLimitedUntil = 0;

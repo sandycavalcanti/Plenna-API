@@ -1,0 +1,144 @@
+import axios from 'axios';
+import { z } from 'zod';
+import { env } from '../../lib/env.js';
+import { AIRateLimitError } from './ai-provider.js';
+import { isClassificationLabel } from './classification.engine.js';
+const requestyClassificationSchema = z.object({
+    classificacao: z.enum(['COMPRA', 'PROPAGANDA', 'IGNORAR']),
+    categoryName: z.string().nullable().optional(),
+    purchase: z.object({
+        establishment: z.string().nullable().optional(),
+        amount: z.number().nullable().optional(),
+        paymentMethodName: z.string().nullable().optional(),
+    }).optional(),
+});
+const requestyCategorySchema = z.object({
+    categoryName: z.string().nullable().optional(),
+});
+function extractAssistantContent(data) {
+    const choices = data?.choices ?? [];
+    const content = choices[0]?.message?.content;
+    if (typeof content === 'string')
+        return content.trim();
+    if (Array.isArray(content)) {
+        return content
+            .map((part) => (part?.type === 'text' ? part.text ?? '' : ''))
+            .join('\n')
+            .trim();
+    }
+    return '';
+}
+function getRetryAfterMs(error) {
+    const retryAfterHeader = error?.response?.headers?.['retry-after'];
+    if (typeof retryAfterHeader === 'string') {
+        const seconds = Number(retryAfterHeader);
+        if (Number.isFinite(seconds) && seconds > 0) {
+            return Math.round(seconds * 1000);
+        }
+    }
+    const retryAfterMessage = String(error?.response?.data?.error?.message ?? error?.response?.data?.message ?? '');
+    const match = retryAfterMessage.match(/retry in\s+(\d+)\s*(ms|s|seconds)?/i);
+    if (match) {
+        const value = Number(match[1]);
+        const unit = (match[2] ?? 's').toLowerCase();
+        if (Number.isFinite(value) && value > 0) {
+            return unit === 'ms' ? value : value * 1000;
+        }
+    }
+    return env.geminiRateLimitCooldownMs;
+}
+function isRateLimited(error) {
+    return error?.response?.status === 429;
+}
+/**
+ * Converte e valida o conteúdo textual retornado pelo Requesty.
+ *
+ * A resposta do modelo continua sendo tratada como não confiável até passar
+ * pela validação Zod.
+ */
+function parseJsonPayload(payload, schema) {
+    const trimmed = payload
+        .replace(/```json\s*/gi, '')
+        .replace(/```\s*$/g, '')
+        .trim();
+    const parsed = JSON.parse(trimmed);
+    return schema.parse(parsed);
+}
+/**
+ * Provider de IA ativo para o fluxo de e-mail usando Requesty.
+ *
+ * O Requesty é consumido através da API compatível com Chat Completions,
+ * mantendo o restante da aplicação isolado da implementação concreta.
+ */
+export class RequestyProvider {
+    ensureAvailability() {
+        if (Date.now() < RequestyProvider.rateLimitedUntil) {
+            throw new AIRateLimitError('Requesty temporariamente indisponível por rate limit', RequestyProvider.rateLimitedUntil - Date.now());
+        }
+    }
+    async chatCompletion(prompt) {
+        this.ensureAvailability();
+        const response = await axios.post('https://router.requesty.ai/v1/chat/completions', {
+            model: env.requestyEmailModel,
+            messages: [
+                { role: 'system', content: 'Responda sempre em JSON estrito e sem texto adicional.' },
+                { role: 'user', content: prompt },
+            ],
+            temperature: 0,
+        }, {
+            timeout: env.requestyTimeoutMs,
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${env.requestyApiKey}`,
+            },
+        });
+        return extractAssistantContent(response.data);
+    }
+    /**
+     * Classifica uma mensagem ambígua usando o Requesty.
+     *
+     * Mensagens já claras continuam resolvidas pelas regras determinísticas.
+     */
+    async classifyEmail(prompt) {
+        if (!env.requestyApiKey) {
+            throw new Error('REQUESTY_API_KEY ausente');
+        }
+        try {
+            const text = await this.chatCompletion(prompt);
+            const parsed = parseJsonPayload(text, requestyClassificationSchema);
+            if (!isClassificationLabel(parsed.classificacao)) {
+                throw new Error('Classificação de IA inválida');
+            }
+            return parsed;
+        }
+        catch (error) {
+            if (isRateLimited(error)) {
+                const retryAfterMs = getRetryAfterMs(error);
+                RequestyProvider.rateLimitedUntil = Date.now() + retryAfterMs;
+                throw new AIRateLimitError('Requesty respondeu 429', retryAfterMs);
+            }
+            throw error;
+        }
+    }
+    /**
+     * Sugere uma categoria para propagandas já reconhecidas como tais.
+     */
+    async suggestCategory(prompt) {
+        if (!env.requestyApiKey) {
+            throw new Error('REQUESTY_API_KEY ausente');
+        }
+        try {
+            const text = await this.chatCompletion(prompt);
+            return parseJsonPayload(text, requestyCategorySchema);
+        }
+        catch (error) {
+            if (isRateLimited(error)) {
+                const retryAfterMs = getRetryAfterMs(error);
+                RequestyProvider.rateLimitedUntil = Date.now() + retryAfterMs;
+                throw new AIRateLimitError('Requesty respondeu 429', retryAfterMs);
+            }
+            throw error;
+        }
+    }
+}
+RequestyProvider.rateLimitedUntil = 0;

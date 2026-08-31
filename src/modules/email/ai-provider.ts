@@ -20,6 +20,21 @@ export interface AICategorySuggestionResult {
   categoryName?: string | null;
 }
 /**
+ * Erro genérico de rate limit usado pelo fluxo de e-mail.
+ *
+ * O serviço de sincronização só precisa saber que a IA está temporariamente
+ * indisponível e por quanto tempo deve evitar novas tentativas.
+ */
+export class AIRateLimitError extends Error {
+  retryAfterMs: number;
+
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.name = 'AIRateLimitError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+/**
  * Contrato comum para providers de inteligência artificial.
  *
  * O fluxo de sincronização depende desta interface, e não diretamente do

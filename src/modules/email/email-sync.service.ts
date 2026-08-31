@@ -6,7 +6,8 @@ import { EmailClassificationEngine } from './classification.engine.js';
 import { EmailService } from './email.service.js';
 import type { GmailMessageDetail, GmailMessageQueryResult } from './gmail.types.js';
 import { GeminiProvider } from './gemini.provider.js';
-import type { AIProvider } from './ai-provider.js';
+import { RequestyProvider } from './requesty.provider.js';
+import { AIRateLimitError, type AIProvider } from './ai-provider.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -88,7 +89,9 @@ async function createCompraFromMessage(
   if (!horario) {
     throw new Error('Data inválida no e-mail');
   }
-  const establishment = extracted.establishment ?? null;
+  const establishment = normalizeEstablishment(
+    extracted.establishment
+  );
   const amount = extracted.amount ?? null;
 
   try {
@@ -176,6 +179,21 @@ async function resolvePropagationCategory(aiProvider: AIProvider | null, message
   }
 }
 
+/**
+ * Normaliza o estabelecimento extraído do e-mail para o limite aceito
+ * pelo campo compra_fonte no banco.
+ */
+function normalizeEstablishment(value: string | null | undefined) {
+  if (!value) return null;
+
+  const normalized = value
+    .replace(/<[^>]+>/g, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
+
+  return normalized ? normalized.slice(0, 45) : null;
+}
+
 export class EmailSyncService {
   /**
    * Tenta adquirir atomicamente o lock lógico da integração.
@@ -240,12 +258,22 @@ export class EmailSyncService {
     try {
       const accessToken = await EmailService.getValidAccessToken(integration);
       const messages = await EmailService.listMessages(accessToken, query, env.emailSyncBatchSize);
-      const aiProvider: AIProvider | null = env.geminiApiKey ? new GeminiProvider() : null;
+      const aiProvider: AIProvider | null = env.requestyApiKey
+        ? new RequestyProvider()
+        : env.geminiApiKey
+          ? new GeminiProvider()
+          : null;
       const result: GmailMessageQueryResult = { processed: 0, created: 0, skipped: 0 };
       let shouldFailRun = false;
       let failureReason: string | null = null;
 
       for (const summary of messages) {
+        if (result.processed >= env.emailSyncMaxMessagesPerRun) {
+          shouldFailRun = true;
+          failureReason = `Limite de ${env.emailSyncMaxMessagesPerRun} mensagens por execução atingido`;
+          break;
+        }
+
         result.processed += 1;
         const detail = await EmailService.getMessage(accessToken, summary.id);
         const classification = EmailClassificationEngine.classify(detail);
@@ -299,6 +327,12 @@ export class EmailSyncService {
 
             continue;
           } catch (error) {
+            if (error instanceof AIRateLimitError) {
+              shouldFailRun = true;
+              failureReason = error.message;
+              break;
+            }
+
             shouldFailRun = true;
             failureReason = safeErrorMessage(error);
           }
@@ -320,6 +354,7 @@ export class EmailSyncService {
 
       return result;
     } catch (error) {
+      console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', safeErrorMessage(error));
       await prisma.tb_integracao.update({
         where: { integracao_id: integration.integracao_id },
         data: {
@@ -331,6 +366,7 @@ export class EmailSyncService {
     }
   }
 
+  
   static async syncAllUsers(): Promise<{ processedUsers: number; lockedUsers: number; failedUsers: number }> {
     if (!env.emailSyncEnabled) {
       return { processedUsers: 0, lockedUsers: 0, failedUsers: 0 };

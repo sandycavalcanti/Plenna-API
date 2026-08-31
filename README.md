@@ -183,6 +183,14 @@ Autenticação:
 
 `CRON_SECRET` é a variável usada pela Vercel para enviar o bearer token automaticamente.
 
+## Limites da sincronização
+
+- `EMAIL_SYNC_BATCH_SIZE` controla o tamanho da página consultada no Gmail;
+- `EMAIL_SYNC_MAX_MESSAGES_PER_RUN` limita quantas mensagens são processadas por execução;
+- `GEMINI_RATE_LIMIT_COOLDOWN_MS` continua documentado por compatibilidade com o provider legado;
+- `REQUESTY_TIMEOUT_MS` define o timeout do provider ativo de IA;
+- o provider ativo de IA para e-mail é o Requesty.
+
 ## Vercel Cron
 
 `vercel.json` agenda a rota a cada 3 horas.
@@ -203,11 +211,16 @@ Obrigatórias ou usadas pelo código atual:
 - `EMAIL_SYNC_ENABLED`
 - `EMAIL_SYNC_LOOKBACK_DAYS`
 - `EMAIL_SYNC_BATCH_SIZE`
+- `EMAIL_SYNC_MAX_MESSAGES_PER_RUN`
 - `EMAIL_SYNC_MAX_USERS_PER_RUN`
 - `CRON_SECRET`
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL`
 - `GEMINI_TIMEOUT_MS`
+- `GEMINI_RATE_LIMIT_COOLDOWN_MS`
+- `REQUESTY_API_KEY`
+- `REQUESTY_EMAIL_MODEL`
+- `REQUESTY_TIMEOUT_MS`
 
 ## Setup local
 
