@@ -4,15 +4,29 @@ import { env } from '../../lib/env.js';
 import { AIRateLimitError, type AIEmailClassificationResult, type AICategorySuggestionResult, type AIProvider } from './ai-provider.js';
 import { isClassificationLabel } from './classification.engine.js';
 
-const requestyClassificationSchema = z.object({
-  classificacao: z.enum(['COMPRA', 'PROPAGANDA', 'IGNORAR']),
-  categoryName: z.string().nullable().optional(),
-  purchase: z.object({
-    establishment: z.string().nullable().optional(),
-    amount: z.number().nullable().optional(),
-    paymentMethodName: z.string().nullable().optional(),
-  }).optional(),
+const requestyPurchaseSchema = z.object({
+  establishment: z.string().nullable().optional(),
+  amount: z.number().nullable().optional(),
+  paymentMethodName: z.string().nullable().optional(),
 });
+
+const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
+  z.object({
+    classificacao: z.literal('COMPRA'),
+    categoryName: z.string().nullable().optional(),
+    purchase: requestyPurchaseSchema,
+  }),
+  z.object({
+    classificacao: z.literal('PROPAGANDA'),
+    categoryName: z.string().nullable().optional(),
+    purchase: requestyPurchaseSchema.nullable().optional(),
+  }),
+  z.object({
+    classificacao: z.literal('IGNORAR'),
+    categoryName: z.string().nullable().optional(),
+    purchase: requestyPurchaseSchema.nullable().optional(),
+  }),
+]);
 
 const requestyCategorySchema = z.object({
   categoryName: z.string().nullable().optional(),
@@ -82,6 +96,21 @@ function parseJsonPayload<T>(payload: string, schema: z.ZodType<T>) {
   return schema.parse(parsed);
 }
 
+function buildClassificationInstructions() {
+  return [
+    'Não invente dados que não estejam explicitamente suportados pelo e-mail.',
+    'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
+    'Emails de status de pedido, envio, entrega, nota fiscal ou pagamento aprovado são COMPRA.',
+    'Preço, oferta, desconto ou linguagem promocional isolados não significam COMPRA.',
+    'Promoções de consumo como produto, serviço, ecommerce, promoção, desconto, cupom ou oferta comercial devem ser PROPAGANDA.',
+    'Conteúdo de vagas, recrutamento, carreira, processo seletivo, newsletter profissional ou comunicação institucional sem estímulo comercial deve ser IGNORAR.',
+    'purchase.amount só deve ser preenchido quando o valor estiver sustentado pelo conteúdo da mensagem.',
+    'purchase.establishment só deve ser preenchido quando o nome do estabelecimento aparecer de forma razoável no e-mail.',
+    'purchase.paymentMethodName só deve ser preenchido quando houver evidência textual explícita.',
+    'Quando não houver evidência suficiente, prefira null.',
+  ].join(' ');
+}
+
 /**
  * Provider de IA ativo para o fluxo de e-mail usando Requesty.
  *
@@ -109,7 +138,7 @@ export class RequestyProvider implements AIProvider {
         model: env.requestyEmailModel,
         messages: [
           { role: 'system', content: 'Responda sempre em JSON estrito e sem texto adicional.' },
-          { role: 'user', content: prompt },
+          { role: 'user', content: `${buildClassificationInstructions()}\n\n${prompt}` },
         ],
         temperature: 0,
       },

@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import { AppError } from '../../errors/AppError.js';
-import { EmailClassificationEngine } from './classification.engine.js';
+import { EmailClassificationEngine, buildClassificationHaystack, extractAmount, hasStrongPurchaseEvidence } from './classification.engine.js';
 import { EmailService } from './email.service.js';
 import type { GmailMessageDetail, GmailMessageQueryResult } from './gmail.types.js';
 import { GeminiProvider } from './gemini.provider.js';
@@ -28,7 +28,11 @@ type SyncUserResult =
  * Se a execução falhar, o marcador salvo no banco não avança e a mesma
  * janela pode ser processada novamente sem perda de mensagens.
  */
-export function buildGmailQuery(previousCursor: Date, startedAt: Date) {
+export function buildGmailQuery(previousCursor: Date | null, startedAt: Date) {
+  if (!previousCursor) {
+    return `before:${Math.floor(startedAt.getTime() / 1000)}`;
+  }
+
   return `after:${Math.floor(previousCursor.getTime() / 1000)} before:${Math.floor(startedAt.getTime() / 1000)}`;
 }
 /**
@@ -80,19 +84,105 @@ function truncatePromptText(value: string | null | undefined, limit = 1200) {
   return (value ?? '').slice(0, limit);
 }
 
+function buildEvidenceText(message: GmailMessageDetail) {
+  return buildClassificationHaystack(message);
+}
+
+function normalizeMoneyCandidates(amount: number) {
+  const fixed = amount.toFixed(2);
+  const ptBr = fixed.replace('.', ',');
+  const thousands = amount >= 1000 ? new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount) : null;
+  return new Set([fixed, ptBr, `R$ ${ptBr}`, `R$ ${fixed}`, thousands ? `R$ ${thousands}` : null].filter((value): value is string => Boolean(value)));
+}
+
+function aiAmountIsSupported(message: GmailMessageDetail, amount: number | null | undefined) {
+  if (amount === null || amount === undefined || !Number.isFinite(amount) || amount <= 0) return null;
+  const evidenceText = buildEvidenceText(message);
+  const moneyFromText = extractAmount(evidenceText);
+  if (moneyFromText === null) return null;
+
+  const candidates = normalizeMoneyCandidates(amount);
+  for (const candidate of candidates) {
+    if (evidenceText.includes(candidate.toLowerCase())) {
+      return amount;
+    }
+  }
+
+  const normalizedEvidenceAmount = Number(moneyFromText.toFixed(2));
+  if (Number.isFinite(normalizedEvidenceAmount) && Math.abs(normalizedEvidenceAmount - amount) < 0.01) {
+    return amount;
+  }
+
+  return null;
+}
+
+function aiEstablishmentIsSupported(message: GmailMessageDetail, establishment: string | null | undefined) {
+  if (!establishment) return null;
+
+  const normalizedEstablishment = normalizeEstablishment(establishment);
+  if (!normalizedEstablishment) return null;
+
+  const evidenceText = buildEvidenceText(message);
+  const tokens = normalizedEstablishment
+    .split(/\s+/)
+    .map((token) => token.trim().toLowerCase())
+    .filter((token) => token.length >= 3);
+
+  if (tokens.length === 0) return null;
+
+  const matches = tokens.filter((token) => evidenceText.includes(token)).length;
+  return matches > 0 ? normalizedEstablishment : null;
+}
+
+function sanitizeAiPurchase(message: GmailMessageDetail, purchase?: { amount?: number | null; establishment?: string | null } | null) {
+  const supportedAmount = aiAmountIsSupported(message, purchase?.amount ?? null);
+  const supportedEstablishment = aiEstablishmentIsSupported(message, purchase?.establishment ?? null);
+
+  if (supportedAmount === null && supportedEstablishment === null && !hasStrongPurchaseEvidence(message)) {
+    return null;
+  }
+
+  return {
+    amount: supportedAmount,
+    establishment: supportedEstablishment,
+  };
+}
+
+async function messageAlreadyPersisted(userId: number, messageId: string) {
+  const [purchase, promotion] = await Promise.all([
+    prisma.tb_compra.findFirst({
+      where: {
+        usuario_id: userId,
+        compra_email_mensagem_id: messageId,
+      },
+      select: { compra_id: true },
+    }),
+    prisma.tb_propaganda.findFirst({
+      where: {
+        usuario_id: userId,
+        propaganda_email_mensagem_id: messageId,
+      },
+      select: { propaganda_id: true },
+    }),
+  ]);
+
+  return Boolean(purchase || promotion);
+}
+
 async function createCompraFromMessage(
   userId: number,
   message: GmailMessageDetail,
-  extracted: { amount?: number | null; establishment?: string | null } = {}
+  extracted: { amount?: number | null; establishment?: string | null } | null = {}
 ) {
+  const resolved = extracted ?? {};
   const horario = parseDateFromMessage(message);
   if (!horario) {
     throw new Error('Data inválida no e-mail');
   }
   const establishment = normalizeEstablishment(
-    extracted.establishment
+    resolved.establishment
   );
-  const amount = extracted.amount ?? null;
+  const amount = resolved.amount ?? null;
 
   try {
     const compra = await prisma.tb_compra.create({
@@ -149,7 +239,10 @@ function buildEmailClassificationPrompt(message: GmailMessageDetail) {
     'Classifique a mensagem abaixo em JSON estrito.',
     'Campos permitidos: classificacao, categoryName, purchase.',
     'classificacao aceita COMPRA, PROPAGANDA ou IGNORAR.',
-    'Se houver dados seguros de compra, inclua purchase.amount, purchase.establishment e purchase.paymentMethodName.',
+    'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
+    'Preço, oferta, desconto ou linguagem promocional isolados não significam COMPRA.',
+    'Quando não houver evidência suficiente, prefira null.',
+    'Se houver dados seguros de compra, inclua purchase.amount, purchase.establishment e purchase.paymentMethodName apenas quando estiverem sustentados pelo conteúdo.',
     `subject: ${message.subject ?? ''}`,
     `from: ${message.from ?? ''}`,
     `snippet: ${message.snippet ?? ''}`,
@@ -251,13 +344,19 @@ export class EmailSyncService {
     }
 
     const startedAt = new Date();
-    const previousCursor = integration.integracao_ultima_sincronizacao_em
-      ?? new Date(Date.now() - env.emailSyncLookbackDays * 24 * 60 * 60 * 1000);
+    const previousCursor = integration.integracao_ultima_sincronizacao_em;
     const query = buildGmailQuery(previousCursor, startedAt);
+    const isBootstrap = previousCursor === null;
+    const executionLimit = isBootstrap ? env.emailSyncInitialMessages : env.emailSyncMaxMessagesPerRun;
 
     try {
       const accessToken = await EmailService.getValidAccessToken(integration);
-      const messages = await EmailService.listMessages(accessToken, query, env.emailSyncBatchSize);
+      const messages = await EmailService.listMessages(
+        accessToken,
+        query,
+        env.emailSyncBatchSize,
+        isBootstrap ? env.emailSyncInitialMessages : undefined
+      );
       const aiProvider: AIProvider | null = env.requestyApiKey
         ? new RequestyProvider()
         : env.geminiApiKey
@@ -268,10 +367,15 @@ export class EmailSyncService {
       let failureReason: string | null = null;
 
       for (const summary of messages) {
-        if (result.processed >= env.emailSyncMaxMessagesPerRun) {
+        if (result.processed >= executionLimit) {
           shouldFailRun = true;
-          failureReason = `Limite de ${env.emailSyncMaxMessagesPerRun} mensagens por execução atingido`;
+          failureReason = `Limite de ${executionLimit} mensagens por execução atingido`;
           break;
+        }
+
+        if (await messageAlreadyPersisted(userId, summary.id)) {
+          result.skipped += 1;
+          continue;
         }
 
         result.processed += 1;
@@ -308,7 +412,13 @@ export class EmailSyncService {
           try {
             const aiResult = await aiProvider.classifyEmail(buildEmailClassificationPrompt(detail));
             if (aiResult.classificacao === 'COMPRA') {
-              const purchaseResult = await createCompraFromMessage(userId, detail, aiResult.purchase);
+              const sanitizedPurchase = sanitizeAiPurchase(detail, aiResult.purchase);
+              if (!sanitizedPurchase) {
+                result.skipped += 1;
+                continue;
+              }
+
+              const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase);
               if ('created' in purchaseResult) result.created += 1;
               else result.skipped += 1;
               continue;

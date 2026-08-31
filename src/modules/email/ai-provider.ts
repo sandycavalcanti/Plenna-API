@@ -13,7 +13,7 @@ export interface AIEmailClassificationResult {
     establishment?: string | null;
     amount?: number | null;
     paymentMethodName?: string | null;
-  };
+  } | null;
 }
 
 export interface AICategorySuggestionResult {

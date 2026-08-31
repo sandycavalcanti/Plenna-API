@@ -20,7 +20,7 @@ const portRaw = process.env.PORT ?? "3000";
 const port = Number(portRaw);
 // Os limites da sincronização são configuráveis para controlar a quantidade
 // de trabalho realizada por uma única execução serverless.
-const emailSyncLookbackDaysRaw = process.env.EMAIL_SYNC_LOOKBACK_DAYS ?? "30";
+const emailSyncInitialMessagesRaw = process.env.EMAIL_SYNC_INITIAL_MESSAGES ?? "30";
 const emailSyncBatchSizeRaw = process.env.EMAIL_SYNC_BATCH_SIZE ?? "25";
 const emailSyncMaxMessagesPerRunRaw = process.env.EMAIL_SYNC_MAX_MESSAGES_PER_RUN ?? "25";
 const emailSyncMaxUsersPerRunRaw = process.env.EMAIL_SYNC_MAX_USERS_PER_RUN ?? "10";
@@ -68,7 +68,7 @@ export const env = {
   googleClientSecret: requireEnv("GOOGLE_CLIENT_SECRET"),
   googleRedirectUri: requireEnv("GOOGLE_REDIRECT_URI"),
   emailSyncEnabled: parseStrictBoolean("EMAIL_SYNC_ENABLED", emailSyncEnabledRaw),
-  emailSyncLookbackDays: requirePositiveInteger("EMAIL_SYNC_LOOKBACK_DAYS", emailSyncLookbackDaysRaw),
+  emailSyncInitialMessages: requirePositiveInteger("EMAIL_SYNC_INITIAL_MESSAGES", emailSyncInitialMessagesRaw),
   emailSyncBatchSize: requirePositiveInteger("EMAIL_SYNC_BATCH_SIZE", emailSyncBatchSizeRaw),
   emailSyncMaxMessagesPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_MESSAGES_PER_RUN", emailSyncMaxMessagesPerRunRaw),
   emailSyncMaxUsersPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_USERS_PER_RUN", emailSyncMaxUsersPerRunRaw),

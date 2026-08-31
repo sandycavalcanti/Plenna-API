@@ -7,8 +7,59 @@ export type DeterministicEmailClassification =
   | { outcome: 'IGNORAR'; clear: true; confidence: 'BAIXA' }
   | { outcome: 'AMBIGUA'; clear: false; confidence: 'BAIXA' | 'MEDIA' };
 
-const BUY_SIGNALS = ['pedido confirmado', 'pagamento aprovado', 'compra realizada', 'recebemos seu pedido', 'recibo', 'nota fiscal', 'nf-e', 'pedido #'];
-const PROMO_SIGNALS = ['oferta', 'desconto', 'promoção', 'cupom', 'frete grátis', 'marketing'];
+const STRONG_PURCHASE_SIGNALS = [
+  'pedido confirmado',
+  'seu pedido chegou',
+  'pedido chegou',
+  'pedido entregue',
+  'seu pedido foi entregue',
+  'pagamento aprovado',
+  'compra realizada',
+  'recebemos seu pedido',
+  'acompanhe seu pedido',
+  'recibo',
+  'nota fiscal',
+  'nf-e',
+  'pedido enviado',
+  'pedido despachado',
+  'pedido foi aprovado',
+  'confirmacao do pedido',
+];
+
+const PROMO_SIGNALS = [
+  'compre agora',
+  'oferta',
+  'desconto',
+  'promoção',
+  'cupom',
+  'frete grátis',
+  'cashback',
+  'últimas unidades',
+  'ultimas unidades',
+  'até',
+  'off',
+];
+
+const IRRELEVANT_CAREER_SIGNALS = [
+  'vaga',
+  'vagas',
+  'emprego',
+  'carreira',
+  'recrutamento',
+  'recruitment',
+  'processo seletivo',
+  'seleção',
+  'selecao',
+  'oportunidade profissional',
+  'oportunidade de carreira',
+  'newsletter de carreira',
+  'benefícios',
+  'beneficios',
+  'trabalhe conosco',
+  'hiring',
+  'job opening',
+];
+
 const MAX_CLASSIFICATION_TEXT_LENGTH = 1200;
 
 /**
@@ -21,7 +72,7 @@ function normalize(value: string | null | undefined) {
 /**
  * Concatena apenas os campos mínimos necessários para a classificação.
  */
-function buildHaystack(message: GmailMessageDetail) {
+export function buildClassificationHaystack(message: GmailMessageDetail) {
   return [message.subject, message.from, message.snippet, message.bodyText?.slice(0, MAX_CLASSIFICATION_TEXT_LENGTH)]
     .map(normalize)
     .join(' ');
@@ -33,11 +84,11 @@ function buildHaystack(message: GmailMessageDetail) {
  * Cada sinal também é normalizado antes da comparação para evitar falhas
  * causadas por acentos ou capitalização.
  */
-function scoreSignals(haystack: string, signals: string[]) {
+export function scoreSignals(haystack: string, signals: string[]) {
   return signals.reduce((score, signal) => score + (haystack.includes(normalize(signal)) ? 1 : 0), 0);
 }
 
-function extractAmount(haystack: string) {
+export function extractAmount(haystack: string) {
   const patterns = [
     /R\$\s?(\d{1,3}(?:\.\d{3})*,\d{2})/,
     /\b(\d{1,3}(?:\.\d{3})*,\d{2})\b/,
@@ -65,25 +116,60 @@ function hasPromotionLabel(labelIds: string[] | undefined) {
   return Boolean(labelIds?.includes('CATEGORY_PROMOTIONS'));
 }
 
+export function hasStrongPurchaseEvidence(message: GmailMessageDetail) {
+  const haystack = buildClassificationHaystack(message);
+  return scoreSignals(haystack, STRONG_PURCHASE_SIGNALS) > 0;
+}
+
+export function hasOrderStatusEvidence(message: GmailMessageDetail) {
+  const haystack = buildClassificationHaystack(message);
+  const hasPedido = haystack.includes(normalize('pedido'));
+  const hasStatus = [
+    'chegou',
+    'entregue',
+    'enviado',
+    'despachado',
+    'confirmado',
+    'recebemos seu pedido',
+    'acompanhe seu pedido',
+  ].some((signal) => haystack.includes(normalize(signal)));
+
+  return hasPedido && hasStatus;
+}
+
+export function hasPromotionalEvidence(message: GmailMessageDetail) {
+  const haystack = buildClassificationHaystack(message);
+  return scoreSignals(haystack, PROMO_SIGNALS) > 0 || hasPromotionLabel(message.labelIds);
+}
+
+export function hasCareerOrIrrelevantEvidence(message: GmailMessageDetail) {
+  const haystack = buildClassificationHaystack(message);
+  return scoreSignals(haystack, IRRELEVANT_CAREER_SIGNALS) > 0;
+}
+
 /**
  * Classificador determinístico usado como primeira camada do pipeline.
  */
 export class EmailClassificationEngine {
   static classify(message: GmailMessageDetail): DeterministicEmailClassification {
-    const haystack = buildHaystack(message);
-    const buyScore = scoreSignals(haystack, BUY_SIGNALS);
+    const haystack = buildClassificationHaystack(message);
+    const purchaseScore = scoreSignals(haystack, STRONG_PURCHASE_SIGNALS);
     const promoScore = scoreSignals(haystack, PROMO_SIGNALS);
+    const irrelevantScore = scoreSignals(haystack, IRRELEVANT_CAREER_SIGNALS);
     const hasPromoLabel = hasPromotionLabel(message.labelIds);
+    const hasStrongPurchase = purchaseScore > 0;
+    const hasOrderStatus = hasOrderStatusEvidence(message);
+    const hasPromoSignals = promoScore > 0;
 
-    if (buyScore > 0 && promoScore > 0) {
-      return { outcome: 'AMBIGUA', clear: false, confidence: 'MEDIA' };
+    if (irrelevantScore > 0) {
+      return { outcome: 'IGNORAR', clear: true, confidence: 'BAIXA' };
     }
 
-    if (buyScore >= 2 || (buyScore >= 1 && hasMoney(haystack) && promoScore === 0)) {
+    if (hasStrongPurchase || hasOrderStatus) {
       return {
         outcome: 'COMPRA',
         clear: true,
-        confidence: buyScore >= 2 ? 'ALTA' : 'MEDIA',
+        confidence: purchaseScore >= 2 || hasOrderStatus ? 'ALTA' : 'MEDIA',
         purchase: {
           establishment: message.from ?? null,
           amount: extractAmount(haystack),
@@ -92,7 +178,7 @@ export class EmailClassificationEngine {
       };
     }
 
-    if (promoScore >= 2 || (promoScore >= 1 && hasPromoLabel && buyScore === 0)) {
+    if (hasPromoSignals) {
       return {
         outcome: 'PROPAGANDA',
         clear: true,
@@ -101,11 +187,11 @@ export class EmailClassificationEngine {
       };
     }
 
-    if (hasPromoLabel && buyScore === 0 && promoScore === 0) {
-      return { outcome: 'AMBIGUA', clear: false, confidence: 'BAIXA' };
+    if (hasPromoLabel) {
+      return { outcome: 'AMBIGUA', clear: false, confidence: 'MEDIA' };
     }
 
-    if (buyScore > 0 || promoScore > 0) {
+    if (hasMoney(haystack)) {
       return { outcome: 'AMBIGUA', clear: false, confidence: 'MEDIA' };
     }
 

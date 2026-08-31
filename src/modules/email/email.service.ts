@@ -180,7 +180,12 @@ export class EmailService {
     return refreshed.integracao_access_token;
   }
 
-  static async listMessages(accessToken: string, query: string, maxResults = 25): Promise<GmailMessageSummary[]> {
+  static async listMessages(
+    accessToken: string,
+    query: string,
+    maxResults = 25,
+    maxTotal?: number
+  ): Promise<GmailMessageSummary[]> {
     const messages: GmailMessageSummary[] = [];
     let pageToken: string | undefined;
 
@@ -192,6 +197,9 @@ export class EmailService {
       const parsed = gmailListResponseSchema.parse(response.data);
       for (const message of parsed.messages ?? []) {
         messages.push({ id: message.id, threadId: message.threadId, labelIds: [] });
+        if (maxTotal !== undefined && messages.length >= maxTotal) {
+          return messages;
+        }
       }
       pageToken = parsed.nextPageToken;
     } while (pageToken);

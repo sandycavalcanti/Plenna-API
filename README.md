@@ -86,7 +86,7 @@ A sincronização usa `tb_integracao` como lock lógico:
 
 ### Primeira sync
 
-O primeiro sync usa lookback configurável por `EMAIL_SYNC_LOOKBACK_DAYS`.
+O primeiro sync analisa somente `EMAIL_SYNC_INITIAL_MESSAGES` mensagens mais recentes.
 
 ### Sync incremental
 
@@ -185,8 +185,9 @@ Autenticação:
 
 ## Limites da sincronização
 
+- `EMAIL_SYNC_INITIAL_MESSAGES` controla o limite do bootstrap inicial;
 - `EMAIL_SYNC_BATCH_SIZE` controla o tamanho da página consultada no Gmail;
-- `EMAIL_SYNC_MAX_MESSAGES_PER_RUN` limita quantas mensagens são processadas por execução;
+- `EMAIL_SYNC_MAX_MESSAGES_PER_RUN` limita quantas mensagens novas são processadas por execução incremental;
 - `GEMINI_RATE_LIMIT_COOLDOWN_MS` continua documentado por compatibilidade com o provider legado;
 - `REQUESTY_TIMEOUT_MS` define o timeout do provider ativo de IA;
 - o provider ativo de IA para e-mail é o Requesty.
@@ -209,7 +210,7 @@ Obrigatórias ou usadas pelo código atual:
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URI`
 - `EMAIL_SYNC_ENABLED`
-- `EMAIL_SYNC_LOOKBACK_DAYS`
+- `EMAIL_SYNC_INITIAL_MESSAGES`
 - `EMAIL_SYNC_BATCH_SIZE`
 - `EMAIL_SYNC_MAX_MESSAGES_PER_RUN`
 - `EMAIL_SYNC_MAX_USERS_PER_RUN`
