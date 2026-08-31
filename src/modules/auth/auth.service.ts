@@ -25,22 +25,43 @@ export class AuthService {
 
     const hash = await bcrypt.hash(data.senha, 10);
     
-    const user = await prisma.tb_usuario.create({
-      data: {
-        usuario_email: data.email,
-        usuario_senha: hash,
-        usuario_nome: data.nome,
-      },
+    const tipos = await ConsentimentoService.findTipos();
+    const tipoTermos = tipos.find((tipo) =>
+      tipo.consentimento_tipo_nome.toLowerCase().includes('termo'),
+    );
+
+    if (!tipoTermos) throw new AppError('Tipo de consentimento dos termos não encontrado', 500);
+
+    return prisma.$transaction(async (tx) => {
+      const user = await tx.tb_usuario.create({
+        data: {
+          usuario_email: data.email,
+          usuario_senha: hash,
+          usuario_nome: data.nome,
+        },
+      });
+
+      await tx.tb_consentimento.create({
+        data: {
+          usuario_id: user.usuario_id,
+          consentimento_tipo_id: tipoTermos.consentimento_tipo_id,
+          consentimento_status: true,
+          consentimento_data_criacao: new Date(),
+        },
+      });
+
+      return user;
     });
-
-    const usuario_id = user.usuario_id;
-
-    return user;
   }
 
   static async login(email: string, password: string) {
     const user = await prisma.tb_usuario.findUnique({
       where: { usuario_email: email },
+      include: {
+        _count: {
+          select: { tb_preferencia: true },
+        },
+      },
     });
 
     if (!user) throw new AppError("Credenciais inválidas", 401);
@@ -52,7 +73,10 @@ export class AuthService {
       expiresIn: "7d",
     });
 
-    return { token };
+    const onboardingCompleto =
+      Number(user.usuario_meta_valor_mensal) > 0 && user._count.tb_preferencia > 0;
+
+    return { token, onboardingCompleto };
   }
 
   // Passo 1 da tela de recuperação: gera e envia o código por e-mail.
