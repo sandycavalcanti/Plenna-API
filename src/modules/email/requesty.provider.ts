@@ -1,7 +1,14 @@
 import axios from 'axios';
 import { z } from 'zod';
 import { env } from '../../lib/env.js';
-import { AIRateLimitError, type AIEmailClassificationResult, type AICategorySuggestionResult, type AIProvider } from './ai-provider.js';
+import {
+  AIRateLimitError,
+  type AIEmailClassificationResult,
+  type AICategorySuggestionResult,
+  type AIProvider,
+  type AIPurchaseExtractionProvider,
+  type AIExtractedPurchase,
+} from './ai-provider.js';
 import { isClassificationLabel } from './classification.engine.js';
 
 const requestyPurchaseSchema = z.object({
@@ -31,6 +38,22 @@ const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
 const requestyCategorySchema = z.object({
   categoryName: z.string().nullable().optional(),
 });
+
+const requestyExtractedPurchaseItemSchema = z.object({
+  name: z.string().max(160).nullable().default(null),
+  quantity: z.number().finite().positive().nullable().default(null),
+  unitPrice: z.number().finite().positive().nullable().default(null),
+  totalPrice: z.number().finite().positive().nullable().default(null),
+  categoryName: z.string().max(80).nullable().default(null),
+}).strict();
+
+export const requestyPurchaseExtractionSchema = z.object({
+  establishment: z.string().max(120).nullable().default(null),
+  orderNumber: z.string().max(80).nullable().default(null),
+  totalAmount: z.number().finite().positive().nullable().default(null),
+  paymentMethodName: z.string().max(80).nullable().default(null),
+  items: z.array(requestyExtractedPurchaseItemSchema).max(100).default([]),
+}).strict();
 
 function extractAssistantContent(data: unknown) {
   const choices = (
@@ -111,13 +134,28 @@ function buildClassificationInstructions() {
   ].join(' ');
 }
 
+function buildPurchaseExtractionInstructions() {
+  return [
+    'Voce esta EXTRAINDO informacoes existentes no e-mail; o e-mail ja foi classificado como COMPRA.',
+    'Nao classifique o e-mail e nao use conhecimento externo.',
+    'Nao invente, nao estime e nao calcule valores ausentes. Quando nao houver evidencia, retorne null.',
+    'Para totalAmount, priorize voce pagou, total pago, valor pago, total da compra, total do pedido e valor total.',
+    'Nao confunda totalAmount com preco de produto, subtotal, frete, desconto, economia, parcela, cashback ou cupom.',
+    'Extraia orderNumber somente com evidencia textual de pedido e nao confunda CNPJ, CPF, rastreio ou chave NF-e.',
+    'Retorne somente paymentMethodName textual quando a forma estiver explicitamente presente, sem ID de banco.',
+    'Extraia itens somente quando nome, quantidade ou precos estiverem explicitamente presentes.',
+    'categoryName deve ser null quando nao houver categoria explicitamente indicada no e-mail.',
+    'Responda em JSON estrito com establishment, orderNumber, totalAmount, paymentMethodName e items.',
+  ].join(' ');
+}
+
 /**
  * Provider de IA ativo para o fluxo de e-mail usando Requesty.
  *
  * O Requesty é consumido através da API compatível com Chat Completions,
  * mantendo o restante da aplicação isolado da implementação concreta.
  */
-export class RequestyProvider implements AIProvider {
+export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvider {
   private static rateLimitedUntil = 0;
 
   private ensureAvailability() {
@@ -129,7 +167,7 @@ export class RequestyProvider implements AIProvider {
     }
   }
 
-  private async chatCompletion(prompt: string) {
+  private async chatCompletion(prompt: string, instructions = buildClassificationInstructions()) {
     this.ensureAvailability();
 
     const response = await axios.post(
@@ -138,7 +176,7 @@ export class RequestyProvider implements AIProvider {
         model: env.requestyEmailModel,
         messages: [
           { role: 'system', content: 'Responda sempre em JSON estrito e sem texto adicional.' },
-          { role: 'user', content: `${buildClassificationInstructions()}\n\n${prompt}` },
+          { role: 'user', content: `${instructions}\n\n${prompt}` },
         ],
         temperature: 0,
       },
@@ -173,6 +211,26 @@ export class RequestyProvider implements AIProvider {
       }
 
       return parsed;
+    } catch (error: any) {
+      if (isRateLimited(error)) {
+        const retryAfterMs = getRetryAfterMs(error);
+        RequestyProvider.rateLimitedUntil = Date.now() + retryAfterMs;
+        throw new AIRateLimitError('Requesty respondeu 429', retryAfterMs);
+      }
+
+      throw error;
+    }
+  }
+
+  /** Extrai lacunas de uma compra sem misturar essa responsabilidade com classificacao. */
+  async extractPurchase(prompt: string): Promise<AIExtractedPurchase> {
+    if (!env.requestyApiKey) {
+      throw new Error('REQUESTY_API_KEY ausente');
+    }
+
+    try {
+      const text = await this.chatCompletion(prompt, buildPurchaseExtractionInstructions());
+      return parseJsonPayload(text, requestyPurchaseExtractionSchema);
     } catch (error: any) {
       if (isRateLimited(error)) {
         const retryAfterMs = getRetryAfterMs(error);

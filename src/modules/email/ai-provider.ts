@@ -19,6 +19,28 @@ export interface AIEmailClassificationResult {
 export interface AICategorySuggestionResult {
   categoryName?: string | null;
 }
+
+export interface AIExtractedPurchaseItem {
+  name: string | null;
+  quantity: number | null;
+  unitPrice: number | null;
+  totalPrice: number | null;
+  categoryName: string | null;
+}
+
+/** Contrato de extracao da IA, sem IDs ou campos de persistencia. */
+export interface AIExtractedPurchase {
+  establishment: string | null;
+  orderNumber: string | null;
+  totalAmount: number | null;
+  paymentMethodName: string | null;
+  items: AIExtractedPurchaseItem[];
+}
+
+/** Capacidade opcional de enriquecimento, separada da classificacao do email. */
+export interface AIPurchaseExtractionProvider {
+  extractPurchase(prompt: string): Promise<AIExtractedPurchase>;
+}
 /**
  * Erro genérico de rate limit usado pelo fluxo de e-mail.
  *
