@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import type { GmailIntegration, GmailMessageDetail, GmailMessageSummary } from './gmail.types.js';
+import type { NormalizedEmail } from './email-contracts.js';
+import { normalizeGmailMessage } from './gmail.normalizer.js';
 
 const googleTokenResponseSchema = z.object({
   access_token: z.string(),
@@ -28,26 +30,6 @@ const gmailMessageResponseSchema = z.object({
 });
 
 const userInfoSchema = z.object({ email: z.string().email() });
-
-function decodeBase64Url(value: string) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-  return Buffer.from(padded, 'base64').toString('utf8');
-}
-
-function findTextPlain(payload: unknown): string | null {
-  if (!payload || typeof payload !== 'object') return null;
-  const node = payload as { mimeType?: string; body?: { data?: string }; parts?: unknown[] };
-  if (node.mimeType === 'text/plain' && node.body?.data) {
-    return decodeBase64Url(node.body.data);
-  }
-  for (const part of node.parts ?? []) {
-    const found = findTextPlain(part);
-    if (found) return found;
-  }
-  if (node.body?.data) return decodeBase64Url(node.body.data);
-  return null;
-}
 
 /**
  * Centraliza acesso ao Google/Gmail e validação das respostas externas.
@@ -207,18 +189,28 @@ export class EmailService {
     return messages;
   }
 
-  static async getMessage(accessToken: string, messageId: string): Promise<GmailMessageDetail> {
+  private static async fetchMessage(accessToken: string, messageId: string) {
     const response = await axios.get(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       params: { format: 'full' },
     });
 
-    const parsed = gmailMessageResponseSchema.parse(response.data);
+    return gmailMessageResponseSchema.parse(response.data);
+  }
+
+  static async getNormalizedMessage(accessToken: string, messageId: string): Promise<NormalizedEmail> {
+    const parsed = await this.fetchMessage(accessToken, messageId);
+    return normalizeGmailMessage(parsed);
+  }
+
+  static async getMessage(accessToken: string, messageId: string): Promise<GmailMessageDetail> {
+    const parsed = await this.fetchMessage(accessToken, messageId);
     const payload = parsed.payload ?? {};
     const headers = Array.isArray((payload as { headers?: Array<{ name?: string; value?: string }> }).headers)
       ? ((payload as { headers?: Array<{ name?: string; value?: string }> }).headers ?? [])
       : [];
     const findHeader = (name: string) => headers.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value ?? null;
+    const normalized = normalizeGmailMessage(parsed);
 
     return {
       id: parsed.id,
@@ -230,7 +222,11 @@ export class EmailService {
       to: findHeader('To'),
       subject: findHeader('Subject'),
       date: findHeader('Date'),
-      bodyText: findTextPlain(payload),
+      bodyText: normalized.textBody,
+      textBody: normalized.textBody,
+      htmlBody: normalized.htmlBody,
+      links: normalized.links,
+      attachments: normalized.attachments,
     };
   }
 }

@@ -1,3 +1,5 @@
+import type { EmailAttachmentMetadata, EmailLink } from './email-contracts.js';
+
 /**
  * Tipos internos utilizados para representar apenas os dados do Gmail
  * necessários à integração.
@@ -19,6 +21,10 @@ export type GmailMessageDetail = GmailMessageSummary & {
   subject?: string | null;
   date?: string | null;
   bodyText?: string | null;
+  textBody?: string | null;
+  htmlBody?: string | null;
+  links?: EmailLink[];
+  attachments?: EmailAttachmentMetadata[];
 };
 
 export type GmailIntegration = {
