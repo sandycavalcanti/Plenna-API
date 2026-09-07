@@ -12,6 +12,7 @@ import type { ExtractedPurchase, NormalizedEmail } from './email-contracts.js';
 import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
+import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -231,11 +232,20 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
   if (!match) return null;
 
   const update = buildPurchaseUpdate(match.purchase, extracted, paymentMethodId);
-  if (Object.keys(update).length === 0) return { reconciled: match.purchase };
+  const candidateItems = await buildPersistedPurchaseItems(extracted.items, prisma);
+  const itemsToPersist = shouldPersistPurchaseItems(match.purchase.tb_compra_item.length, candidateItems)
+    ? candidateItems
+    : [];
+  if (Object.keys(update).length === 0 && itemsToPersist.length === 0) return { reconciled: match.purchase };
 
-  const updated = await prisma.tb_compra.update({
-    where: { compra_id: match.purchase.compra_id },
-    data: update,
+  const updated = await prisma.$transaction(async (tx) => {
+    const purchase = Object.keys(update).length > 0
+      ? await tx.tb_compra.update({ where: { compra_id: match.purchase.compra_id }, data: update })
+      : match.purchase;
+    if (itemsToPersist.length > 0) {
+      await persistPurchaseItems(match.purchase.compra_id, itemsToPersist, tx);
+    }
+    return purchase;
   });
   return { reconciled: updated };
 }
@@ -255,9 +265,10 @@ async function createCompraFromMessage(
   const paymentMethod = extracted.paymentMethod.rawName
     ? await PaymentMethodResolver.resolve(extracted.paymentMethod.rawName)
     : null;
-
   const existing = await resolveExistingPurchase(userId, message, extracted, paymentMethod?.id ?? null);
   if (existing) return existing;
+
+  const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
 
   try {
     const compra = await prisma.tb_compra.create({
@@ -273,6 +284,7 @@ async function createCompraFromMessage(
         compra_email_mensagem_id: message.id,
         compra_pedido_externo_id: extracted.orderNumber,
         compra_status: 'AGUARDANDO_CONFIRMACAO',
+        ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
       },
     });
     return { created: compra };
