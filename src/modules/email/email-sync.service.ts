@@ -8,6 +8,10 @@ import type { GmailMessageDetail, GmailMessageQueryResult } from './gmail.types.
 import { GeminiProvider } from './gemini.provider.js';
 import { RequestyProvider } from './requesty.provider.js';
 import { AIRateLimitError, type AIProvider } from './ai-provider.js';
+import type { ExtractedPurchase, NormalizedEmail } from './email-contracts.js';
+import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
+import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
+import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -148,7 +152,7 @@ function sanitizeAiPurchase(message: GmailMessageDetail, purchase?: { amount?: n
   };
 }
 
-async function messageAlreadyPersisted(userId: number, messageId: string) {
+export async function messageAlreadyPersisted(userId: number, messageId: string) {
   const [purchase, promotion] = await Promise.all([
     prisma.tb_compra.findFirst({
       where: {
@@ -169,26 +173,97 @@ async function messageAlreadyPersisted(userId: number, messageId: string) {
   return Boolean(purchase || promotion);
 }
 
+function toNormalizedEmail(message: GmailMessageDetail): NormalizedEmail {
+  return {
+    id: message.id,
+    threadId: message.threadId ?? null,
+    subject: message.subject ?? null,
+    from: message.from ?? null,
+    to: message.to ?? null,
+    snippet: message.snippet ?? null,
+    internalDate: message.internalDate ?? null,
+    labelIds: message.labelIds ?? [],
+    textBody: message.textBody ?? message.bodyText ?? null,
+    htmlBody: message.htmlBody ?? null,
+    links: message.links ?? [],
+    attachments: message.attachments ?? [],
+  };
+}
+
+function buildExtractedPurchase(message: GmailMessageDetail, supplemental?: { amount?: number | null; establishment?: string | null; paymentMethodName?: string | null } | null): ExtractedPurchase {
+  const deterministic = EmailPurchaseExtractor.extract(toNormalizedEmail(message));
+  return {
+    ...deterministic,
+    establishment: deterministic.establishment ?? supplemental?.establishment ?? null,
+    totalAmount: deterministic.totalAmount ?? supplemental?.amount ?? null,
+    paymentMethod: {
+      rawName: deterministic.paymentMethod.rawName ?? supplemental?.paymentMethodName ?? null,
+    },
+  };
+}
+
+async function resolveExistingPurchase(userId: number, message: GmailMessageDetail, extracted: ExtractedPurchase, paymentMethodId: number | null) {
+  const messageDate = parseDateFromMessage(message);
+  if (!messageDate || !extracted.establishment || (extracted.orderNumber === null && extracted.totalAmount === null)) return null;
+
+  const candidates = await prisma.tb_compra.findMany({
+    where: { usuario_id: userId },
+    select: {
+      compra_id: true,
+      usuario_id: true,
+      compra_fonte: true,
+      compra_pedido_externo_id: true,
+      compra_valor: true,
+      forma_pagamento_id: true,
+      compra_email_mensagem_id: true,
+      compra_horario: true,
+      tb_compra_item: {
+        select: {
+          compra_item_nome: true,
+          compra_item_quantidade: true,
+          compra_item_valor: true,
+        },
+      },
+    },
+  });
+
+  const match = findReconciliationMatch(candidates as ReconciliationPurchase[], userId, extracted, messageDate, env.emailPurchaseReconciliationWindowHours);
+  if (!match) return null;
+
+  const update = buildPurchaseUpdate(match.purchase, extracted, paymentMethodId);
+  if (Object.keys(update).length === 0) return { reconciled: match.purchase };
+
+  const updated = await prisma.tb_compra.update({
+    where: { compra_id: match.purchase.compra_id },
+    data: update,
+  });
+  return { reconciled: updated };
+}
+
 async function createCompraFromMessage(
   userId: number,
   message: GmailMessageDetail,
-  extracted: { amount?: number | null; establishment?: string | null } | null = {}
+  supplemental: { amount?: number | null; establishment?: string | null; paymentMethodName?: string | null } | null = {}
 ) {
-  const resolved = extracted ?? {};
+  const extracted = buildExtractedPurchase(message, supplemental);
   const horario = parseDateFromMessage(message);
   if (!horario) {
     throw new Error('Data inválida no e-mail');
   }
-  const establishment = normalizeEstablishment(
-    resolved.establishment
-  );
-  const amount = resolved.amount ?? null;
+  const establishment = normalizeEstablishment(extracted.establishment);
+  const amount = extracted.totalAmount;
+  const paymentMethod = extracted.paymentMethod.rawName
+    ? await PaymentMethodResolver.resolve(extracted.paymentMethod.rawName)
+    : null;
+
+  const existing = await resolveExistingPurchase(userId, message, extracted, paymentMethod?.id ?? null);
+  if (existing) return existing;
 
   try {
     const compra = await prisma.tb_compra.create({
       data: {
         usuario_id: userId,
-        forma_pagamento_id: null,
+        forma_pagamento_id: paymentMethod?.id ?? null,
         compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
         compra_horario: horario,
         compra_fonte: establishment,
@@ -196,6 +271,7 @@ async function createCompraFromMessage(
         compra_classificacao: 'PENDENTE',
         compra_acima_limite: null,
         compra_email_mensagem_id: message.id,
+        compra_pedido_externo_id: extracted.orderNumber,
         compra_status: 'AGUARDANDO_CONFIRMACAO',
       },
     });

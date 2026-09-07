@@ -24,6 +24,7 @@ const emailSyncInitialMessagesRaw = process.env.EMAIL_SYNC_INITIAL_MESSAGES ?? "
 const emailSyncBatchSizeRaw = process.env.EMAIL_SYNC_BATCH_SIZE ?? "25";
 const emailSyncMaxMessagesPerRunRaw = process.env.EMAIL_SYNC_MAX_MESSAGES_PER_RUN ?? "25";
 const emailSyncMaxUsersPerRunRaw = process.env.EMAIL_SYNC_MAX_USERS_PER_RUN ?? "10";
+const emailPurchaseReconciliationWindowHoursRaw = process.env.EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS ?? "48";
 const requestyTimeoutMsRaw = process.env.REQUESTY_TIMEOUT_MS ?? "8000";
 const geminiTimeoutMsRaw = process.env.GEMINI_TIMEOUT_MS ?? "8000";
 const geminiRateLimitCooldownMsRaw = process.env.GEMINI_RATE_LIMIT_COOLDOWN_MS ?? "60000";
@@ -72,6 +73,7 @@ export const env = {
   emailSyncBatchSize: requirePositiveInteger("EMAIL_SYNC_BATCH_SIZE", emailSyncBatchSizeRaw),
   emailSyncMaxMessagesPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_MESSAGES_PER_RUN", emailSyncMaxMessagesPerRunRaw),
   emailSyncMaxUsersPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_USERS_PER_RUN", emailSyncMaxUsersPerRunRaw),
+  emailPurchaseReconciliationWindowHours: requirePositiveInteger("EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS", emailPurchaseReconciliationWindowHoursRaw),
   cronSecret: process.env.CRON_SECRET ?? "",
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",

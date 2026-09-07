@@ -6,7 +6,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "tsx watch src/server.ts",
-    "test": "npm run build && node --test test/email-classification.test.js test/email-sync.test.js test/email-normalizer.test.js test/email-purchase-extractor.test.js test/email-purchase-enrichment.test.js test/payment-method.test.js",
+    "test": "npm run build && node --test test/email-classification.test.js test/email-sync.test.js test/email-normalizer.test.js test/email-purchase-extractor.test.js test/email-purchase-enrichment.test.js test/payment-method.test.js test/purchase-reconciliation.test.js",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "postinstall": "prisma generate",
