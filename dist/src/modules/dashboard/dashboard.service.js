@@ -45,6 +45,10 @@ export class DashboardService {
         });
         const totalsByCategory = new Map();
         for (const item of items) {
+            // Itens sem categoria nao entram nesta visao, pois o contrato do
+            // dashboard exige um nome real e nao devemos inventar uma categoria.
+            if (!item.tb_categoria)
+                continue;
             const categoriaNome = item.tb_categoria.categoria_nome;
             const totalAtual = totalsByCategory.get(categoriaNome) ?? 0;
             totalsByCategory.set(categoriaNome, totalAtual + toNumber(item.compra_item_valor));
