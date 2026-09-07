@@ -555,16 +555,27 @@ export class EmailSyncService {
             }
 
             continue;
-          } catch (error) {
-            if (error instanceof AIRateLimitError) {
-              shouldFailRun = true;
-              failureReason = error.message;
-              break;
-            }
+          } catch (error: any) {
+  console.error('[EmailSyncService.syncUser] Erro ORIGINAL no processamento por IA:', {
+    name: error?.name,
+    message: error?.message,
+    status: error?.response?.status,
+    url: error?.config?.url,
+    method: error?.config?.method,
+    responseData: error?.response?.data,
+    code: error?.code,
+    stack: error?.stack,
+  });
 
-            shouldFailRun = true;
-            failureReason = safeErrorMessage(error);
-          }
+  if (error instanceof AIRateLimitError) {
+    shouldFailRun = true;
+    failureReason = error.message;
+    break;
+  }
+
+  shouldFailRun = true;
+  failureReason = safeErrorMessage(error);
+}
         }
       }
 
@@ -582,17 +593,24 @@ export class EmailSyncService {
       });
 
       return result;
-    } catch (error) {
-      console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', safeErrorMessage(error));
-      await prisma.tb_integracao.update({
-        where: { integracao_id: integration.integracao_id },
-        data: {
-          integracao_sincronizacao_status: 'ERRO',
-          integracao_ultimo_erro: safeErrorMessage(error),
-        },
-      });
-      throw error;
-    }
+    } catch (error: any) {
+  console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', {
+    name: error?.name,
+    message: error?.message,
+    stack: error?.stack,
+    cause: error?.cause,
+  });
+
+  await prisma.tb_integracao.update({
+    where: { integracao_id: integration.integracao_id },
+    data: {
+      integracao_sincronizacao_status: 'ERRO',
+      integracao_ultimo_erro: safeErrorMessage(error),
+    },
+  });
+
+  throw error;
+}
   }
 
   
