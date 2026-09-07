@@ -13,6 +13,9 @@ import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
 import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
+import { buildPurchaseExtractionPrompt, needsAiEnrichment } from './email-purchase.enrichment.js';
+import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
+import type { AIPurchaseExtractionProvider, AIExtractedPurchase } from './ai-provider.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -253,9 +256,27 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
 async function createCompraFromMessage(
   userId: number,
   message: GmailMessageDetail,
-  supplemental: { amount?: number | null; establishment?: string | null; paymentMethodName?: string | null } | null = {}
+  supplemental: { amount?: number | null; establishment?: string | null; paymentMethodName?: string | null } | null = {},
+  accessToken?: string,
+  aiProvider?: AIProvider | null,
 ) {
-  const extracted = buildExtractedPurchase(message, supplemental);
+  const deterministic = buildExtractedPurchase(message, supplemental);
+  let aiPurchase: AIExtractedPurchase | null = null;
+  const extractor = aiProvider && 'extractPurchase' in aiProvider
+    ? aiProvider as AIProvider & AIPurchaseExtractionProvider
+    : null;
+  if (extractor && needsAiEnrichment(deterministic)) {
+    try {
+      aiPurchase = await extractor.extractPurchase(buildPurchaseExtractionPrompt(toNormalizedEmail(message)));
+    } catch {
+      aiPurchase = null;
+    }
+  }
+
+  const fiscal = accessToken
+    ? await parseFiscalAttachments(message.attachments ?? [], (metadata) => EmailService.downloadAttachment(accessToken, message.id, metadata))
+    : { nfe: [], danfe: [] };
+  const extracted = mergePurchaseSources(deterministic, aiPurchase, fiscal);
   const horario = parseDateFromMessage(message);
   if (!horario) {
     throw new Error('Data inválida no e-mail');
@@ -471,7 +492,7 @@ export class EmailSyncService {
         const classification = EmailClassificationEngine.classify(detail);
 
         if (classification.outcome === 'COMPRA') {
-          const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase);
+          const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase, accessToken, aiProvider);
           if ('created' in purchaseResult) result.created += 1;
           else result.skipped += 1;
           continue;
@@ -506,7 +527,7 @@ export class EmailSyncService {
                 continue;
               }
 
-              const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase);
+              const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase, accessToken, aiProvider);
               if ('created' in purchaseResult) result.created += 1;
               else result.skipped += 1;
               continue;
