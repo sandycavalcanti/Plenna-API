@@ -26,6 +26,11 @@ const emailSyncMaxMessagesPerRunRaw = process.env.EMAIL_SYNC_MAX_MESSAGES_PER_RU
 const emailSyncMaxUsersPerRunRaw = process.env.EMAIL_SYNC_MAX_USERS_PER_RUN ?? "10";
 const emailPurchaseReconciliationWindowHoursRaw = process.env.EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS ?? "48";
 const emailAttachmentMaxBytesRaw = process.env.EMAIL_ATTACHMENT_MAX_BYTES ?? "10485760";
+const emailFiscalLinkFetchEnabledRaw = process.env.EMAIL_FISCAL_LINK_FETCH_ENABLED ?? "false";
+const emailFiscalLinkMaxBytesRaw = process.env.EMAIL_FISCAL_LINK_MAX_BYTES ?? "5242880";
+const emailFiscalLinkTimeoutMsRaw = process.env.EMAIL_FISCAL_LINK_TIMEOUT_MS ?? "8000";
+const emailFiscalLinkMaxRedirectsRaw = process.env.EMAIL_FISCAL_LINK_MAX_REDIRECTS ?? "3";
+const emailFiscalLinkMaxPerEmailRaw = process.env.EMAIL_FISCAL_LINK_MAX_PER_EMAIL ?? "3";
 const requestyTimeoutMsRaw = process.env.REQUESTY_TIMEOUT_MS ?? "8000";
 const geminiTimeoutMsRaw = process.env.GEMINI_TIMEOUT_MS ?? "8000";
 const geminiRateLimitCooldownMsRaw = process.env.GEMINI_RATE_LIMIT_COOLDOWN_MS ?? "60000";
@@ -42,6 +47,16 @@ function requirePositiveInteger(name: string, raw: string): number {
   const value = Number(raw);
 
   if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${name} value: ${raw}`);
+  }
+
+  return value;
+}
+
+function requireNonNegativeInteger(name: string, raw: string): number {
+  const value = Number(raw);
+
+  if (!Number.isInteger(value) || value < 0) {
     throw new Error(`Invalid ${name} value: ${raw}`);
   }
 
@@ -76,6 +91,11 @@ export const env = {
   emailSyncMaxUsersPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_USERS_PER_RUN", emailSyncMaxUsersPerRunRaw),
   emailPurchaseReconciliationWindowHours: requirePositiveInteger("EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS", emailPurchaseReconciliationWindowHoursRaw),
   emailAttachmentMaxBytes: requirePositiveInteger("EMAIL_ATTACHMENT_MAX_BYTES", emailAttachmentMaxBytesRaw),
+  emailFiscalLinkFetchEnabled: parseStrictBoolean("EMAIL_FISCAL_LINK_FETCH_ENABLED", emailFiscalLinkFetchEnabledRaw),
+  emailFiscalLinkMaxBytes: requirePositiveInteger("EMAIL_FISCAL_LINK_MAX_BYTES", emailFiscalLinkMaxBytesRaw),
+  emailFiscalLinkTimeoutMs: requirePositiveInteger("EMAIL_FISCAL_LINK_TIMEOUT_MS", emailFiscalLinkTimeoutMsRaw),
+  emailFiscalLinkMaxRedirects: requireNonNegativeInteger("EMAIL_FISCAL_LINK_MAX_REDIRECTS", emailFiscalLinkMaxRedirectsRaw),
+  emailFiscalLinkMaxPerEmail: requirePositiveInteger("EMAIL_FISCAL_LINK_MAX_PER_EMAIL", emailFiscalLinkMaxPerEmailRaw),
   cronSecret: process.env.CRON_SECRET ?? "",
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",

@@ -15,6 +15,7 @@ import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurcha
 import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
 import { buildPurchaseExtractionPrompt, needsAiEnrichment } from './email-purchase.enrichment.js';
 import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
+import { processFiscalLinks } from './fiscal-link.processor.js';
 import type { AIPurchaseExtractionProvider, AIExtractedPurchase } from './ai-provider.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
@@ -273,9 +274,18 @@ async function createCompraFromMessage(
     }
   }
 
-  const fiscal = accessToken
+  const attachmentFiscal = accessToken
     ? await parseFiscalAttachments(message.attachments ?? [], (metadata) => EmailService.downloadAttachment(accessToken, message.id, metadata))
     : { nfe: [], danfe: [] };
+  // Links externos sao enriquecimento opt-in; com a flag desligada nenhum DNS
+  // e nenhuma URL do email sao acessados, preservando o fluxo anterior.
+  const linkFiscal = env.emailFiscalLinkFetchEnabled
+    ? await processFiscalLinks(message.links ?? [])
+    : { nfe: [], danfe: [] };
+  const fiscal = {
+    nfe: [...attachmentFiscal.nfe, ...linkFiscal.nfe],
+    danfe: [...attachmentFiscal.danfe, ...linkFiscal.danfe],
+  };
   const extracted = mergePurchaseSources(deterministic, aiPurchase, fiscal);
   const horario = parseDateFromMessage(message);
   if (!horario) {
