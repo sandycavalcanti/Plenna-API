@@ -5,6 +5,7 @@ import { env } from '../../lib/env.js';
 import type { GmailIntegration, GmailMessageDetail, GmailMessageSummary } from './gmail.types.js';
 import type { NormalizedEmail } from './email-contracts.js';
 import { normalizeGmailMessage } from './gmail.normalizer.js';
+import { downloadGmailAttachment, type DownloadedGmailAttachment } from './gmail.attachment.js';
 
 const googleTokenResponseSchema = z.object({
   access_token: z.string(),
@@ -201,6 +202,15 @@ export class EmailService {
   static async getNormalizedMessage(accessToken: string, messageId: string): Promise<NormalizedEmail> {
     const parsed = await this.fetchMessage(accessToken, messageId);
     return normalizeGmailMessage(parsed);
+  }
+
+  /** Disponibiliza o download autenticado sem persistir ou interpretar o documento. */
+  static async downloadAttachment(
+    accessToken: string,
+    messageId: string,
+    metadata: import('./email-contracts.js').EmailAttachmentMetadata,
+  ): Promise<DownloadedGmailAttachment> {
+    return downloadGmailAttachment(accessToken, messageId, metadata);
   }
 
   static async getMessage(accessToken: string, messageId: string): Promise<GmailMessageDetail> {
