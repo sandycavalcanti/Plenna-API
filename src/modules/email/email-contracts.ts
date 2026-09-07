@@ -74,6 +74,9 @@ export interface ExtractionEvidence {
 export interface ExtractedPurchaseItem {
   name: string | null;
   quantity: number | null;
+  // A unidade diferencia quantidade comercial de unidades inteiras do produto.
+  // Quando o email nao informa a unidade, o valor permanece null.
+  unit: string | null;
   unitPrice: number | null;
   totalPrice: number | null;
   categoryName: string | null;

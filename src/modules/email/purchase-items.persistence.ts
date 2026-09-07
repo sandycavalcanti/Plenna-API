@@ -14,7 +14,8 @@ export type PersistedPurchaseItem = {
   categoria_id: number | null;
   compra_item_nome: string;
   compra_item_valor: Prisma.Decimal;
-  compra_item_quantidade: number | null;
+  compra_item_quantidade: Prisma.Decimal | null;
+  compra_item_unidade_medida: string | null;
 };
 
 /**
@@ -45,9 +46,12 @@ export async function buildPersistedPurchaseItems(
       if (categories.length === 1) categoriaId = categories[0].categoria_id;
     }
 
-    const quantity = item.quantity !== null && Number.isInteger(item.quantity) && item.quantity > 0
-      ? item.quantity
+    // Quantidades fiscais podem ser fracionarias; somente ausencia, NaN ou
+    // valor nao positivo invalida a quantidade, sem transforma-la em inteiro.
+    const quantity = item.quantity !== null && Number.isFinite(item.quantity) && item.quantity > 0
+      ? new Prisma.Decimal(item.quantity.toString())
       : null;
+    const unit = item.unit?.trim() ? item.unit.trim().slice(0, 10) : null;
 
     persisted.push({
       categoria_id: categoriaId,
@@ -56,6 +60,7 @@ export async function buildPersistedPurchaseItems(
       compra_item_nome: name.slice(0, 45),
       compra_item_valor: new Prisma.Decimal(unitPrice.toFixed(2)),
       compra_item_quantidade: quantity,
+      compra_item_unidade_medida: unit,
     });
   }
 
@@ -68,6 +73,7 @@ export function buildNestedPurchaseItems(items: PersistedPurchaseItem[]) {
     compra_item_nome: item.compra_item_nome,
     compra_item_valor: item.compra_item_valor,
     compra_item_quantidade: item.compra_item_quantidade,
+    compra_item_unidade_medida: item.compra_item_unidade_medida,
   }));
 }
 

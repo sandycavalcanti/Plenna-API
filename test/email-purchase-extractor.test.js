@@ -92,6 +92,7 @@ test('extrai item, quantidade e valor unitário', () => {
   assert.deepEqual(result.items, [{
     name: 'Calça de pijama avulsa feminina',
     quantity: 1,
+    unit: null,
     unitPrice: 47.99,
     totalPrice: null,
     categoryName: null,
@@ -164,8 +165,8 @@ test('não transforma status genérico em número de pedido', () => {
 test('boundary semântico impede vazamento entre produtos', () => {
   const result = EmailPurchaseExtractor.extract(email('Produto\nCamiseta\nProduto\nCalça\nQuantidade\n2\nValor do produto\nR$ 79,90'));
   assert.deepEqual(result.items, [
-    { name: 'Camiseta', quantity: null, unitPrice: null, totalPrice: null, categoryName: null },
-    { name: 'Calça', quantity: 2, unitPrice: 79.9, totalPrice: null, categoryName: null },
+    { name: 'Camiseta', quantity: null, unit: null, unitPrice: null, totalPrice: null, categoryName: null },
+    { name: 'Calça', quantity: 2, unit: null, unitPrice: 79.9, totalPrice: null, categoryName: null },
   ]);
 });
 

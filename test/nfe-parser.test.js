@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 const { NFeXmlParseError, parseNFeXml } = await import('../dist/src/modules/email/nfe.parser.js');
 
-const infNFe = (extra = '', payments = '') => `<infNFe Id="NFe35123456789012345678901234567890123456789012" versao="4.00"><ide><nNF>123</nNF><dhEmi>2026-09-07T10:20:00-03:00</dhEmi></ide><emit><CNPJ>12345678000199</CNPJ><xNome>Loja Teste Fiscal</xNome></emit><det nItem="1"><prod><xProd>Camiseta</xProd><qCom>2</qCom><vUnCom>39.90</vUnCom><vProd>79.80</vProd></prod></det>${extra}<total><ICMSTot><vProd>79.80</vProd><vFrete>10.00</vFrete><vDesc>2.00</vDesc><vNF>87.80</vNF></ICMSTot></total><pag><detPag><tPag>17</tPag><vPag>87.80</vPag></detPag>${payments}</pag></infNFe>`;
+const infNFe = (extra = '', payments = '') => `<infNFe Id="NFe35123456789012345678901234567890123456789012" versao="4.00"><ide><nNF>123</nNF><dhEmi>2026-09-07T10:20:00-03:00</dhEmi></ide><emit><CNPJ>12345678000199</CNPJ><xNome>Loja Teste Fiscal</xNome></emit><det nItem="1"><prod><xProd>Camiseta</xProd><qCom>2</qCom><uCom>UN</uCom><vUnCom>39.90</vUnCom><vProd>79.80</vProd></prod></det>${extra}<total><ICMSTot><vProd>79.80</vProd><vFrete>10.00</vFrete><vDesc>2.00</vDesc><vNF>87.80</vNF></ICMSTot></total><pag><detPag><tPag>17</tPag><vPag>87.80</vPag></detPag>${payments}</pag></infNFe>`;
 const nfe = (content) => Buffer.from(`<NFe xmlns="http://www.portalfiscal.inf.br/nfe">${content}</NFe>`);
 const proc = (content) => Buffer.from(`<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">${content}</nfeProc>`);
 
@@ -16,7 +16,7 @@ test('extrai NF-e com emitente, chave, totais, item e Pix', () => {
   assert.equal(result.totalAmount, 87.8);
   assert.equal(result.freightAmount, 10);
   assert.equal(result.discountAmount, 2);
-  assert.deepEqual(result.items, [{ name: 'Camiseta', quantity: 2, unitPrice: 39.9, totalPrice: 79.8 }]);
+  assert.deepEqual(result.items, [{ name: 'Camiseta', quantity: 2, unit: 'UN', unitPrice: 39.9, totalPrice: 79.8 }]);
   assert.deepEqual(result.payments, [{ code: '17', name: 'PIX', amount: 87.8 }]);
 });
 
@@ -36,6 +36,20 @@ test('preserva quantidade decimal e todos os pagamentos', () => {
     { code: '03', name: 'Cartão de crédito', amount: 40 },
     { code: '99', name: 'Carteira externa', amount: 47.8 },
   ]);
+});
+
+test('extrai unidade comercial de qCom e uCom sem forcar inteiros', () => {
+  const xml = nfe(infNFe(
+    '<det nItem="2"><prod><xProd>Banana</xProd><qCom>0.500</qCom><uCom>KG</uCom><vUnCom>8.00</vUnCom><vProd>4.00</vProd></prod></det>'
+    + '<det nItem="3"><prod><xProd>Leite</xProd><qCom>1.250</qCom><uCom>L</uCom><vUnCom>5.50</vUnCom><vProd>6.88</vProd></prod></det>'
+    + '<det nItem="4"><prod><xProd>Camiseta</xProd><qCom>2</qCom><vUnCom>10.00</vUnCom><vProd>20.00</vProd></prod></det>',
+  ));
+  const result = parseNFeXml(xml);
+  assert.equal(result.items[1].quantity, 0.5);
+  assert.equal(result.items[1].unit, 'KG');
+  assert.equal(result.items[2].quantity, 1.25);
+  assert.equal(result.items[2].unit, 'L');
+  assert.equal(result.items[3].unit, null);
 });
 
 test('rejeita DTD e ENTITY antes do parse', () => {

@@ -6,7 +6,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "tsx watch src/server.ts",
-    "test": "npm run build && node --test test/email-classification.test.js test/email-sync.test.js test/email-normalizer.test.js test/email-purchase-extractor.test.js test/email-purchase-enrichment.test.js test/payment-method.test.js test/purchase-reconciliation.test.js test/purchase-items.persistence.test.js test/gmail-attachment.test.js test/nfe-parser.test.js",
+    "test": "npm run build && node --test test/email-classification.test.js test/email-sync.test.js test/email-normalizer.test.js test/email-purchase-extractor.test.js test/email-purchase-enrichment.test.js test/payment-method.test.js test/purchase-reconciliation.test.js test/purchase-items.persistence.test.js test/gmail-attachment.test.js test/nfe-parser.test.js test/danfe-pdf-parser.test.js",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "postinstall": "prisma generate",
@@ -33,6 +33,7 @@
     "express": "^5.2.1",
     "fast-xml-parser": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.20.0",
     "serverless-http": "^4.0.0",
     "zod": "^4.3.6"

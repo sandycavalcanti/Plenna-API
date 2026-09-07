@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import { normalizeGmailMessage } from './gmail.normalizer.js';
+import { downloadGmailAttachment } from './gmail.attachment.js';
 const googleTokenResponseSchema = z.object({
     access_token: z.string(),
     expires_in: z.number(),
@@ -162,6 +163,10 @@ export class EmailService {
     static async getNormalizedMessage(accessToken, messageId) {
         const parsed = await this.fetchMessage(accessToken, messageId);
         return normalizeGmailMessage(parsed);
+    }
+    /** Disponibiliza o download autenticado sem persistir ou interpretar o documento. */
+    static async downloadAttachment(accessToken, messageId, metadata) {
+        return downloadGmailAttachment(accessToken, messageId, metadata);
     }
     static async getMessage(accessToken, messageId) {
         const parsed = await this.fetchMessage(accessToken, messageId);

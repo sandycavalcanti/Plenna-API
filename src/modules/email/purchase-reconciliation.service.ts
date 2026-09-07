@@ -2,7 +2,7 @@ import type { ExtractedPurchase, ExtractedPurchaseItem } from './email-contracts
 
 export type ReconciliationItem = {
   compra_item_nome: string;
-  compra_item_quantidade: number | null;
+  compra_item_quantidade: number | string | { toString(): string } | null;
   compra_item_valor: number | string | { toString(): string };
 };
 
@@ -52,7 +52,8 @@ function sameOptionalNumber(left: number | null, right: number | null) {
 
 function normalizedItem(item: ReconciliationItem | ExtractedPurchaseItem) {
   const name = 'compra_item_nome' in item ? item.compra_item_nome : item.name;
-  const quantity = 'compra_item_quantidade' in item ? item.compra_item_quantidade : item.quantity;
+  const rawQuantity = 'compra_item_quantidade' in item ? item.compra_item_quantidade : item.quantity;
+  const quantity = rawQuantity === null ? null : Number(rawQuantity);
   const price = 'compra_item_valor' in item ? amount(item.compra_item_valor) : (item.totalPrice ?? item.unitPrice);
 
   return {

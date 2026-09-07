@@ -8,6 +8,7 @@ export type ParsedNFeIssuer = {
 export type ParsedNFeItem = {
   name: string | null;
   quantity: number | null;
+  unit: string | null;
   unitPrice: number | null;
   totalPrice: number | null;
 };
@@ -74,6 +75,13 @@ function parseNonNegative(value: unknown) {
 function parsePositive(value: unknown) {
   const parsed = parseNonNegative(value);
   return parsed !== null && parsed > 0 ? parsed : null;
+}
+
+function parseUnit(value: unknown) {
+  // uCom e a unidade comercial da NF-e; ela nao e inferida a partir de qCom.
+  // O limite acompanha a coluna preparada para persistencia futura.
+  const unit = asText(value);
+  return unit ? unit.slice(0, 10) : null;
 }
 
 function parseDate(value: unknown) {
@@ -158,6 +166,7 @@ export function parseNFeXml(bytes: Buffer): ParsedNFe {
     return {
       name: asText(product?.xProd),
       quantity: parsePositive(product?.qCom),
+      unit: parseUnit(product?.uCom),
       unitPrice: parsePositive(product?.vUnCom),
       totalPrice: parseNonNegative(product?.vProd),
     };

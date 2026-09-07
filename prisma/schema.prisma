@@ -53,7 +53,8 @@ model tb_compra_item {
   compra_item_nome         String       @db.VarChar(45)
   compra_item_valor        Decimal      @db.Decimal(10, 2)
   // Null nao significa quantidade 1; a mensagem pode nao informar a quantidade.
-  compra_item_quantidade   Int?
+  compra_item_quantidade   Decimal?     @db.Decimal(12, 3)
+  compra_item_unidade_medida String?    @db.VarChar(10)
   compra_item_data_criacao DateTime     @default(now()) @db.Timestamp(6)
   tb_categoria             tb_categoria? @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra                tb_compra    @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)

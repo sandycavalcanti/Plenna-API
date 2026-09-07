@@ -7,6 +7,10 @@ import { EmailService } from './email.service.js';
 import { GeminiProvider } from './gemini.provider.js';
 import { RequestyProvider } from './requesty.provider.js';
 import { AIRateLimitError } from './ai-provider.js';
+import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
+import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
+import { buildPurchaseUpdate, findReconciliationMatch } from './purchase-reconciliation.service.js';
+import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
 /**
  * Monta a janela temporal utilizada na consulta ao Gmail.
  *
@@ -123,7 +127,7 @@ function sanitizeAiPurchase(message, purchase) {
         establishment: supportedEstablishment,
     };
 }
-async function messageAlreadyPersisted(userId, messageId) {
+export async function messageAlreadyPersisted(userId, messageId) {
     const [purchase, promotion] = await Promise.all([
         prisma.tb_compra.findFirst({
             where: {
@@ -142,19 +146,98 @@ async function messageAlreadyPersisted(userId, messageId) {
     ]);
     return Boolean(purchase || promotion);
 }
-async function createCompraFromMessage(userId, message, extracted = {}) {
-    const resolved = extracted ?? {};
+function toNormalizedEmail(message) {
+    return {
+        id: message.id,
+        threadId: message.threadId ?? null,
+        subject: message.subject ?? null,
+        from: message.from ?? null,
+        to: message.to ?? null,
+        snippet: message.snippet ?? null,
+        internalDate: message.internalDate ?? null,
+        labelIds: message.labelIds ?? [],
+        textBody: message.textBody ?? message.bodyText ?? null,
+        htmlBody: message.htmlBody ?? null,
+        links: message.links ?? [],
+        attachments: message.attachments ?? [],
+    };
+}
+function buildExtractedPurchase(message, supplemental) {
+    const deterministic = EmailPurchaseExtractor.extract(toNormalizedEmail(message));
+    return {
+        ...deterministic,
+        establishment: deterministic.establishment ?? supplemental?.establishment ?? null,
+        totalAmount: deterministic.totalAmount ?? supplemental?.amount ?? null,
+        paymentMethod: {
+            rawName: deterministic.paymentMethod.rawName ?? supplemental?.paymentMethodName ?? null,
+        },
+    };
+}
+async function resolveExistingPurchase(userId, message, extracted, paymentMethodId) {
+    const messageDate = parseDateFromMessage(message);
+    if (!messageDate || !extracted.establishment || (extracted.orderNumber === null && extracted.totalAmount === null))
+        return null;
+    const candidates = await prisma.tb_compra.findMany({
+        where: { usuario_id: userId },
+        select: {
+            compra_id: true,
+            usuario_id: true,
+            compra_fonte: true,
+            compra_pedido_externo_id: true,
+            compra_valor: true,
+            forma_pagamento_id: true,
+            compra_email_mensagem_id: true,
+            compra_horario: true,
+            tb_compra_item: {
+                select: {
+                    compra_item_nome: true,
+                    compra_item_quantidade: true,
+                    compra_item_valor: true,
+                },
+            },
+        },
+    });
+    const match = findReconciliationMatch(candidates, userId, extracted, messageDate, env.emailPurchaseReconciliationWindowHours);
+    if (!match)
+        return null;
+    const update = buildPurchaseUpdate(match.purchase, extracted, paymentMethodId);
+    const candidateItems = await buildPersistedPurchaseItems(extracted.items, prisma);
+    const itemsToPersist = shouldPersistPurchaseItems(match.purchase.tb_compra_item.length, candidateItems)
+        ? candidateItems
+        : [];
+    if (Object.keys(update).length === 0 && itemsToPersist.length === 0)
+        return { reconciled: match.purchase };
+    const updated = await prisma.$transaction(async (tx) => {
+        const purchase = Object.keys(update).length > 0
+            ? await tx.tb_compra.update({ where: { compra_id: match.purchase.compra_id }, data: update })
+            : match.purchase;
+        if (itemsToPersist.length > 0) {
+            await persistPurchaseItems(match.purchase.compra_id, itemsToPersist, tx);
+        }
+        return purchase;
+    });
+    return { reconciled: updated };
+}
+async function createCompraFromMessage(userId, message, supplemental = {}) {
+    const extracted = buildExtractedPurchase(message, supplemental);
     const horario = parseDateFromMessage(message);
     if (!horario) {
         throw new Error('Data inválida no e-mail');
     }
-    const establishment = normalizeEstablishment(resolved.establishment);
-    const amount = resolved.amount ?? null;
+    const establishment = normalizeEstablishment(extracted.establishment);
+    const amount = extracted.totalAmount;
+    const paymentMethod = extracted.paymentMethod.rawName
+        ? await PaymentMethodResolver.resolve(extracted.paymentMethod.rawName)
+        : null;
+    const existing = await resolveExistingPurchase(userId, message, extracted, paymentMethod?.id ?? null);
+    if (existing)
+        return existing;
+    const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
     try {
         const compra = await prisma.tb_compra.create({
             data: {
                 usuario_id: userId,
-                forma_pagamento_id: null,
+                forma_pagamento_id: paymentMethod?.id ?? null,
                 compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
                 compra_horario: horario,
                 compra_fonte: establishment,
@@ -162,7 +245,9 @@ async function createCompraFromMessage(userId, message, extracted = {}) {
                 compra_classificacao: 'PENDENTE',
                 compra_acima_limite: null,
                 compra_email_mensagem_id: message.id,
+                compra_pedido_externo_id: extracted.orderNumber,
                 compra_status: 'AGUARDANDO_CONFIRMACAO',
+                ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
             },
         });
         return { created: compra };

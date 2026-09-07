@@ -53,6 +53,7 @@ function toExtractedItem(item: AIExtractedPurchase['items'][number]): ExtractedP
   return {
     name: textOrNull(item.name),
     quantity: item.quantity,
+    unit: null,
     unitPrice: item.unitPrice,
     totalPrice: item.totalPrice,
     categoryName: textOrNull(item.categoryName),

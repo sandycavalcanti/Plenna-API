@@ -196,6 +196,9 @@ function extractItems(text: string, evidence: ExtractionEvidence[]): ExtractedPu
     items.push({
       name,
       quantity: quantity?.quantity ?? null,
+      // A extracao de email ainda nao possui evidencia de unidade comercial.
+      // Por isso nao inventamos UN para produtos que mostram apenas quantidade.
+      unit: null,
       unitPrice: unitPrice?.amount ?? null,
       totalPrice: totalPrice?.amount ?? null,
       categoryName: null,
