@@ -39,6 +39,9 @@ const requestyCategorySchema = z.object({
   categoryName: z.string().nullable().optional(),
 });
 
+const MAX_RATE_LIMIT_RETRIES = 2;
+const FALLBACK_RETRY_BACKOFF_BASE_MS = 250;
+
 const requestyExtractedPurchaseItemSchema = z.object({
   name: z.string().max(160).nullable().default(null),
   quantity: z.number().finite().positive().nullable().default(null),
@@ -97,7 +100,23 @@ function getRetryAfterMs(error: any) {
     }
   }
 
-  return env.geminiRateLimitCooldownMs;
+  return env.requestyRateLimitCooldownMs;
+}
+
+function hasExplicitRetryAfter(error: any) {
+  const header = error?.response?.headers?.['retry-after'];
+  if (typeof header === 'string') {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds > 0) return true;
+  }
+
+  return /retry in\s+\d+\s*(?:ms|s|seconds)?/i.test(
+    String(error?.response?.data?.error?.message ?? error?.response?.data?.message ?? ''),
+  );
+}
+
+function waitForRetry(delayMs: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 }
 
 function isRateLimited(error: any) {
@@ -170,26 +189,49 @@ export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvide
   private async chatCompletion(prompt: string, instructions = buildClassificationInstructions()) {
     this.ensureAvailability();
 
-    const response = await axios.post(
-      'https://router.requesty.ai/v1/chat/completions',
-      {
-        model: env.requestyEmailModel,
-        messages: [
-          { role: 'system', content: 'Responda sempre em JSON estrito e sem texto adicional.' },
-          { role: 'user', content: `${instructions}\n\n${prompt}` },
-        ],
-        temperature: 0,
-      },
-      {
-        timeout: env.requestyTimeoutMs,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${env.requestyApiKey}`,
-        },
-      }
-    );
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt += 1) {
+      try {
+        const response = await axios.post(
+          'https://router.requesty.ai/v1/chat/completions',
+          {
+            model: env.requestyEmailModel,
+            messages: [
+              { role: 'system', content: 'Responda sempre em JSON estrito e sem texto adicional.' },
+              { role: 'user', content: `${instructions}\n\n${prompt}` },
+            ],
+            temperature: 0,
+          },
+          {
+            timeout: env.requestyTimeoutMs,
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${env.requestyApiKey}`,
+            },
+          }
+        );
 
-    return extractAssistantContent(response.data);
+        return extractAssistantContent(response.data);
+      } catch (error: any) {
+        if (!isRateLimited(error)) throw error;
+
+        const retryAfterMs = getRetryAfterMs(error);
+        if (attempt === MAX_RATE_LIMIT_RETRIES) {
+          // A mensagem ambigua nao pode ser descartada nem avancar o cursor;
+          // apos poucas tentativas, o erro continua sinalizando falha da sync.
+          RequestyProvider.rateLimitedUntil = Date.now() + retryAfterMs;
+          throw new AIRateLimitError('Requesty respondeu 429', retryAfterMs);
+        }
+
+        // Retry-After explicito vem do servidor. Sem ele, usamos backoff curto
+        // e limitado para evitar espera longa ou uma sequencia infinita.
+        const delayMs = hasExplicitRetryAfter(error)
+          ? retryAfterMs
+          : Math.min(retryAfterMs, FALLBACK_RETRY_BACKOFF_BASE_MS * 2 ** attempt);
+        await waitForRetry(delayMs);
+      }
+    }
+
+    throw new Error('Fluxo de retry da Requesty terminou sem resultado');
   }
 
   /**

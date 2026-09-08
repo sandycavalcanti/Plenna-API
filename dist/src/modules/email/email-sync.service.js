@@ -4,13 +4,15 @@ import { env } from '../../lib/env.js';
 import { AppError } from '../../errors/AppError.js';
 import { EmailClassificationEngine, buildClassificationHaystack, extractAmount, hasStrongPurchaseEvidence } from './classification.engine.js';
 import { EmailService } from './email.service.js';
-import { GeminiProvider } from './gemini.provider.js';
 import { RequestyProvider } from './requesty.provider.js';
 import { AIRateLimitError } from './ai-provider.js';
 import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch } from './purchase-reconciliation.service.js';
 import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
+import { buildPurchaseExtractionPrompt, needsAiEnrichment } from './email-purchase.enrichment.js';
+import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
+import { processFiscalLinks } from './fiscal-link.processor.js';
 /**
  * Monta a janela temporal utilizada na consulta ao Gmail.
  *
@@ -218,8 +220,33 @@ async function resolveExistingPurchase(userId, message, extracted, paymentMethod
     });
     return { reconciled: updated };
 }
-async function createCompraFromMessage(userId, message, supplemental = {}) {
-    const extracted = buildExtractedPurchase(message, supplemental);
+async function createCompraFromMessage(userId, message, supplemental = {}, accessToken, aiProvider) {
+    const deterministic = buildExtractedPurchase(message, supplemental);
+    let aiPurchase = null;
+    const extractor = aiProvider && 'extractPurchase' in aiProvider
+        ? aiProvider
+        : null;
+    if (extractor && needsAiEnrichment(deterministic)) {
+        try {
+            aiPurchase = await extractor.extractPurchase(buildPurchaseExtractionPrompt(toNormalizedEmail(message)));
+        }
+        catch {
+            aiPurchase = null;
+        }
+    }
+    const attachmentFiscal = accessToken
+        ? await parseFiscalAttachments(message.attachments ?? [], (metadata) => EmailService.downloadAttachment(accessToken, message.id, metadata))
+        : { nfe: [], danfe: [] };
+    // Links externos sao enriquecimento opt-in; com a flag desligada nenhum DNS
+    // e nenhuma URL do email sao acessados, preservando o fluxo anterior.
+    const linkFiscal = env.emailFiscalLinkFetchEnabled
+        ? await processFiscalLinks(message.links ?? [])
+        : { nfe: [], danfe: [] };
+    const fiscal = {
+        nfe: [...attachmentFiscal.nfe, ...linkFiscal.nfe],
+        danfe: [...attachmentFiscal.danfe, ...linkFiscal.danfe],
+    };
+    const extracted = mergePurchaseSources(deterministic, aiPurchase, fiscal);
     const horario = parseDateFromMessage(message);
     if (!horario) {
         throw new Error('Data inválida no e-mail');
@@ -396,9 +423,7 @@ export class EmailSyncService {
             const messages = await EmailService.listMessages(accessToken, query, env.emailSyncBatchSize, isBootstrap ? env.emailSyncInitialMessages : undefined);
             const aiProvider = env.requestyApiKey
                 ? new RequestyProvider()
-                : env.geminiApiKey
-                    ? new GeminiProvider()
-                    : null;
+                : null;
             const result = { processed: 0, created: 0, skipped: 0 };
             let shouldFailRun = false;
             let failureReason = null;
@@ -416,7 +441,7 @@ export class EmailSyncService {
                 const detail = await EmailService.getMessage(accessToken, summary.id);
                 const classification = EmailClassificationEngine.classify(detail);
                 if (classification.outcome === 'COMPRA') {
-                    const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase);
+                    const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase, accessToken, aiProvider);
                     if ('created' in purchaseResult)
                         result.created += 1;
                     else
@@ -449,7 +474,7 @@ export class EmailSyncService {
                                 result.skipped += 1;
                                 continue;
                             }
-                            const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase);
+                            const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase, accessToken, aiProvider);
                             if ('created' in purchaseResult)
                                 result.created += 1;
                             else

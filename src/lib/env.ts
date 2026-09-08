@@ -32,8 +32,7 @@ const emailFiscalLinkTimeoutMsRaw = process.env.EMAIL_FISCAL_LINK_TIMEOUT_MS ?? 
 const emailFiscalLinkMaxRedirectsRaw = process.env.EMAIL_FISCAL_LINK_MAX_REDIRECTS ?? "3";
 const emailFiscalLinkMaxPerEmailRaw = process.env.EMAIL_FISCAL_LINK_MAX_PER_EMAIL ?? "3";
 const requestyTimeoutMsRaw = process.env.REQUESTY_TIMEOUT_MS ?? "8000";
-const geminiTimeoutMsRaw = process.env.GEMINI_TIMEOUT_MS ?? "8000";
-const geminiRateLimitCooldownMsRaw = process.env.GEMINI_RATE_LIMIT_COOLDOWN_MS ?? "60000";
+const requestyRateLimitCooldownMsRaw = process.env.REQUESTY_RATE_LIMIT_COOLDOWN_MS ?? "60000";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
@@ -100,10 +99,5 @@ export const env = {
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",
   requestyTimeoutMs: requirePositiveInteger("REQUESTY_TIMEOUT_MS", requestyTimeoutMsRaw),
-  // Gemini é opcional porque a classificação determinística continua disponível.
-  // A ausência da chave só impede o fallback de IA em casos ambíguos.
-  geminiApiKey: process.env.GEMINI_API_KEY ?? "",
-  geminiModel: process.env.GEMINI_MODEL ?? "gemini-1.5-flash",
-  geminiTimeoutMs: requirePositiveInteger("GEMINI_TIMEOUT_MS", geminiTimeoutMsRaw),
-  geminiRateLimitCooldownMs: requirePositiveInteger("GEMINI_RATE_LIMIT_COOLDOWN_MS", geminiRateLimitCooldownMsRaw),
+  requestyRateLimitCooldownMs: requirePositiveInteger("REQUESTY_RATE_LIMIT_COOLDOWN_MS", requestyRateLimitCooldownMsRaw),
 };

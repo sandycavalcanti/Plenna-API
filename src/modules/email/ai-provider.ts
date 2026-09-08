@@ -60,7 +60,7 @@ export class AIRateLimitError extends Error {
  * Contrato comum para providers de inteligência artificial.
  *
  * O fluxo de sincronização depende desta interface, e não diretamente do
- * Gemini. Isso permite trocar o serviço de IA sem alterar a regra de negócio.
+ * um provider específico. Isso preserva a regra de negócio separada da integração.
  */
 export interface AIProvider {
   classifyEmail(prompt: string): Promise<AIEmailClassificationResult>;

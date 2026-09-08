@@ -10,7 +10,7 @@ A API concentra:
 - compras manuais;
 - integração Gmail;
 - classificação determinística;
-- fallback com Gemini;
+- provider Requesty para casos ambíguos;
 - propagandas;
 - métricas de dashboard.
 
@@ -22,7 +22,7 @@ Fluxo principal:
 2. a API salva a integração Gmail em `tb_integracao`;
 3. a sincronização busca apenas o intervalo necessário;
 4. cada mensagem passa primeiro pela classificação determinística;
-5. se a mensagem for ambígua, o Gemini é usado como fallback;
+5. se a mensagem for ambígua, o Requesty é consultado;
 6. compras vão para `tb_compra`;
 7. propagandas vão para `tb_propaganda`;
 8. mensagens irrelevantes não são persistidas.
@@ -106,9 +106,9 @@ Resultados finais:
 - `PROPAGANDA`
 - `IGNORAR`
 
-### Gemini fallback
+### Provider de IA
 
-Gemini é usado apenas como fallback.
+O Requesty é o único provider de IA utilizado pelo fluxo de e-mail.
 
 Falhas de IA em mensagens ambíguas:
 
@@ -188,7 +188,7 @@ Autenticação:
 - `EMAIL_SYNC_INITIAL_MESSAGES` controla o limite do bootstrap inicial;
 - `EMAIL_SYNC_BATCH_SIZE` controla o tamanho da página consultada no Gmail;
 - `EMAIL_SYNC_MAX_MESSAGES_PER_RUN` limita quantas mensagens novas são processadas por execução incremental;
-- `GEMINI_RATE_LIMIT_COOLDOWN_MS` continua documentado por compatibilidade com o provider legado;
+- `REQUESTY_RATE_LIMIT_COOLDOWN_MS` define o cooldown após rate limit do provider ativo;
 - `REQUESTY_TIMEOUT_MS` define o timeout do provider ativo de IA;
 - o provider ativo de IA para e-mail é o Requesty.
 
@@ -215,13 +215,10 @@ Obrigatórias ou usadas pelo código atual:
 - `EMAIL_SYNC_MAX_MESSAGES_PER_RUN`
 - `EMAIL_SYNC_MAX_USERS_PER_RUN`
 - `CRON_SECRET`
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL`
-- `GEMINI_TIMEOUT_MS`
-- `GEMINI_RATE_LIMIT_COOLDOWN_MS`
 - `REQUESTY_API_KEY`
 - `REQUESTY_EMAIL_MODEL`
 - `REQUESTY_TIMEOUT_MS`
+- `REQUESTY_RATE_LIMIT_COOLDOWN_MS`
 
 ## Setup local
 
@@ -247,7 +244,7 @@ Cobertura principal atual:
 - cron GET protegido;
 - lock de sincronização;
 - classificação clara e ambígua;
-- validação do Gemini;
+- validação do provider Requesty;
 - métricas do dashboard só com compras confirmadas;
 - transições básicas de status de compra.
 

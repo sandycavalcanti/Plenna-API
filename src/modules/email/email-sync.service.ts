@@ -5,7 +5,6 @@ import { AppError } from '../../errors/AppError.js';
 import { EmailClassificationEngine, buildClassificationHaystack, extractAmount, hasStrongPurchaseEvidence } from './classification.engine.js';
 import { EmailService } from './email.service.js';
 import type { GmailMessageDetail, GmailMessageQueryResult } from './gmail.types.js';
-import { GeminiProvider } from './gemini.provider.js';
 import { RequestyProvider } from './requesty.provider.js';
 import { AIRateLimitError, type AIProvider } from './ai-provider.js';
 import type { ExtractedPurchase, NormalizedEmail } from './email-contracts.js';
@@ -478,9 +477,7 @@ export class EmailSyncService {
       );
       const aiProvider: AIProvider | null = env.requestyApiKey
         ? new RequestyProvider()
-        : env.geminiApiKey
-          ? new GeminiProvider()
-          : null;
+        : null;
       const result: GmailMessageQueryResult = { processed: 0, created: 0, skipped: 0 };
       let shouldFailRun = false;
       let failureReason: string | null = null;
@@ -555,27 +552,16 @@ export class EmailSyncService {
             }
 
             continue;
-          } catch (error: any) {
-  console.error('[EmailSyncService.syncUser] Erro ORIGINAL no processamento por IA:', {
-    name: error?.name,
-    message: error?.message,
-    status: error?.response?.status,
-    url: error?.config?.url,
-    method: error?.config?.method,
-    responseData: error?.response?.data,
-    code: error?.code,
-    stack: error?.stack,
-  });
+          } catch (error) {
+            if (error instanceof AIRateLimitError) {
+              shouldFailRun = true;
+              failureReason = error.message;
+              break;
+            }
 
-  if (error instanceof AIRateLimitError) {
-    shouldFailRun = true;
-    failureReason = error.message;
-    break;
-  }
-
-  shouldFailRun = true;
-  failureReason = safeErrorMessage(error);
-}
+            shouldFailRun = true;
+            failureReason = safeErrorMessage(error);
+          }
         }
       }
 
@@ -593,24 +579,17 @@ export class EmailSyncService {
       });
 
       return result;
-    } catch (error: any) {
-  console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', {
-    name: error?.name,
-    message: error?.message,
-    stack: error?.stack,
-    cause: error?.cause,
-  });
-
-  await prisma.tb_integracao.update({
-    where: { integracao_id: integration.integracao_id },
-    data: {
-      integracao_sincronizacao_status: 'ERRO',
-      integracao_ultimo_erro: safeErrorMessage(error),
-    },
-  });
-
-  throw error;
-}
+    } catch (error) {
+      console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', safeErrorMessage(error));
+      await prisma.tb_integracao.update({
+        where: { integracao_id: integration.integracao_id },
+        data: {
+          integracao_sincronizacao_status: 'ERRO',
+          integracao_ultimo_erro: safeErrorMessage(error),
+        },
+      });
+      throw error;
+    }
   }
 
   

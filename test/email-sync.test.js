@@ -15,7 +15,6 @@ const axios = (await import('axios')).default;
 const { emailRouter } = await import('../dist/src/modules/email/email.routes.js');
 const { EmailController } = await import('../dist/src/modules/email/email.controller.js');
 const { EmailSyncService } = await import('../dist/src/modules/email/email-sync.service.js');
-const { GeminiProvider } = await import('../dist/src/modules/email/gemini.provider.js');
 const { RequestyProvider } = await import('../dist/src/modules/email/requesty.provider.js');
 const { AIRateLimitError } = await import('../dist/src/modules/email/ai-provider.js');
 const { EmailClassificationEngine } = await import('../dist/src/modules/email/classification.engine.js');
@@ -257,7 +256,7 @@ test('RequestyProvider converte 429 em erro genérico de rate limit', async () =
     error.response = {
       status: 429,
       data: { error: { message: 'Please retry in 30 seconds' } },
-      headers: { 'retry-after': '30' },
+      headers: { 'retry-after': '0.001' },
     };
     throw error;
   };
@@ -265,6 +264,86 @@ test('RequestyProvider converte 429 em erro genérico de rate limit', async () =
   const provider = new RequestyProvider();
   await assert.rejects(() => provider.classifyEmail('teste'), (error) => error.name === 'AIRateLimitError');
 
+  axios.post = originalPost;
+  env.requestyApiKey = previous;
+});
+
+test('RequestyProvider faz retry de 429 e consegue concluir a chamada', async () => {
+  const previous = env.requestyApiKey;
+  env.requestyApiKey = 'key';
+  const originalPost = axios.post;
+  const originalRateLimitUntil = RequestyProvider.rateLimitedUntil;
+  let calls = 0;
+  axios.post = async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error = new Error('rate limit');
+      error.response = { status: 429, headers: {} };
+      throw error;
+    }
+    return { data: { choices: [{ message: { content: JSON.stringify({ classificacao: 'PROPAGANDA', purchase: null }) } }] } };
+  };
+
+  RequestyProvider.rateLimitedUntil = 0;
+  const provider = new RequestyProvider();
+  const result = await provider.classifyEmail('teste');
+  assert.equal(result.classificacao, 'PROPAGANDA');
+  assert.equal(calls, 2);
+
+  RequestyProvider.rateLimitedUntil = originalRateLimitUntil;
+  axios.post = originalPost;
+  env.requestyApiKey = previous;
+});
+
+test('RequestyProvider respeita Retry-After em 429', async () => {
+  const previous = env.requestyApiKey;
+  env.requestyApiKey = 'key';
+  const originalPost = axios.post;
+  const originalRateLimitUntil = RequestyProvider.rateLimitedUntil;
+  let calls = 0;
+  const startedAt = Date.now();
+  axios.post = async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error = new Error('rate limit');
+      error.response = { status: 429, headers: { 'retry-after': '0.02' } };
+      throw error;
+    }
+    return { data: { choices: [{ message: { content: JSON.stringify({ classificacao: 'IGNORAR', purchase: null }) } }] } };
+  };
+
+  RequestyProvider.rateLimitedUntil = 0;
+  const provider = new RequestyProvider();
+  await provider.classifyEmail('teste');
+  assert.equal(calls, 2);
+  assert.ok(Date.now() - startedAt >= 15);
+
+  RequestyProvider.rateLimitedUntil = originalRateLimitUntil;
+  axios.post = originalPost;
+  env.requestyApiKey = previous;
+});
+
+test('RequestyProvider não repete erros que não são 429', async () => {
+  const previous = env.requestyApiKey;
+  env.requestyApiKey = 'key';
+  const originalPost = axios.post;
+  const originalRateLimitUntil = RequestyProvider.rateLimitedUntil;
+  for (const status of [400, 401, 402, 500]) {
+    let calls = 0;
+    axios.post = async () => {
+      calls += 1;
+      const error = new Error(`HTTP ${status}`);
+      error.response = { status, headers: {} };
+      throw error;
+    };
+
+    RequestyProvider.rateLimitedUntil = 0;
+    const provider = new RequestyProvider();
+    await assert.rejects(() => provider.classifyEmail('teste'), new RegExp(`HTTP ${status}`));
+    assert.equal(calls, 1);
+  }
+
+  RequestyProvider.rateLimitedUntil = originalRateLimitUntil;
   axios.post = originalPost;
   env.requestyApiKey = previous;
 });
@@ -954,7 +1033,7 @@ test('reprocessamento não entra em loop infinito quando mensagens já persistid
   prisma.tb_compra.create = originalCreate;
 });
 
-test('rate limit do Gemini não gera sequência descontrolada de chamadas', async () => {
+test('rate limit do Requesty não gera sequência descontrolada de chamadas', async () => {
   const originalApiKey = env.requestyApiKey;
   const originalFind = EmailService.findIntegrationByUserId;
   const originalToken = EmailService.getValidAccessToken;
