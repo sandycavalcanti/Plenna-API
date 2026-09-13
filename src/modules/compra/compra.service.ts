@@ -1,8 +1,37 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
-import { MetricasService, getMonthBounds } from './metricas.service.js';
+import { MetricasService } from './metricas.service.js';
 import { AppError } from '../../errors/AppError.js';
+
+// Contrato público anterior à reconciliação. Campos internos novos não são expostos.
+const compraPublicaSelect = {
+  compra_id: true,
+  usuario_id: true,
+  forma_pagamento_id: true,
+  compra_valor: true,
+  compra_horario: true,
+  compra_fonte: true,
+  compra_email: true,
+  compra_classificacao: true,
+  compra_acima_limite: true,
+  compra_usuario_concorda: true,
+  compra_usuario_anotacao: true,
+  compra_data_criacao: true,
+  tb_compra_item: {
+    select: {
+      compra_item_id: true,
+      compra_id: true,
+      categoria_id: true,
+      compra_item_nome: true,
+      compra_item_valor: true,
+      compra_item_data_criacao: true,
+      tb_categoria: {
+        select: { categoria_id: true, categoria_nome: true, categoria_data_criacao: true },
+      },
+    },
+  },
+} satisfies Prisma.tb_compraSelect;
 
 function toCents(value: Prisma.Decimal | number | string) {
   return Math.round(Number(value) * 100);
@@ -86,13 +115,7 @@ export class CompraService {
 
       const compraComItens = await tx.tb_compra.findFirst({
         where: { compra_id: compra.compra_id },
-        include: {
-          tb_compra_item: {
-            include: {
-              tb_categoria: true,
-            },
-          },
-        },
+        select: compraPublicaSelect,
       });
 
       return {
@@ -109,13 +132,7 @@ export class CompraService {
           compra_id: compraId,
           usuario_id: userId,
         },
-        include: {
-          tb_compra_item: {
-            include: {
-              tb_categoria: true,
-            },
-          },
-        },
+        select: compraPublicaSelect,
       });
 
       if (!existingCompra) {
@@ -200,20 +217,15 @@ export class CompraService {
       monthsToRecalculate.set(normalizeMonthKey(existingCompra.compra_horario), existingCompra.compra_horario);
       monthsToRecalculate.set(normalizeMonthKey(purchaseDate), purchaseDate);
 
-      const metricas = [] as Awaited<ReturnType<typeof MetricasService.recalculateMonthlyMetrics>>[];
+      const metricas: NonNullable<Awaited<ReturnType<typeof MetricasService.recalculateMonthlyMetrics>>>[] = [];
       for (const monthDate of monthsToRecalculate.values()) {
-        metricas.push(await MetricasService.recalculateMonthlyMetrics(userId, monthDate, tx));
+        const metrica = await MetricasService.recalculateMonthlyMetrics(userId, monthDate, tx);
+        if (metrica !== null) metricas.push(metrica);
       }
 
       const compra = await tx.tb_compra.findFirst({
         where: { compra_id: compraId },
-        include: {
-          tb_compra_item: {
-            include: {
-              tb_categoria: true,
-            },
-          },
-        },
+        select: compraPublicaSelect,
       });
 
       return {
@@ -257,13 +269,7 @@ export class CompraService {
   static async findAllByUserId(userId: number) {
     return prisma.tb_compra.findMany({
       where: { usuario_id: userId },
-      include: {
-        tb_compra_item: {
-          include: {
-            tb_categoria: true,
-          },
-        },
-      },
+      select: compraPublicaSelect,
       orderBy: {
         compra_horario: 'desc',
       },
@@ -276,13 +282,7 @@ export class CompraService {
         compra_id: compraId,
         usuario_id: userId,
       },
-      include: {
-        tb_compra_item: {
-          include: {
-            tb_categoria: true,
-          },
-        },
-      },
+      select: compraPublicaSelect,
     });
 
     if (!compra) {
