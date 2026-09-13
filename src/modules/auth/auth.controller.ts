@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { AuthService } from './auth.service.js';
 import { registerSchema, loginSchema, forgotPasswordSchema, verifyResetCodeSchema, resetPasswordSchema } from './auth.schemas.js';
 import { handleError } from '../../utils/handleError.js';
+import { obterIp, permitirRedefinicao } from './redefinicao-rate-limit.js';
+import { logSeguro } from '../../utils/logSeguro.js';
 
 export class AuthController {
   static async register(req: Request, res: Response) {
@@ -29,9 +31,15 @@ export class AuthController {
   static async forgotPassword(req: Request, res: Response) {
     try {
       const data = forgotPasswordSchema.parse(req.body);
-      await AuthService.forgotPassword(data.email);
+      try {
+        if (await permitirRedefinicao(data.email, obterIp(req))) {
+          await AuthService.forgotPassword(data.email);
+        }
+      } catch (error) {
+        logSeguro('redefinicao_falhou', error);
+      }
 
-      return res.status(200).json({ message: 'Se o e-mail existir, um código foi enviado.' });
+      return res.status(200).json({ message: 'Se houver uma conta associada a este e-mail, você receberá instruções para redefinir a senha. Caso não receba, aguarde e tente novamente.' });
     } catch (err: any) {
       return handleError(res, 400, err);
     }

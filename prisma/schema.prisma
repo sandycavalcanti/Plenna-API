@@ -299,3 +299,13 @@ enum email_provedor_enum {
 
   @@schema("public")
 }
+
+model tb_limite_requisicao {
+  limite_chave         String   @id @db.VarChar(64)
+  limite_janela_inicio DateTime @db.Timestamptz(3)
+  limite_contagem      Int
+  limite_expira_em     DateTime @db.Timestamptz(3)
+
+  @@index([limite_expira_em])
+  @@schema("public")
+}

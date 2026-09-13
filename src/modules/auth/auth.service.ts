@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../errors/AppError.js";
 import { sendMail } from "../../lib/mailer.js";
+import { logSeguro } from '../../utils/logSeguro.js';
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 
@@ -82,6 +83,7 @@ export class AuthService {
   // Passo 1 da tela de recuperação: gera e envia o código por e-mail.
   // Não revela se o e-mail existe ou não, para evitar enumeração de usuários.
   static async forgotPassword(email: string) {
+    const correlacao = crypto.randomUUID();
     const user = await prisma.tb_usuario.findUnique({
       where: { usuario_email: email },
     });
@@ -129,11 +131,15 @@ export class AuthService {
          <p>Esse código expira em ${RESET_CODE_TTL_MINUTES} minutos. Se você não pediu essa redefinição, ignore este e-mail.</p>`,
       );
     } catch (error) {
-      await prisma.tb_redefinicao_senha.update({
-        where: { redefinicao_senha_id: registro.redefinicao_senha_id },
-        data: { redefinicao_senha_usado: true },
-      });
-      console.error("Falha ao enviar e-mail de redefinição de senha");
+      logSeguro('redefinicao_smtp_falhou', error, correlacao);
+      try {
+        await prisma.tb_redefinicao_senha.update({
+          where: { redefinicao_senha_id: registro.redefinicao_senha_id },
+          data: { redefinicao_senha_usado: true },
+        });
+      } catch (invalidacaoError) {
+        logSeguro('redefinicao_invalidacao_falhou', invalidacaoError, correlacao);
+      }
     }
   }
 

@@ -21,6 +21,8 @@ if (!Number.isInteger(port) || port <= 0 || port > 65535) {
 export const env = {
   nodeEnv,
   isProduction: nodeEnv === "production",
+  // Segredo independente, com ao menos 32 bytes; nunca versionar seu valor.
+  rateLimitHmacKey: process.env.RATE_LIMIT_HMAC_KEY,
   port,
   dbUrl: process.env.DIRECT_URL ?? requireEnv("DATABASE_URL"),
   smtp: {
