@@ -11,7 +11,7 @@ export const updateUserSchema = z.object({
   telefone: z.string().optional(),
   dataNascimento: z.string().optional(),
   limiteCompra: z.number().optional(),
-  metaValorMensal: z.number().optional(),
+  metaValorMensal: z.number().positive().optional(),
   metaValorCompra: z.number().optional(),
   metaTempo: z.number().int().optional(),
   gatilhoConsumo: z.string().optional(),
