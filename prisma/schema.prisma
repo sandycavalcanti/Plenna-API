@@ -145,14 +145,24 @@ model tb_redefinicao_senha {
 }
 
 model tb_tempo_uso {
-  tempo_uso_id           Int        @id @default(autoincrement())
-  usuario_id             Int
-  tempo_uso_nome         String     @db.VarChar(45)
-  tempo_uso_minutos      Decimal    @db.Decimal(10, 2)
-  tempo_uso_data         DateTime   @db.Timestamp(6)
-  tempo_uso_data_criacao DateTime   @default(now()) @db.Timestamp(6)
-  tb_usuario             tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tempo_uso_id               Int        @id @default(autoincrement())
+  usuario_id                 Int
+  tempo_uso_nome             String     @db.VarChar(100)
+  tempo_uso_minutos          Decimal?   @db.Decimal(10, 2)
+  tempo_uso_data             DateTime?  @db.Timestamp(6)
+  tempo_uso_package_id       String?    @db.VarChar(255)
+  tempo_uso_inicio           DateTime?  @db.Timestamptz(3)
+  tempo_uso_fim              DateTime?  @db.Timestamptz(3)
+  tempo_uso_duracao_segundos Int?
+  tempo_uso_data_local       DateTime?  @db.Date
+  tempo_uso_timezone         String?    @db.VarChar(64)
+  tempo_uso_origem           String     @default("LEGADO") @db.VarChar(30)
+  tempo_uso_data_criacao     DateTime   @default(now()) @db.Timestamp(6)
+  tempo_uso_data_modificacao DateTime   @default(now()) @updatedAt @db.Timestamp(6)
+  tb_usuario                 tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([usuario_id, tempo_uso_package_id, tempo_uso_inicio, tempo_uso_fim], name: "tempo_uso_usuario_package_periodo_unique", map: "tempo_uso_usuario_package_periodo_unique")
+  @@index([usuario_id, tempo_uso_inicio], map: "tempo_uso_usuario_inicio_idx")
   @@schema("public")
 }
 
