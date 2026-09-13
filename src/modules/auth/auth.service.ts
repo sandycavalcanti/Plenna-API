@@ -5,6 +5,8 @@ import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../errors/AppError.js";
 import { sendMail } from "../../lib/mailer.js";
 import { logSeguro } from '../../utils/logSeguro.js';
+import { ConsentimentoService } from "../consentimento/consentimento.service.js";
+import { CONSENTIMENTO_CODIGOS } from "../consentimento/consentimento.constants.js";
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 
@@ -17,6 +19,7 @@ export class AuthService {
     email: string;
     senha: string;
     nome: string;
+    aceitouTermos: true;
   }) {
     const userExists = await prisma.tb_usuario.findUnique({
       where: { usuario_email: data.email },
@@ -26,12 +29,7 @@ export class AuthService {
 
     const hash = await bcrypt.hash(data.senha, 10);
     
-    const tipos = await ConsentimentoService.findTipos();
-    const tipoTermos = tipos.find((tipo) =>
-      tipo.consentimento_tipo_nome.toLowerCase().includes('termo'),
-    );
-
-    if (!tipoTermos) throw new AppError('Tipo de consentimento dos termos não encontrado', 500);
+    const tipoTermos = await ConsentimentoService.findTipoPorCodigo(CONSENTIMENTO_CODIGOS.TERMOS_USO);
 
     return prisma.$transaction(async (tx) => {
       const user = await tx.tb_usuario.create({

@@ -11,6 +11,7 @@ import { emailRouter } from './modules/email/email.routes.js';
 import { formaPagamentoRouter } from './modules/forma-pagamento/forma-pagamento.routes.js';
 import { compraRouter } from './modules/compra/compra.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
+import { consentimentoRouter } from './modules/consentimento/consentimento.routes.js';
 
 const app = express();
 
@@ -27,6 +28,7 @@ app.use('/email', emailRouter);
 app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);
 app.use('/dashboard', dashboardRouter);
+app.use('/consentimento', consentimentoRouter);
 
 app.get('/', (_req, res) => {
   res.json({

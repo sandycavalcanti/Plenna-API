@@ -13,6 +13,7 @@ export const registerSchema = z.object({
   email: z.string().email(),
   senha: z.string().min(6),
   nome: z.string().min(2),
+  aceitouTermos: z.literal(true, { message: 'É preciso aceitar os termos de uso' }),
 });
 
 export const loginSchema = z.object({

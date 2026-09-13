@@ -78,11 +78,13 @@ model tb_consentimento {
   tb_consentimento_tipo      tb_consentimento_tipo @relation(fields: [consentimento_tipo_id], references: [consentimento_tipo_id], onDelete: NoAction, onUpdate: NoAction)
   tb_usuario                 tb_usuario            @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([usuario_id, consentimento_tipo_id], name: "usuario_tipo_unique", map: "usuario_tipo_unique")
   @@schema("public")
 }
 
 model tb_consentimento_tipo {
   consentimento_tipo_id           Int                @id @default(autoincrement())
+  consentimento_tipo_codigo       String             @unique @db.VarChar(45)
   consentimento_tipo_nome         String             @db.VarChar(45)
   consentimento_tipo_data_criacao DateTime           @default(now()) @db.Timestamp(6)
   tb_consentimento                tb_consentimento[]
@@ -177,6 +179,7 @@ model tb_tempo_uso {
 }
 
 model tb_usuario {
+  tb_oauth_tentativa        tb_oauth_tentativa[]
   usuario_id                Int                    @id @default(autoincrement())
   usuario_email             String                 @unique @db.VarChar(64)
   usuario_senha             String                 @db.VarChar(255)
@@ -307,5 +310,32 @@ model tb_limite_requisicao {
   limite_expira_em     DateTime @db.Timestamptz(3)
 
   @@index([limite_expira_em])
+  @@schema("public")
+}
+
+model tb_oauth_tentativa {
+  oauth_tentativa_id     String              @id @db.Uuid
+  usuario_id             Int
+  oauth_provedor         email_provedor_enum
+  oauth_state_hash       String              @unique @db.VarChar(64)
+  oauth_finalizacao_hash String              @db.VarChar(64)
+  oauth_status           oauth_status_enum   @default(PENDENTE)
+  oauth_criada_em        DateTime            @default(now()) @db.Timestamptz(3)
+  oauth_expira_em        DateTime            @db.Timestamptz(3)
+  oauth_finalizada_em    DateTime?           @db.Timestamptz(3)
+  tb_usuario             tb_usuario          @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade)
+
+  @@index([usuario_id, oauth_provedor, oauth_status])
+  @@index([oauth_expira_em])
+  @@schema("public")
+}
+
+enum oauth_status_enum {
+  PENDENTE
+  PROCESSANDO
+  CONCLUIDA
+  CANCELADA
+  FALHOU
+
   @@schema("public")
 }

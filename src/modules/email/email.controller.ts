@@ -1,36 +1,54 @@
-import { Response } from 'express';
-import { AuthRequest } from '../auth/auth.middleware.js';
+import type { Request, Response } from 'express';
+import type { AuthRequest } from '../auth/auth.middleware.js';
 import { EmailService } from './email.service.js';
+import { OAuthTentativaService } from './oauth-tentativa.service.js';
+import { finalizarEmailSchema, stateSchema, tentativaSchema } from './email.schemas.js';
+import { handleError } from '../../utils/handleError.js';
+import { logSeguro } from '../../utils/logSeguro.js';
 
+function semCache(res: Response) { res.set({ 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'no-referrer' }); }
 export class EmailController {
   static async connect(req: AuthRequest, res: Response) {
+    semCache(res);
+    if (!req.userId) return res.sendStatus(401);
+    try { return res.json(await EmailService.iniciar(req.userId)); }
+    catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 500, error); }
+  }
+  static async callback(req: Request, res: Response) {
+    semCache(res);
     try {
-      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
-
-      const url = EmailService.generateGoogleUrl(req.userId);
-      return res.json({ url });
-    } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      const state = stateSchema.parse(req.query.state);
+      const tentativa = await OAuthTentativaService.callback(state);
+      const params = new URLSearchParams({ state, tentativa });
+      if (req.query.error !== undefined) params.set('resultado', 'cancelado');
+      else {
+        if (typeof req.query.code !== 'string' || !req.query.code || req.query.code.length > 4096) throw new Error('Callback invalido');
+        params.set('code', req.query.code);
+      }
+      return res.redirect(303, 'plenna://oauth-success?' + params);
+    } catch (error) {
+      logSeguro('oauth_falhou', error);
+      return res.redirect(303, 'plenna://oauth-success?resultado=erro');
     }
   }
-
-  static async callback(req: any, res: Response) {
+  static async finalizar(req: AuthRequest, res: Response) {
+    semCache(res);
+    if (!req.userId) return res.sendStatus(401);
+    try { return res.json(await EmailService.finalizar(req.userId, finalizarEmailSchema.parse(req.body))); }
+    catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 400, error); }
+  }
+  static async cancelar(req: AuthRequest, res: Response) {
+    semCache(res);
+    if (!req.userId) return res.sendStatus(401);
     try {
-      const { code, state } = req.query;
-
-      if (!code || !state) {
-        return res.status(400).json({ error: 'Código e state são obrigatórios' });
-      }
-
-      const tokens = await EmailService.exchangeCodeForTokens(code);
-      const email = await EmailService.getGoogleUserEmail(tokens.access_token);
-      await EmailService.saveIntegration(Number(state), email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
-
-      const successUrl = `${process.env.API_BASE_URL || 'https://plenna-api-orpin.vercel.app'}/oauth-success.html`;
-      return res.redirect(successUrl);
-    } catch (error: any) {
-      console.error(error.response?.data || error);
-      return res.redirect('plenna://oauth-error');
-    }
+      await OAuthTentativaService.encerrar(req.userId, tentativaSchema.parse(req.body), 'CANCELADA');
+      return res.sendStatus(204);
+    } catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 400, error); }
+  }
+  static async estado(req: AuthRequest, res: Response) {
+    semCache(res);
+    if (!req.userId) return res.sendStatus(401);
+    try { return res.json(await EmailService.estado(req.userId)); }
+    catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 500, error); }
   }
 }
