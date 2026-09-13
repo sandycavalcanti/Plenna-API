@@ -1,0 +1,8 @@
+export const TEMPO_USO_SCHEMA_VERSION = 1 as const;
+export const TEMPO_USO_MAX_ITENS_POR_LOTE = 200;
+export const TEMPO_USO_JANELA_DIAS = 2;
+
+export const TEMPO_USO_ORIGENS = {
+  LEGADO: 'LEGADO',
+  ANDROID_USAGE_STATS: 'ANDROID_USAGE_STATS',
+} as const;
