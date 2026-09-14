@@ -14,5 +14,8 @@ compraRouter.get('/pending', CompraController.findPendingByUserId);
 compraRouter.get('/:compraId', CompraController.findById);
 compraRouter.post('/', CompraController.create);
 compraRouter.put('/:compraId', CompraController.update);
+// A rota de exclusão permanece protegida pelo authMiddleware aplicado acima.
+// O controller extrai o usuário do JWT, portanto o cliente não escolhe o proprietário.
+compraRouter.delete('/:compraId', CompraController.delete);
 compraRouter.post('/:compraId/confirm', CompraController.confirm);
 compraRouter.post('/:compraId/ignore', CompraController.ignore);

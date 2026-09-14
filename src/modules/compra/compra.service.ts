@@ -310,4 +310,39 @@ export class CompraService {
     if (!compra) throw new AppError('Compra não encontrada', 404);
     return compra;
   }
+
+  /**
+   * Exclui uma compra e seus itens de forma atômica.
+   *
+   * O schema usa NoAction na relação entre compra e item; por isso a ordem é
+   * obrigatória: primeiro removemos os filhos e somente depois o pai.
+   * A busca também ocorre dentro da transaction e combina compra_id com
+   * usuario_id, impedindo que um usuário opere sobre compra de outra pessoa.
+   */
+  static async delete(userId: number, compraId: number) {
+    return prisma.$transaction(async (tx) => {
+      // A compra de outro usuário é tratada como inexistente para não revelar
+      // informações sobre recursos pertencentes a terceiros.
+      const existing = await tx.tb_compra.findFirst({
+        where: { compra_id: compraId, usuario_id: userId },
+        select: { compra_id: true, compra_horario: true, compra_status: true },
+      });
+
+      if (!existing) throw new AppError('Compra não encontrada', 404);
+
+      // NoAction não remove itens automaticamente; deleteMany torna explícita
+      // a limpeza dos registros dependentes antes da exclusão da compra.
+      await tx.tb_compra_item.deleteMany({ where: { compra_id: compraId } });
+
+      // O registro pai só é removido depois que seus itens foram tratados.
+      await tx.tb_compra.delete({ where: { compra_id: compraId } });
+
+      // Apenas compras confirmadas participam das métricas persistidas.
+      // O recálculo dentro da mesma transaction evita deixar o mês incoerente
+      // caso a operação de exclusão falhe antes do commit.
+      if (existing.compra_status === 'CONFIRMADA') {
+        await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
+      }
+    });
+  }
 }

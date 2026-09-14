@@ -90,4 +90,25 @@ export class CompraController {
       return handleError(res, 404, error);
     }
   }
+
+  /**
+   * Exclui uma compra pertencente ao usuário autenticado.
+   *
+   * A autorização não usa nenhum identificador enviado no corpo ou na query:
+   * o service recebe exclusivamente o req.userId preenchido pelo JWT.
+   * O status 204 informa sucesso sem devolver dados desnecessários da compra.
+   */
+  static async delete(req: AuthRequest, res: Response) {
+    try {
+      // Sem userId não existe contexto seguro para validar ownership.
+      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+
+      // A conversão mantém o mesmo padrão das demais operações por ID.
+      await CompraService.delete(req.userId, Number(req.params.compraId));
+      return res.status(204).send();
+    } catch (error: any) {
+      // AppError preserva o 404 de compra inexistente ou de outro usuário.
+      return handleError(res, 500, error);
+    }
+  }
 }
