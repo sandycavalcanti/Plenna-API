@@ -111,4 +111,28 @@ export class CompraController {
       return handleError(res, 500, error);
     }
   }
+
+  /**
+   * Remove um único item de uma compra do usuário autenticado.
+   * A regra de ownership e a regra do último item permanecem no service,
+   * mantendo o controller responsável apenas pelo contrato HTTP.
+   */
+  static async deleteItem(req: AuthRequest, res: Response) {
+    try {
+      // O usuário precisa vir do JWT para impedir autorização por ID enviado
+      // pelo cliente em corpo, query string ou parâmetro de rota.
+      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+
+      // O service devolve a compra atualizada porque o total muda após a remoção.
+      const compra = await CompraService.deleteItem(
+        req.userId,
+        Number(req.params.compraId),
+        Number(req.params.compraItemId),
+      );
+      return res.json(compra);
+    } catch (error: any) {
+      // AppError preserva respostas 404/409 sem expor detalhes internos.
+      return handleError(res, 500, error);
+    }
+  }
 }

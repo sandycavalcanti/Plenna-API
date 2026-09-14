@@ -71,7 +71,9 @@ function resolveMetricPeriods(previousDate: Date, currentDate: Date) {
   return previousMonth === currentMonth ? [currentDate] : [previousDate, currentDate];
 }
 
-async function recalculatePurchaseLimit(tx: typeof prisma, userId: number) {
+// O helper recebe somente o delegate usado na consulta, permitindo reutilizar
+// a mesma regra tanto no PrismaClient quanto no cliente transacional.
+async function recalculatePurchaseLimit(tx: Pick<Prisma.TransactionClient, 'tb_usuario'>, userId: number) {
   const user = await tx.tb_usuario.findFirst({
     where: { usuario_id: userId, usuario_status: true },
     select: { usuario_meta_valor_compra: true },
@@ -343,6 +345,75 @@ export class CompraService {
       if (existing.compra_status === 'CONFIRMADA') {
         await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
       }
+    });
+  }
+
+  /**
+   * Remove um item e recalcula os dados derivados da compra.
+   *
+   * Toda a sequência ocorre na mesma transaction: validação da compra e do
+   * item, proteção contra remoção do último item, delete, novo total, limite,
+   * compra atualizada e métricas. Assim não existe estado parcial persistido.
+   */
+  static async deleteItem(userId: number, compraId: number, compraItemId: number) {
+    return prisma.$transaction(async (tx) => {
+      // Combinar compra_id e usuario_id faz com que compras de terceiros sejam
+      // tratadas como inexistentes, sem revelar sua existência ao solicitante.
+      const existing = await tx.tb_compra.findFirst({
+        where: { compra_id: compraId, usuario_id: userId },
+        select: { compra_id: true, compra_horario: true, compra_status: true },
+      });
+      if (!existing) throw new AppError('Compra não encontrada', 404);
+
+      // O item precisa estar vinculado à compra informada; isso também evita
+      // excluir item pertencente a outra compra do mesmo usuário.
+      const item = await tx.tb_compra_item.findFirst({
+        where: { compra_item_id: compraItemId, compra_id: compraId },
+        select: { compra_item_id: true },
+      });
+      if (!item) throw new AppError('Item da compra não encontrado', 404);
+
+      // A compra deve manter pelo menos um item após a operação.
+      const itemCount = await tx.tb_compra_item.count({ where: { compra_id: compraId } });
+      if (itemCount <= 1) {
+        throw new AppError('Não é possível excluir o último item da compra. Exclua a compra completa.', 409);
+      }
+
+      // Com NoAction no schema, a exclusão do item é explícita e transacional.
+      await tx.tb_compra_item.delete({ where: { compra_item_id: compraItemId } });
+
+      // Recalculamos o total somente com os itens restantes, usando centavos
+      // para manter a mesma precisão monetária das demais operações do service.
+      const remainingItems = await tx.tb_compra_item.findMany({
+        where: { compra_id: compraId },
+        select: { compra_item_valor: true },
+      });
+      const totalCents = remainingItems.reduce((sum, remainingItem) => sum + toCents(remainingItem.compra_item_valor), 0);
+      const compraValor = fromCents(totalCents);
+
+      // O limite é recalculado a partir da configuração atual do usuário para
+      // manter compra_acima_limite coerente com o novo valor total.
+      const purchaseLimitCents = await recalculatePurchaseLimit(tx, userId);
+      const compraAcimaLimite = purchaseLimitCents !== null
+        ? toCents(compraValor) > purchaseLimitCents
+        : null;
+
+      await tx.tb_compra.update({
+        where: { compra_id: compraId },
+        data: { compra_valor: compraValor, compra_acima_limite: compraAcimaLimite },
+      });
+
+      // Somente compras confirmadas alteram as métricas financeiras mensais.
+      if (existing.compra_status === 'CONFIRMADA') {
+        await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
+      }
+
+      // Retornamos a compra completa já atualizada para o front não precisar
+      // fazer um GET adicional após cada exclusão individual.
+      return tx.tb_compra.findFirst({
+        where: { compra_id: compraId, usuario_id: userId },
+        include: { tb_compra_item: { include: { tb_categoria: true } } },
+      });
     });
   }
 }
