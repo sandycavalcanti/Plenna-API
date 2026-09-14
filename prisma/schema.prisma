@@ -71,11 +71,13 @@ model tb_consentimento {
   tb_consentimento_tipo      tb_consentimento_tipo @relation(fields: [consentimento_tipo_id], references: [consentimento_tipo_id], onDelete: NoAction, onUpdate: NoAction)
   tb_usuario                 tb_usuario            @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([usuario_id, consentimento_tipo_id], name: "usuario_tipo_unique", map: "usuario_tipo_unique")
   @@schema("public")
 }
 
 model tb_consentimento_tipo {
   consentimento_tipo_id           Int                @id @default(autoincrement())
+  consentimento_tipo_codigo       String             @unique @db.VarChar(45)
   consentimento_tipo_nome         String             @db.VarChar(45)
   consentimento_tipo_data_criacao DateTime           @default(now()) @db.Timestamp(6)
   tb_consentimento                tb_consentimento[]
@@ -93,21 +95,22 @@ model tb_forma_pagamento {
 }
 
 model tb_usuario {
-  usuario_id                Int                @id @default(autoincrement())
-  usuario_email             String             @unique @db.VarChar(64)
-  usuario_senha             String             @db.VarChar(255)
-  usuario_nome              String             @db.VarChar(45)
-  usuario_telefone          String?            @db.VarChar(20)
-  usuario_data_nascimento   DateTime?          @db.Date
-  usuario_status            Boolean            @default(true)
+  tb_oauth_tentativa        tb_oauth_tentativa[]
+  usuario_id                Int                    @id @default(autoincrement())
+  usuario_email             String                 @unique @db.VarChar(64)
+  usuario_senha             String                 @db.VarChar(255)
+  usuario_nome              String                 @db.VarChar(45)
+  usuario_telefone          String?                @db.VarChar(20)
+  usuario_data_nascimento   DateTime?              @db.Date
+  usuario_status            Boolean                @default(true)
   usuario_limite_compra     Int?
-  usuario_meta_valor_mensal Decimal?           @db.Decimal(10, 2)
-  usuario_meta_valor_compra Decimal?           @db.Decimal(10, 2)
+  usuario_meta_valor_mensal Decimal?               @db.Decimal(10, 2)
+  usuario_meta_valor_compra Decimal?               @db.Decimal(10, 2)
   usuario_meta_tempo        Int?
-  usuario_gatilho_consumo   String?            @db.VarChar(45)
-  usuario_tempo_tela        String?            @db.VarChar(20)
-  usuario_incomodo_consumo  String?            @db.VarChar(45)
-  usuario_data_criacao      DateTime           @default(now()) @db.Timestamp(6)
+  usuario_gatilho_consumo   String?                @db.VarChar(45)
+  usuario_tempo_tela        String?                @db.VarChar(20)
+  usuario_incomodo_consumo  String?                @db.VarChar(45)
+  usuario_data_criacao      DateTime               @default(now()) @db.Timestamp(6)
   tb_ai_anotacao            tb_ai_anotacao[]
   tb_compra                 tb_compra[]
   tb_consentimento          tb_consentimento[]
@@ -118,6 +121,8 @@ model tb_usuario {
   tb_preferencia            tb_preferencia[]
   tb_propaganda             tb_propaganda[]
   tb_tempo_uso              tb_tempo_uso[]
+  tb_redefinicao_senha      tb_redefinicao_senha[]
+  tb_propaganda             tb_propaganda[]
 
   @@schema("public")
 }

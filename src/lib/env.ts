@@ -77,6 +77,8 @@ function parseStrictBoolean(name: string, raw: string): boolean {
 export const env = {
   nodeEnv,
   isProduction: nodeEnv === "production",
+  // Segredo independente, com ao menos 32 bytes; nunca versionar seu valor.
+  rateLimitHmacKey: process.env.RATE_LIMIT_HMAC_KEY,
   port,
   dbUrl: process.env.DIRECT_URL ?? requireEnv("DATABASE_URL"),
   apiBaseUrl: process.env.API_BASE_URL ?? "https://plenna-api-orpin.vercel.app",
@@ -100,4 +102,11 @@ export const env = {
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",
   requestyTimeoutMs: requirePositiveInteger("REQUESTY_TIMEOUT_MS", requestyTimeoutMsRaw),
   requestyRateLimitCooldownMs: requirePositiveInteger("REQUESTY_RATE_LIMIT_COOLDOWN_MS", requestyRateLimitCooldownMsRaw),
+  smtp: {
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+    from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+  },
 };

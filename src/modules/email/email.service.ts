@@ -52,7 +52,6 @@ export class EmailService {
 
     return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
   }
-
   static async exchangeCodeForTokens(code: string) {
     const response = await axios.post(
       'https://oauth2.googleapis.com/token',
@@ -68,7 +67,6 @@ export class EmailService {
 
     return googleTokenResponseSchema.parse(response.data);
   }
-
   static async getGoogleUserEmail(accessToken: string) {
     const response = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -112,7 +110,6 @@ export class EmailService {
       },
     });
   }
-
   static async refreshAccessToken(refreshToken: string) {
     const response = await axios.post(
       'https://oauth2.googleapis.com/token',

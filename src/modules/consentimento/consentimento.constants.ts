@@ -1,0 +1,8 @@
+export const CONSENTIMENTO_CODIGOS = {
+  TERMOS_USO: 'TERMOS_USO',
+  EMAIL: 'EMAIL',
+  MONITORAMENTO_TEMPO_USO: 'MONITORAMENTO_TEMPO_USO',
+} as const;
+
+export type ConsentimentoCodigo =
+  (typeof CONSENTIMENTO_CODIGOS)[keyof typeof CONSENTIMENTO_CODIGOS];

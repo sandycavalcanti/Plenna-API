@@ -35,8 +35,8 @@ export class EmailController {
       return handleError(res, 500, error);
     }
   }
-
-  static async callback(req: any, res: Response) {
+  static async callback(req: Request, res: Response) {
+    semCache(res);
     try {
       const { code, state } = req.query;
       if (!code || !state) return res.status(400).json({ error: 'Código e state são obrigatórios' });

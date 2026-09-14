@@ -6,7 +6,7 @@ export const createPreferenciaCategoriaSchema = z.object({
 });
 
 export const createPreferenciasCategoriaBulkSchema = z.object({
-  preferencias: z.array(createPreferenciaCategoriaSchema),
+  preferencias: z.array(createPreferenciaCategoriaSchema).min(1, 'Informe ao menos uma preferência'),
 });
 
 export const updatePreferenciaCategoriaSchema = z.object({
