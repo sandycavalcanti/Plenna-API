@@ -14,7 +14,7 @@ process.env.REQUESTY_API_KEY = process.env.REQUESTY_API_KEY ?? 'requesty-key';
 const axios = (await import('axios')).default;
 const { emailRouter } = await import('../dist/src/modules/email/email.routes.js');
 const { EmailController } = await import('../dist/src/modules/email/email.controller.js');
-const { EmailSyncService } = await import('../dist/src/modules/email/email-sync.service.js');
+const { EmailSyncService, extractPropagandaEstablishment } = await import('../dist/src/modules/email/email-sync.service.js');
 const { RequestyProvider } = await import('../dist/src/modules/email/requesty.provider.js');
 const { AIRateLimitError } = await import('../dist/src/modules/email/ai-provider.js');
 const { EmailClassificationEngine } = await import('../dist/src/modules/email/classification.engine.js');
@@ -53,6 +53,21 @@ function routeMethods(path) {
     .filter((layer) => layer.route?.path === path)
     .flatMap((layer) => Object.keys(layer.route.methods).filter((method) => layer.route.methods[method]));
 }
+
+test('extrai estabelecimento de propaganda pelo display name do remetente', () => {
+  assert.equal(extractPropagandaEstablishment('"C&A" <coleta@info.trustvox.com.br>'), 'C&A');
+  assert.equal(extractPropagandaEstablishment('Uber <uber@uber.com>'), 'Uber');
+  assert.equal(extractPropagandaEstablishment('SHEIN <shein@edm.br.sheinemail.com>'), 'SHEIN');
+  assert.equal(extractPropagandaEstablishment('Udemy <hello@students.udemy.com>'), 'Udemy');
+});
+
+test('extrai fallback conservador do dominio e rejeita remetente invalido', () => {
+  assert.equal(extractPropagandaEstablishment('hello@students.udemy.com'), 'UDEMY');
+  assert.equal(extractPropagandaEstablishment('hello@example.com'), 'EXAMPLE');
+  assert.equal(extractPropagandaEstablishment(''), null);
+  assert.equal(extractPropagandaEstablishment('remetente invalido'), null);
+  assert.equal(extractPropagandaEstablishment(null), null);
+});
 
 test('cron route registrada em GET e POST', () => {
   const methods = routeMethods('/sync/cron');

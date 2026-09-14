@@ -175,6 +175,31 @@ function buildExtractedPurchase(message, supplemental) {
         },
     };
 }
+/**
+ * Obtém o estabelecimento de uma propaganda sem depender de IA.
+ * O display name do remetente é a evidência principal; o domínio só é usado
+ * quando oferece um rótulo organizacional claro, evitando expor dados do email.
+ */
+export function extractPropagandaEstablishment(from) {
+    if (!from?.trim())
+        return null;
+    const displayMatch = from.match(/^\s*(?:"([^"]+)"|'([^']+)'|([^<]+?))\s*<[^>]+>\s*$/);
+    const displayName = displayMatch?.[1] ?? displayMatch?.[2] ?? displayMatch?.[3];
+    if (displayName?.trim())
+        return displayName.trim();
+    const emailMatch = from.match(/^\s*[^@\s<>]+@([^\s<>]+)\s*$/);
+    const host = emailMatch?.[1]?.toLowerCase().replace(/\.$/, '');
+    if (!host || !host.includes('.'))
+        return null;
+    const genericSuffixes = new Set(['com', 'net', 'org', 'edu', 'gov', 'com.br', 'net.br', 'org.br', 'edu.br', 'gov.br', 'co.uk']);
+    const parts = host.split('.').filter(Boolean);
+    const suffixLength = parts.length >= 2 && genericSuffixes.has(parts.slice(-2).join('.')) ? 2 : 1;
+    const candidate = parts[parts.length - suffixLength - 1];
+    const technicalLabels = new Set(['www', 'mail', 'email', 'smtp', 'noreply', 'no-reply', 'info', 'support', 'notify', 'notifications', 'marketing', 'students']);
+    if (!candidate || candidate.length < 2 || technicalLabels.has(candidate))
+        return null;
+    return candidate.toUpperCase();
+}
 async function resolveExistingPurchase(userId, message, extracted, paymentMethodId) {
     const messageDate = parseDateFromMessage(message);
     if (!messageDate || !extracted.establishment || (extracted.orderNumber === null && extracted.totalAmount === null))
@@ -220,13 +245,15 @@ async function resolveExistingPurchase(userId, message, extracted, paymentMethod
     });
     return { reconciled: updated };
 }
-async function createCompraFromMessage(userId, message, supplemental = {}, accessToken, aiProvider) {
+async function createCompraFromMessage(userId, message, supplemental = {}, accessToken, aiProvider, classificationPath = 'DETERMINISTIC_COMPRA') {
     const deterministic = buildExtractedPurchase(message, supplemental);
     let aiPurchase = null;
+    let aiAttempted = false;
     const extractor = aiProvider && 'extractPurchase' in aiProvider
         ? aiProvider
         : null;
     if (extractor && needsAiEnrichment(deterministic)) {
+        aiAttempted = true;
         try {
             aiPurchase = await extractor.extractPurchase(buildPurchaseExtractionPrompt(toNormalizedEmail(message)));
         }
@@ -260,6 +287,42 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
     if (existing)
         return existing;
     const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
+    const persistenceDropReasons = {
+        missingName: 0,
+        missingUnitPrice: 0,
+        invalidUnitPrice: 0,
+        nonPositiveUnitPrice: 0,
+    };
+    for (const item of extracted.items) {
+        if (!item.name?.trim()) {
+            persistenceDropReasons.missingName += 1;
+        }
+        else if (item.unitPrice === null || item.unitPrice === undefined) {
+            persistenceDropReasons.missingUnitPrice += 1;
+        }
+        else if (!Number.isFinite(item.unitPrice)) {
+            persistenceDropReasons.invalidUnitPrice += 1;
+        }
+        else if (item.unitPrice <= 0) {
+            persistenceDropReasons.nonPositiveUnitPrice += 1;
+        }
+    }
+    // Instrumentacao temporaria para o E2E: somente contagens e decisoes,
+    // sem corpo do email, produto, valor, URL, token ou dado fiscal.
+    console.info('[PurchaseE2E]', {
+        classificationPath,
+        deterministicItemsCount: deterministic.items.length,
+        aiAttempted,
+        aiItemsCount: aiPurchase?.items.length ?? 0,
+        gmailFiscalDocumentsCount: attachmentFiscal.nfe.length + attachmentFiscal.danfe.length,
+        fiscalLinkDocumentsCount: linkFiscal.nfe.length + linkFiscal.danfe.length,
+        fiscalParsedItemsCount: fiscal.nfe.reduce((count, source) => count + source.items.length, 0)
+            + fiscal.danfe.reduce((count, source) => count + source.items.length, 0),
+        mergedItemsCount: extracted.items.length,
+        persistenceInputItemsCount: extracted.items.length,
+        persistenceAcceptedItemsCount: persistedItems.length,
+        persistenceDropReasons,
+    });
     try {
         const compra = await prisma.tb_compra.create({
             data: {
@@ -299,7 +362,7 @@ async function createPropagandaFromMessage(userId, message, categoryId) {
                 propaganda_email_mensagem_id: message.id,
                 propaganda_remetente: message.from ?? null,
                 propaganda_assunto: message.subject ?? null,
-                propaganda_estabelecimento: null,
+                propaganda_estabelecimento: extractPropagandaEstablishment(message.from),
                 propaganda_data_recebimento: horario,
             },
         });
@@ -474,7 +537,7 @@ export class EmailSyncService {
                                 result.skipped += 1;
                                 continue;
                             }
-                            const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase, accessToken, aiProvider);
+                            const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase, accessToken, aiProvider, 'AI_COMPRA');
                             if ('created' in purchaseResult)
                                 result.created += 1;
                             else
