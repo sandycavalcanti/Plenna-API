@@ -36,6 +36,9 @@ model tb_compra {
   compra_pedido_externo_id String?                   @db.VarChar(100)
   compra_status            compra_status_enum        @default(CONFIRMADA)
   compra_data_criacao      DateTime                  @default(now()) @db.Timestamp(6)
+  // Soft delete: 1 mantém a compra visível; 0 preserva o histórico como excluído.
+  compra_ativo              Int                       @default(1) @db.SmallInt
+  compra_excluido_em        DateTime?                 @db.Timestamp(6)
   tb_forma_pagamento       tb_forma_pagamento?       @relation(fields: [forma_pagamento_id], references: [forma_pagamento_id], onDelete: NoAction, onUpdate: NoAction)
   tb_usuario               tb_usuario                @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra_item           tb_compra_item[]
@@ -56,6 +59,9 @@ model tb_compra_item {
   compra_item_quantidade   Decimal?     @db.Decimal(12, 3)
   compra_item_unidade_medida String?    @db.VarChar(10)
   compra_item_data_criacao DateTime     @default(now()) @db.Timestamp(6)
+  // Soft delete do item: o registro permanece para histórico e auditoria.
+  compra_item_ativo         Int          @default(1) @db.SmallInt
+  compra_item_excluido_em   DateTime?    @db.Timestamp(6)
   tb_categoria             tb_categoria? @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra                tb_compra    @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -82,6 +88,23 @@ model tb_consentimento_tipo {
   consentimento_tipo_data_criacao DateTime           @default(now()) @db.Timestamp(6)
   tb_consentimento                tb_consentimento[]
 
+  @@schema("public")
+}
+
+// Modelo persistido pela migration de redefinição de senha e consumido pelo
+// fluxo de recuperação de acesso. A relação mantém os registros vinculados ao
+// usuário sem alterar o comportamento existente do backend.
+model tb_redefinicao_senha {
+  redefinicao_senha_id              Int        @id @default(autoincrement())
+  usuario_id                        Int
+  redefinicao_senha_codigo_hash     String     @db.VarChar(255)
+  redefinicao_senha_expira_em       DateTime   @db.Timestamp(6)
+  redefinicao_senha_tentativas      Int        @default(0)
+  redefinicao_senha_usado            Boolean    @default(false)
+  redefinicao_senha_data_criacao     DateTime   @default(now()) @db.Timestamp(6)
+  tb_usuario                        tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([usuario_id, redefinicao_senha_usado, redefinicao_senha_data_criacao(sort: Desc)], map: "idx_redefinicao_senha_usuario")
   @@schema("public")
 }
 
@@ -121,8 +144,8 @@ model tb_usuario {
   tb_preferencia            tb_preferencia[]
   tb_propaganda             tb_propaganda[]
   tb_tempo_uso              tb_tempo_uso[]
+  // Relação usada pelo fluxo de recuperação de senha.
   tb_redefinicao_senha      tb_redefinicao_senha[]
-  tb_propaganda             tb_propaganda[]
 
   @@schema("public")
 }
@@ -141,6 +164,25 @@ model tb_integracao {
   integracao_ultimo_erro             String?                              @db.VarChar(255)
   tb_usuario                         tb_usuario                           @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@schema("public")
+}
+
+// Tentativa temporária de OAuth criada pela integração de e-mail. O model é
+// necessário porque o serviço OAuth usa este delegate diretamente no Prisma.
+model tb_oauth_tentativa {
+  oauth_tentativa_id       String             @id @db.Uuid
+  usuario_id               Int
+  oauth_provedor           email_provedor_enum
+  oauth_state_hash         String             @unique @db.VarChar(64)
+  oauth_finalizacao_hash   String             @db.VarChar(64)
+  oauth_status             oauth_status_enum  @default(PENDENTE)
+  oauth_criada_em          DateTime           @default(now()) @db.Timestamptz(3)
+  oauth_expira_em          DateTime           @db.Timestamptz(3)
+  oauth_finalizada_em      DateTime?          @db.Timestamptz(3)
+  tb_usuario               tb_usuario         @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([usuario_id, oauth_provedor, oauth_status])
+  @@index([oauth_expira_em])
   @@schema("public")
 }
 
@@ -279,6 +321,16 @@ enum integracao_sincronizacao_status_enum {
   PROCESSANDO
   FINALIZADA
   ERRO
+
+  @@schema("public")
+}
+
+enum oauth_status_enum {
+  PENDENTE
+  PROCESSANDO
+  CONCLUIDA
+  CANCELADA
+  FALHOU
 
   @@schema("public")
 }

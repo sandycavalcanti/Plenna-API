@@ -41,6 +41,8 @@ export class DashboardService {
         // O filtro de propriedade fica diretamente na compra, porque
         // `tb_compra` é o model consultado e não uma relação dele mesmo.
         usuario_id: userId,
+        // O dashboard considera somente compras ainda ativas.
+        compra_ativo: 1,
         compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
@@ -50,6 +52,8 @@ export class DashboardService {
       select: {
         compra_valor: true,
         tb_compra_item: {
+          // Itens excluídos logicamente não entram na soma por categoria.
+          where: { compra_item_ativo: 1 },
           select: {
             compra_item_valor: true,
             tb_categoria: { select: { categoria_nome: true } },
@@ -91,6 +95,7 @@ export class DashboardService {
     const compras = await prisma.tb_compra.findMany({
       where: {
         usuario_id: userId,
+        compra_ativo: 1,
         compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
@@ -126,6 +131,7 @@ export class DashboardService {
     const grupos = await prisma.tb_compra.groupBy({
       where: {
         usuario_id: userId,
+        compra_ativo: 1,
         compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
@@ -156,6 +162,8 @@ export class DashboardService {
     const grupos = await prisma.tb_compra.groupBy({
       where: {
         usuario_id: userId,
+        // Indicadores de limite também ignoram compras excluídas.
+        compra_ativo: 1,
         compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
@@ -209,6 +217,7 @@ export class DashboardService {
       prisma.tb_compra.groupBy({
         where: {
         usuario_id: userId,
+        compra_ativo: 1,
         compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,

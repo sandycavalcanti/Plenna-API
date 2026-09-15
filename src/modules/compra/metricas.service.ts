@@ -38,6 +38,8 @@ export class MetricasService {
       db.tb_compra.findMany({
         where: {
           usuario_id: userId,
+          // Compras excluídas logicamente não participam dos indicadores.
+          compra_ativo: 1,
           compra_status: 'CONFIRMADA',
           compra_horario: {
             gte: start,

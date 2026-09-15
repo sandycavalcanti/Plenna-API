@@ -237,7 +237,9 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
   if (!messageDate || !extracted.establishment || (extracted.orderNumber === null && extracted.totalAmount === null)) return null;
 
   const candidates = await prisma.tb_compra.findMany({
-    where: { usuario_id: userId },
+    // Compras inativas não podem ser reativadas por reconciliação automática.
+    // A deduplicação por messageId continua sendo feita separadamente acima.
+    where: { usuario_id: userId, compra_ativo: 1 },
     select: {
       compra_id: true,
       usuario_id: true,
@@ -248,6 +250,7 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
       compra_email_mensagem_id: true,
       compra_horario: true,
       tb_compra_item: {
+        where: { compra_item_ativo: 1 },
         select: {
           compra_item_nome: true,
           compra_item_quantidade: true,

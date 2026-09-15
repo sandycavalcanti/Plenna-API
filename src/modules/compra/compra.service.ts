@@ -124,7 +124,12 @@ async function applyCompraConfirmation(
     : null;
 
   if (items) {
-    await tx.tb_compra_item.deleteMany({ where: { compra_id: compraId } });
+    // Ao substituir os itens durante uma atualização, os registros antigos
+    // também seguem soft delete para preservar o histórico da compra.
+    await tx.tb_compra_item.updateMany({
+      where: { compra_id: compraId, compra_item_ativo: 1 },
+      data: { compra_item_ativo: 0, compra_item_excluido_em: new Date() },
+    });
     if (items.length > 0) {
       await tx.tb_compra_item.createMany({
         data: items.map((item) => ({
@@ -152,6 +157,45 @@ async function applyCompraConfirmation(
   });
 
   return { compra, compraHorario, compraValor };
+}
+
+/**
+ * Marca uma compra e seus itens ativos como excluídos logicamente.
+ *
+ * A função é compartilhada pelo DELETE da compra e pelo caso em que o último
+ * item é removido. Assim, ambas as entradas preservam os registros, gravam o
+ * mesmo instante de exclusão e recalculam métricas de forma consistente.
+ */
+async function softDeleteCompra(tx: any, userId: number, compraId: number) {
+  // A combinação do ID com o usuário e com compra_ativo impede operar sobre
+  // compra de terceiro ou sobre compra já excluída, sem revelar sua existência.
+  const existing = await tx.tb_compra.findFirst({
+    where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
+    select: { compra_id: true, compra_horario: true, compra_status: true },
+  });
+
+  if (!existing) throw new AppError('Compra não encontrada', 404);
+
+  const excludedAt = new Date();
+
+  // Os itens ativos são inativados antes da compra, mantendo todo o histórico
+  // e garantindo que nenhum deles continue aparecendo nas listagens.
+  await tx.tb_compra_item.updateMany({
+    where: { compra_id: compraId, compra_item_ativo: 1 },
+    data: { compra_item_ativo: 0, compra_item_excluido_em: excludedAt },
+  });
+
+  // A compra também permanece no banco, mas deixa de ser considerada ativa.
+  await tx.tb_compra.update({
+    where: { compra_id: compraId },
+    data: { compra_ativo: 0, compra_excluido_em: excludedAt },
+  });
+
+  // O recálculo ocorre dentro da mesma transaction para que os indicadores
+  // parem de considerar a compra somente quando a exclusão for confirmada.
+  if (existing.compra_status === 'CONFIRMADA') {
+    await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
+  }
 }
 
 export class CompraService {
@@ -231,7 +275,7 @@ export class CompraService {
 
   static async update(userId: number, compraId: number, data: UpdateCompraDTO) {
     return prisma.$transaction(async (tx) => {
-      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId } });
+      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
       const result = await applyCompraConfirmation(tx, userId, compraId, data, existing);
 
@@ -259,7 +303,7 @@ export class CompraService {
    */
   static async confirm(userId: number, compraId: number, data?: UpdateCompraDTO) {
     return prisma.$transaction(async (tx) => {
-      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId } });
+      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
       if (existing.compra_status === 'IGNORADA') throw new AppError('Compra ignorada não pode ser confirmada', 409);
       if (existing.compra_status === 'CONFIRMADA') return { compra: existing };
@@ -285,7 +329,7 @@ export class CompraService {
    */
   static async ignore(userId: number, compraId: number) {
     return prisma.$transaction(async (tx) => {
-      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId } });
+      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
       if (existing.compra_status === 'CONFIRMADA') throw new AppError('Compra confirmada não pode ser ignorada', 409);
       if (existing.compra_status === 'IGNORADA') return existing;
@@ -297,18 +341,26 @@ export class CompraService {
   }
 
   static async findAllByUserId(userId: number) {
-    return prisma.tb_compra.findMany({ where: { usuario_id: userId }, include: { tb_compra_item: { include: { tb_categoria: true } } }, orderBy: { compra_horario: 'desc' } });
+    return prisma.tb_compra.findMany({
+      // Registros inativos são históricos e não devem voltar para o front.
+      where: { usuario_id: userId, compra_ativo: 1 },
+      include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
+      orderBy: { compra_horario: 'desc' },
+    });
   }
 
   static async findPendingByUserId(userId: number) {
     return prisma.tb_compra.findMany({
-      where: { usuario_id: userId, compra_status: 'AGUARDANDO_CONFIRMACAO' },
+      where: { usuario_id: userId, compra_status: 'AGUARDANDO_CONFIRMACAO', compra_ativo: 1 },
       orderBy: { compra_horario: 'desc' },
     });
   }
 
   static async findById(userId: number, compraId: number) {
-    const compra = await prisma.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId }, include: { tb_compra_item: { include: { tb_categoria: true } } } });
+    const compra = await prisma.tb_compra.findFirst({
+      where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
+      include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
+    });
     if (!compra) throw new AppError('Compra não encontrada', 404);
     return compra;
   }
@@ -325,26 +377,9 @@ export class CompraService {
     return prisma.$transaction(async (tx) => {
       // A compra de outro usuário é tratada como inexistente para não revelar
       // informações sobre recursos pertencentes a terceiros.
-      const existing = await tx.tb_compra.findFirst({
-        where: { compra_id: compraId, usuario_id: userId },
-        select: { compra_id: true, compra_horario: true, compra_status: true },
-      });
-
-      if (!existing) throw new AppError('Compra não encontrada', 404);
-
-      // NoAction não remove itens automaticamente; deleteMany torna explícita
-      // a limpeza dos registros dependentes antes da exclusão da compra.
-      await tx.tb_compra_item.deleteMany({ where: { compra_id: compraId } });
-
-      // O registro pai só é removido depois que seus itens foram tratados.
-      await tx.tb_compra.delete({ where: { compra_id: compraId } });
-
-      // Apenas compras confirmadas participam das métricas persistidas.
-      // O recálculo dentro da mesma transaction evita deixar o mês incoerente
-      // caso a operação de exclusão falhe antes do commit.
-      if (existing.compra_status === 'CONFIRMADA') {
-        await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
-      }
+      // O helper aplica a exclusão lógica da compra e dos itens dentro desta
+      // transaction, preservando o histórico e as métricas consistentes.
+      await softDeleteCompra(tx, userId, compraId);
     });
   }
 
@@ -360,7 +395,7 @@ export class CompraService {
       // Combinar compra_id e usuario_id faz com que compras de terceiros sejam
       // tratadas como inexistentes, sem revelar sua existência ao solicitante.
       const existing = await tx.tb_compra.findFirst({
-        where: { compra_id: compraId, usuario_id: userId },
+        where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
         select: { compra_id: true, compra_horario: true, compra_status: true },
       });
       if (!existing) throw new AppError('Compra não encontrada', 404);
@@ -368,37 +403,36 @@ export class CompraService {
       // O item precisa estar vinculado à compra informada; isso também evita
       // excluir item pertencente a outra compra do mesmo usuário.
       const item = await tx.tb_compra_item.findFirst({
-        where: { compra_item_id: compraItemId, compra_id: compraId },
+        // Item inativo se comporta como inexistente para o usuário.
+        where: { compra_item_id: compraItemId, compra_id: compraId, compra_item_ativo: 1 },
         select: { compra_item_id: true },
       });
       if (!item) throw new AppError('Item da compra não encontrado', 404);
 
       // A compra deve manter pelo menos um item após a operação.
-      const itemCount = await tx.tb_compra_item.count({ where: { compra_id: compraId } });
+      // A regra do último item considera apenas os itens ainda ativos.
+      const itemCount = await tx.tb_compra_item.count({ where: { compra_id: compraId, compra_item_ativo: 1 } });
       if (itemCount === 1) {
         // A exclusão do único item representa, para o usuário, a exclusão da
         // compra inteira. O front normalmente usa o DELETE da compra, mas este
         // caminho defensivo mantém a regra correta se a rota de item for chamada diretamente.
-        await tx.tb_compra_item.delete({ where: { compra_item_id: compraItemId } });
-        await tx.tb_compra.delete({ where: { compra_id: compraId } });
-
-        // A compra confirmada deixou de existir e, portanto, seu mês precisa
-        // ser recalculado na mesma transaction, como no DELETE da compra.
-        if (existing.compra_status === 'CONFIRMADA') {
-          await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
-        }
+        await softDeleteCompra(tx, userId, compraId);
 
         // Não existe compra atualizada para retornar depois da remoção total.
         return null;
       }
 
-      // Com NoAction no schema, a exclusão do item é explícita e transacional.
-      await tx.tb_compra_item.delete({ where: { compra_item_id: compraItemId } });
+      // O item é inativado, nunca removido fisicamente, para preservar o
+      // histórico sem deixá-lo participar das consultas atuais.
+      await tx.tb_compra_item.update({
+        where: { compra_item_id: compraItemId },
+        data: { compra_item_ativo: 0, compra_item_excluido_em: new Date() },
+      });
 
       // Recalculamos o total somente com os itens restantes, usando centavos
       // para manter a mesma precisão monetária das demais operações do service.
       const remainingItems = await tx.tb_compra_item.findMany({
-        where: { compra_id: compraId },
+        where: { compra_id: compraId, compra_item_ativo: 1 },
         select: { compra_item_valor: true },
       });
       const totalCents = remainingItems.reduce((sum, remainingItem) => sum + toCents(remainingItem.compra_item_valor), 0);
@@ -424,8 +458,8 @@ export class CompraService {
       // Retornamos a compra completa já atualizada para o front não precisar
       // fazer um GET adicional após cada exclusão individual.
       return tx.tb_compra.findFirst({
-        where: { compra_id: compraId, usuario_id: userId },
-        include: { tb_compra_item: { include: { tb_categoria: true } } },
+        where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
+        include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
       });
     });
   }
