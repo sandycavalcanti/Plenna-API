@@ -38,13 +38,13 @@ export class DashboardService {
 
     const compras = await prisma.tb_compra.findMany({
       where: {
-        tb_compra: {
-          usuario_id: userId,
-          compra_status: 'CONFIRMADA',
-          compra_horario: {
-            gte: start,
-            lt: end,
-          },
+        // O filtro de propriedade fica diretamente na compra, porque
+        // `tb_compra` é o model consultado e não uma relação dele mesmo.
+        usuario_id: userId,
+        compra_status: 'CONFIRMADA',
+        compra_horario: {
+          gte: start,
+          lt: end,
         },
       },
       select: {
@@ -61,10 +61,21 @@ export class DashboardService {
     const totalsByCategory = new Map<string, number>();
     let ignorados = 0;
 
+    // A consulta traz as compras do usuário e, dentro de cada compra, seus
+    // itens. O loop abaixo precisa trabalhar com os itens achatados; antes,
+    // `items` não existia neste escopo e causava ReferenceError/erro 500.
+    const items = compras.flatMap((compra) => compra.tb_compra_item);
+
     for (const item of items) {
-      // Itens sem categoria nao entram nesta visao, pois o contrato do
-      // dashboard exige um nome real e nao devemos inventar uma categoria.
-      if (!item.tb_categoria) continue;
+      // Itens sem categoria não entram nesta visão, pois o contrato do
+      // dashboard exige um nome real e não devemos inventar uma categoria.
+      if (!item.tb_categoria) {
+        ignorados += 1;
+        continue;
+      }
+
+      // Cada item contribui com seu próprio valor; itens da mesma categoria
+      // acumulam no mesmo grupo e categorias diferentes ficam separadas.
       const categoriaNome = item.tb_categoria.categoria_nome;
       const totalAtual = totalsByCategory.get(categoriaNome) ?? 0;
       totalsByCategory.set(categoriaNome, totalAtual + toNumber(item.compra_item_valor));
