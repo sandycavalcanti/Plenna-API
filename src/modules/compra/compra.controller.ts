@@ -129,6 +129,9 @@ export class CompraController {
         Number(req.params.compraId),
         Number(req.params.compraItemId),
       );
+      // Ao remover o último item, o service remove a compra inteira e não há
+      // recurso atualizado para serializar; nesse caso respondemos 204.
+      if (!compra) return res.status(204).send();
       return res.json(compra);
     } catch (error: any) {
       // AppError preserva respostas 404/409 sem expor detalhes internos.

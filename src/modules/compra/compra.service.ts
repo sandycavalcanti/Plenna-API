@@ -375,8 +375,21 @@ export class CompraService {
 
       // A compra deve manter pelo menos um item após a operação.
       const itemCount = await tx.tb_compra_item.count({ where: { compra_id: compraId } });
-      if (itemCount <= 1) {
-        throw new AppError('Não é possível excluir o último item da compra. Exclua a compra completa.', 409);
+      if (itemCount === 1) {
+        // A exclusão do único item representa, para o usuário, a exclusão da
+        // compra inteira. O front normalmente usa o DELETE da compra, mas este
+        // caminho defensivo mantém a regra correta se a rota de item for chamada diretamente.
+        await tx.tb_compra_item.delete({ where: { compra_item_id: compraItemId } });
+        await tx.tb_compra.delete({ where: { compra_id: compraId } });
+
+        // A compra confirmada deixou de existir e, portanto, seu mês precisa
+        // ser recalculado na mesma transaction, como no DELETE da compra.
+        if (existing.compra_status === 'CONFIRMADA') {
+          await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
+        }
+
+        // Não existe compra atualizada para retornar depois da remoção total.
+        return null;
       }
 
       // Com NoAction no schema, a exclusão do item é explícita e transacional.
