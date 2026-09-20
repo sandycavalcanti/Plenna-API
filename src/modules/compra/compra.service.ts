@@ -296,8 +296,9 @@ export class CompraService {
   /**
    * Confirma uma compra que aguardava validação do usuário.
    *
-   * A operação é idempotente quando a compra já está confirmada e impede
-   * que uma compra previamente ignorada retorne ao fluxo normal.
+   * A operação é idempotente quando a compra já está confirmada. Compras
+   * ignoradas são um estado final persistido: continuam no banco para
+   * histórico e deduplicação, mas não podem ser reativadas.
    * Antes da confirmação, os dados enviados pelo usuário podem complementar
    * ou corrigir as informações identificadas automaticamente.
    */
@@ -305,8 +306,13 @@ export class CompraService {
     return prisma.$transaction(async (tx) => {
       const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
-      if (existing.compra_status === 'IGNORADA') throw new AppError('Compra ignorada não pode ser confirmada', 409);
       if (existing.compra_status === 'CONFIRMADA') return { compra: existing };
+      if (existing.compra_status === 'IGNORADA') {
+        // Ignorada representa uma detecção descartada definitivamente. A
+        // consulta acima ainda valida ownership e compra ativa, mas o status
+        // final não pode voltar a gerar gastos nem ser recuperado pela UI.
+        throw new AppError('Compra ignorada não pode ser confirmada', 409);
+      }
       const result = await applyCompraConfirmation(tx, userId, compraId, data ?? {}, existing);
       if (result.compraValor === null) {
         throw new AppError('Compra sem valor não pode ser confirmada', 400);
@@ -342,8 +348,15 @@ export class CompraService {
 
   static async findAllByUserId(userId: number) {
     return prisma.tb_compra.findMany({
-      // Registros inativos são históricos e não devem voltar para o front.
-      where: { usuario_id: userId, compra_ativo: 1 },
+      // Ignoradas permanecem persistidas para histórico/deduplicação, mas a
+      // listagem principal expõe somente decisões ainda relevantes: pendentes
+      // e confirmadas. Isso evita que a UI precise criar uma categoria de
+      // recuperação para um estado final.
+      where: {
+        usuario_id: userId,
+        compra_ativo: 1,
+        compra_status: { in: ['AGUARDANDO_CONFIRMACAO', 'CONFIRMADA'] },
+      },
       include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
       orderBy: { compra_horario: 'desc' },
     });
