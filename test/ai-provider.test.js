@@ -63,10 +63,10 @@ function fakeCodex(finalResponse, error) {
 }
 
 test('Codex local valida resposta estruturada e executa em read-only', async () => {
-  const codex = fakeCodex('{"categoryName":"Casa"}');
+  const codex = fakeCodex('{"categoryId":7}');
   const provider = new CodexLocalProvider(() => codex);
-  const result = await provider.suggestCategory('texto');
-  assert.deepEqual(result, { categoryName: 'Casa' });
+  const result = await provider.suggestCategory('texto', [{ categoryId: 7, categoryName: 'Casa' }]);
+  assert.deepEqual(result, { categoryId: 7 });
   assert.equal(codex.calls[0].options.sandboxMode, 'read-only');
   assert.equal(codex.calls[0].options.approvalPolicy, 'never');
   assert.equal(codex.calls[0].options.networkAccessEnabled, false);
@@ -89,15 +89,15 @@ function assertCodexSchema(schema, root = true) {
 
 test('todos os schemas do Codex usam Structured Outputs compatível', async () => {
   const cases = [
-    ['email_classification', '{"classificacao":"IGNORAR","categoryName":null,"purchase":null}', 'classifyEmail'],
-    ['category_suggestion', '{"categoryName":null}', 'suggestCategory'],
+    ['email_classification', '{"classificacao":"IGNORAR","categoryId":null,"purchase":null}', 'classifyEmail'],
+    ['category_suggestion', '{"categoryId":null}', 'suggestCategory'],
     ['purchase_extraction', '{"establishment":null,"orderNumber":null,"totalAmount":null,"paymentMethodName":null,"items":[]}', 'extractPurchase'],
   ];
 
   for (const [operation, response, method] of cases) {
     const codex = fakeCodex(response);
     const provider = new CodexLocalProvider(() => codex);
-    await provider[method]('texto');
+    await provider[method]('texto', []);
     assert.equal(codex.calls[0].options.sandboxMode, 'read-only');
     assertCodexSchema(codex.calls[1].runOptions.outputSchema);
     assert.equal(codex.calls[1].runOptions.outputSchema.oneOf, undefined, operation);
@@ -107,18 +107,18 @@ test('todos os schemas do Codex usam Structured Outputs compatível', async () =
 test('Codex local classifica incompatibilidade de schema separadamente', async () => {
   const error = new Error('invalid_request_error: invalid_json_schema: Invalid schema for response_format');
   await assert.rejects(
-    () => new CodexLocalProvider(() => fakeCodex('', error)).suggestCategory('texto'),
+    () => new CodexLocalProvider(() => fakeCodex('', error)).suggestCategory('texto', []),
     (caught) => caught instanceof CodexLocalError && caught.code === 'invalid_json_schema',
   );
 });
 
 test('Codex local diferencia resposta vazia e JSON inválido', async () => {
   await assert.rejects(
-    () => new CodexLocalProvider(() => fakeCodex('')).suggestCategory('texto'),
+    () => new CodexLocalProvider(() => fakeCodex('')).suggestCategory('texto', []),
     (error) => error instanceof CodexLocalError && error.code === 'empty',
   );
   await assert.rejects(
-    () => new CodexLocalProvider(() => fakeCodex('não é json')).suggestCategory('texto'),
+    () => new CodexLocalProvider(() => fakeCodex('não é json')).suggestCategory('texto', []),
     (error) => error instanceof CodexLocalError && error.code === 'invalid_json',
   );
 });
@@ -135,11 +135,11 @@ test('Codex local diferencia timeout e erro do SDK', async () => {
       }),
     };
     await assert.rejects(
-      () => new CodexLocalProvider(() => hangingCodex).suggestCategory('texto'),
+      () => new CodexLocalProvider(() => hangingCodex).suggestCategory('texto', []),
       (error) => error instanceof CodexLocalError && error.code === 'timeout',
     );
     await assert.rejects(
-      () => new CodexLocalProvider(() => fakeCodex('', new Error('SDK failure'))).suggestCategory('texto'),
+      () => new CodexLocalProvider(() => fakeCodex('', new Error('SDK failure'))).suggestCategory('texto', []),
       (error) => error instanceof CodexLocalError && error.code === 'execution',
     );
   } finally {

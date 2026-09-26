@@ -161,18 +161,18 @@ test('RequestyProvider classifica e sugere categoria a partir de choices[0].mess
   const originalPost = axios.post;
   const responses = [
     { data: { choices: [{ message: { content: JSON.stringify({ classificacao: 'COMPRA', purchase: { amount: 10 } }) } }] } },
-    { data: { choices: [{ message: { content: JSON.stringify({ categoryName: 'Eletrônicos' }) } }] } },
+    { data: { choices: [{ message: { content: JSON.stringify({ categoryId: 10 }) } }] } },
   ];
   let index = 0;
   axios.post = async () => responses[index++] ?? responses[responses.length - 1];
 
   const provider = new RequestyProvider();
   const classified = await provider.classifyEmail('teste');
-  const suggested = await provider.suggestCategory('teste');
+  const suggested = await provider.suggestCategory('teste', [{ categoryId: 10, categoryName: 'Eletrônicos' }]);
 
   assert.equal(classified.classificacao, 'COMPRA');
   assert.equal(Number(classified.purchase.amount), 10);
-  assert.equal(suggested.categoryName, 'Eletrônicos');
+  assert.equal(suggested.categoryId, 10);
 
   axios.post = originalPost;
   env.requestyApiKey = previous;
@@ -830,7 +830,7 @@ test('sync ambígua chama IA e falha não avança timestamp', async () => {
   RequestyProvider.prototype.classifyEmail = async () => {
     throw new Error('IA indisponível');
   };
-  RequestyProvider.prototype.suggestCategory = async () => ({ categoryName: null });
+  RequestyProvider.prototype.suggestCategory = async () => ({ categoryId: null });
   prisma.tb_integracao.updateMany = async () => ({ count: 1 });
   prisma.tb_integracao.update = async ({ data }) => {
     updates.push(data);
@@ -1153,7 +1153,7 @@ test('falha de suggestCategory em propaganda clara não derruba o sync', async (
     internalDate: String(Date.parse('2026-08-10T12:00:00Z')),
   });
   env.requestyApiKey = 'requesty-key';
-  EmailClassificationEngine.classify = () => ({ outcome: 'PROPAGANDA', clear: true, confidence: 'ALTA', categoryName: null });
+  EmailClassificationEngine.classify = () => ({ outcome: 'PROPAGANDA', clear: true, confidence: 'ALTA' });
   RequestyProvider.prototype.suggestCategory = async () => {
     throw new Error('Falha temporária ao sugerir categoria');
   };

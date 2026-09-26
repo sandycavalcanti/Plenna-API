@@ -5,6 +5,7 @@ import {
   AIRateLimitError,
   type AIEmailClassificationResult,
   type AICategorySuggestionResult,
+  type AICategoryOption,
   type AIProvider,
   type AIPurchaseExtractionProvider,
   type AIExtractedPurchase,
@@ -20,23 +21,23 @@ const requestyPurchaseSchema = z.object({
 export const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
   z.object({
     classificacao: z.literal('COMPRA'),
-    categoryName: z.string().nullable().optional(),
+    categoryId: z.number().int().nullable().optional(),
     purchase: requestyPurchaseSchema,
   }),
   z.object({
     classificacao: z.literal('PROPAGANDA'),
-    categoryName: z.string().nullable().optional(),
+    categoryId: z.number().int().nullable().optional(),
     purchase: requestyPurchaseSchema.nullable().optional(),
   }),
   z.object({
     classificacao: z.literal('IGNORAR'),
-    categoryName: z.string().nullable().optional(),
+    categoryId: z.number().int().nullable().optional(),
     purchase: requestyPurchaseSchema.nullable().optional(),
   }),
 ]);
 
 export const requestyCategorySchema = z.object({
-  categoryName: z.string().nullable().optional(),
+  categoryId: z.number().int().nullable(),
 });
 
 const MAX_RATE_LIMIT_RETRIES = 2;
@@ -140,6 +141,7 @@ function parseJsonPayload<T>(payload: string, schema: z.ZodType<T>) {
 
 export function buildClassificationInstructions() {
   return [
+    'PROPAGANDA somente quando a finalidade principal for comercial. IGNORAR conteudo tecnico, academico, editorial, institucional, operacional, informativo, noticias e alertas de seguranca. Newsletter, marca no remetente, preco isolado ou mencao secundaria a produto nao bastam.',
     'Não invente dados que não estejam explicitamente suportados pelo e-mail.',
     'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
     'Emails de status de pedido, envio, entrega, nota fiscal ou pagamento aprovado são COMPRA.',
@@ -287,13 +289,14 @@ export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvide
   /**
    * Sugere uma categoria para propagandas já reconhecidas como tais.
    */
-  async suggestCategory(prompt: string): Promise<AICategorySuggestionResult> {
+  async suggestCategory(prompt: string, categories: AICategoryOption[]): Promise<AICategorySuggestionResult> {
     if (!env.requestyApiKey) {
       throw new Error('REQUESTY_API_KEY ausente');
     }
 
     try {
-      const text = await this.chatCompletion(prompt);
+      const categoryList = categories.map((category) => `${category.categoryId} - ${category.categoryName}`).join('\n');
+      const text = await this.chatCompletion(`${prompt}\nCategorias permitidas:\n${categoryList}\nRetorne somente {"categoryId": number|null}. Escolha exclusivamente um ID da lista ou null.`, 'Escolha somente um categoryId da lista fornecida. NÃ£o invente IDs.');
       return parseJsonPayload(text, requestyCategorySchema);
     } catch (error: any) {
       if (isRateLimited(error)) {

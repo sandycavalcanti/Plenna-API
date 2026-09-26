@@ -43,9 +43,7 @@ const codexClassificationSchema: JsonSchema = {
       type: 'string',
       enum: ['COMPRA', 'PROPAGANDA', 'IGNORAR'],
     },
-    categoryName: {
-      anyOf: [{ type: 'string' }, { type: 'null' }],
-    },
+    categoryId: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
     purchase: {
       anyOf: [
         {
@@ -62,7 +60,7 @@ const codexClassificationSchema: JsonSchema = {
       ],
     },
   },
-  required: ['classificacao', 'categoryName', 'purchase'],
+  required: ['classificacao', 'categoryId', 'purchase'],
   additionalProperties: false,
 };
 
@@ -274,8 +272,9 @@ export class CodexLocalProvider implements AIProvider, AIPurchaseExtractionProvi
     return result;
   }
 
-  async suggestCategory(prompt: string): Promise<AICategorySuggestionResult> {
-    return this.runStructured('category_suggestion', prompt, requestyCategorySchema, 'Sugira apenas um nome de categoria existente ou null em JSON estrito. Use a categoria mais provável e conservadora.');
+  async suggestCategory(prompt: string, categories: import('./ai-provider.js').AICategoryOption[]): Promise<AICategorySuggestionResult> {
+    const categoryList = categories.map((category) => `${category.categoryId} - ${category.categoryName}`).join('\n');
+    return this.runStructured('category_suggestion', `${prompt}\nCategorias permitidas:\n${categoryList}`, requestyCategorySchema, 'Escolha somente um categoryId da lista fornecida. NÃ£o invente IDs; retorne null quando nenhuma categoria for adequada.');
   }
 
   async extractPurchase(prompt: string): Promise<AIExtractedPurchase> {

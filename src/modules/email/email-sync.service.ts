@@ -15,7 +15,7 @@ import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseI
 import { buildPurchaseExtractionPrompt, needsAiEnrichment } from './email-purchase.enrichment.js';
 import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
-import type { AIPurchaseExtractionProvider, AIExtractedPurchase } from './ai-provider.js';
+import type { AIPurchaseExtractionProvider, AIExtractedPurchase, AICategoryOption } from './ai-provider.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -49,15 +49,23 @@ export function buildGmailQuery(previousCursor: Date | null, startedAt: Date) {
  * Nenhuma categoria é criada automaticamente. Quando não há correspondência
  * segura, a propaganda permanece sem categoria.
  */
-export async function resolveCategoryId(categoryName: string | null | undefined) {
-  if (!categoryName) return null;
-
-  const found = await prisma.tb_categoria.findFirst({
-    where: { categoria_nome: { equals: categoryName, mode: 'insensitive' } },
-    select: { categoria_id: true },
+/** Carrega IDs reais por execução; IDs não são hardcoded nem inferidos por nome. */
+async function loadPropagationCategories(): Promise<AICategoryOption[]> {
+  const categories = await prisma.tb_categoria.findMany({
+    select: { categoria_id: true, categoria_nome: true },
+    orderBy: { categoria_id: 'asc' },
   });
+  return categories.map((category) => ({ categoryId: category.categoria_id, categoryName: category.categoria_nome }));
+}
 
-  return found?.categoria_id ?? null;
+/** Validação defensiva: a IA só pode escolher um ID da lista carregada. */
+export function validatePropagationCategoryId(categoryId: number | null | undefined, categories: AICategoryOption[]) {
+  if (categoryId === null || categoryId === undefined) return null;
+  if (!categories.some((category) => category.categoryId === categoryId)) {
+    console.warn('[EmailSyncService] categoryId inválido normalizado para null');
+    return null;
+  }
+  return categoryId;
 }
 
 /**
@@ -456,11 +464,15 @@ async function createPropagandaFromMessage(userId: number, message: GmailMessage
 function buildEmailClassificationPrompt(message: GmailMessageDetail) {
   return [
     'Classifique a mensagem abaixo em JSON estrito.',
-    'Campos permitidos: classificacao, categoryName, purchase.',
+    'Campos permitidos: classificacao, categoryId, purchase.',
+    'categoryId deve ser null nesta etapa; a categoria de propaganda Ã© escolhida separadamente a partir da lista real do banco.',
+    'PROPAGANDA somente quando a finalidade principal for comercial; newsletter, conteudo tecnico, academico, editorial, institucional, operacional, informativo ou alerta de seguranca deve ser IGNORAR.',
+    'Empresa ou marca no remetente nao significa PROPAGANDA. Mencao secundaria a produto nao supera a intencao principal.',
     'classificacao aceita COMPRA, PROPAGANDA ou IGNORAR.',
     'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
     'Preço, oferta, desconto ou linguagem promocional isolados não significam COMPRA.',
-    'Quando não houver evidência suficiente, prefira null.',
+    'Quando não houver evidência suficiente para COMPRA ou PROPAGANDA, classifique como IGNORAR.',
+    'Use null apenas nos campos opcionais de purchase.',
     'Se houver dados seguros de compra, inclua purchase.amount, purchase.establishment e purchase.paymentMethodName apenas quando estiverem sustentados pelo conteúdo.',
     `subject: ${message.subject ?? ''}`,
     `from: ${message.from ?? ''}`,
@@ -469,10 +481,11 @@ function buildEmailClassificationPrompt(message: GmailMessageDetail) {
   ].join('\n');
 }
 
-function buildCategoryPrompt(message: GmailMessageDetail) {
+function buildCategoryPrompt(message: GmailMessageDetail, categories: AICategoryOption[]) {
   return [
-    'Sugira apenas um nome de categoria existente ou null em JSON estrito.',
-    'Use a categoria mais provavel e conservadora.',
+    'Escolha exclusivamente um categoryId da lista fornecida e retorne JSON estrito.',
+    'Nao invente categoria, nome ou ID. Retorne null somente quando nenhuma categoria for razoavelmente adequada.',
+    `categorias: ${categories.map((category) => `${category.categoryId} - ${category.categoryName}`).join('; ')}`,
     `subject: ${message.subject ?? ''}`,
     `from: ${message.from ?? ''}`,
     `snippet: ${message.snippet ?? ''}`,
@@ -480,12 +493,12 @@ function buildCategoryPrompt(message: GmailMessageDetail) {
   ].join('\n');
 }
 
-async function resolvePropagationCategory(aiProvider: AIProvider | null, message: GmailMessageDetail) {
+async function resolvePropagationCategory(aiProvider: AIProvider | null, message: GmailMessageDetail, categories: AICategoryOption[]) {
   if (!aiProvider) return null;
 
   try {
-    const aiSuggestion = await aiProvider.suggestCategory(buildCategoryPrompt(message));
-    return resolveCategoryId(aiSuggestion.categoryName ?? null);
+    const aiSuggestion = await aiProvider.suggestCategory(buildCategoryPrompt(message, categories), categories);
+    return validatePropagationCategoryId(aiSuggestion.categoryId, categories);
   } catch {
     return null;
   }
@@ -583,6 +596,15 @@ export class EmailSyncService {
       console.info(`[EmailSyncService] Gmail messages fetched count=${messages.length} bootstrap=${isBootstrap}`);
       console.info('[EmailSyncService] creating AI provider');
       const aiProvider: AIProvider | null = createAIProvider();
+      // Uma única lista por sincronização evita query por propaganda e mantém os IDs do ambiente atual.
+      let propagationCategoriesPromise: Promise<AICategoryOption[]> | null = null;
+      const getPropagationCategories = () => {
+        propagationCategoriesPromise ??= loadPropagationCategories().catch(() => {
+          console.warn('[EmailSyncService] categorias de propaganda indisponíveis');
+          return [];
+        });
+        return propagationCategoriesPromise;
+      };
       const result: GmailMessageQueryResult = { processed: 0, created: 0, skipped: 0 };
       let shouldFailRun = false;
       let failureReason: string | null = null;
@@ -613,11 +635,8 @@ export class EmailSyncService {
         }
 
         if (classification.outcome === 'PROPAGANDA') {
-          let categoryId: number | null = await resolveCategoryId(classification.categoryName ?? null);
-
-          if (categoryId === null && aiProvider) {
-            categoryId = await resolvePropagationCategory(aiProvider, detail);
-          }
+          const categories = await getPropagationCategories();
+          const categoryId = await resolvePropagationCategory(aiProvider, detail, categories);
 
           const promoResult = await createPropagandaFromMessage(userId, detail, categoryId);
           if ('created' in promoResult) result.created += 1;
@@ -648,9 +667,10 @@ export class EmailSyncService {
             }
 
             if (aiResult.classificacao === 'PROPAGANDA') {
-              let categoryId = await resolveCategoryId(aiResult.categoryName ?? null);
+              const categories = await getPropagationCategories();
+              let categoryId = validatePropagationCategoryId(aiResult.categoryId, categories);
               if (categoryId === null) {
-                categoryId = await resolvePropagationCategory(aiProvider, detail);
+                categoryId = await resolvePropagationCategory(aiProvider, detail, categories);
               }
               const promoResult = await createPropagandaFromMessage(userId, detail, categoryId);
               if ('created' in promoResult) result.created += 1;

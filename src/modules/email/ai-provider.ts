@@ -8,7 +8,7 @@ export type EmailClassificationLabel = 'COMPRA' | 'PROPAGANDA' | 'IGNORAR';
 
 export interface AIEmailClassificationResult {
   classificacao: EmailClassificationLabel;
-  categoryName?: string | null;
+  categoryId?: number | null;
   purchase?: {
     establishment?: string | null;
     amount?: number | null;
@@ -17,7 +17,12 @@ export interface AIEmailClassificationResult {
 }
 
 export interface AICategorySuggestionResult {
-  categoryName?: string | null;
+  categoryId: number | null;
+}
+
+export interface AICategoryOption {
+  categoryId: number;
+  categoryName: string;
 }
 
 export interface AIExtractedPurchaseItem {
@@ -64,5 +69,5 @@ export class AIRateLimitError extends Error {
  */
 export interface AIProvider {
   classifyEmail(prompt: string): Promise<AIEmailClassificationResult>;
-  suggestCategory(prompt: string): Promise<AICategorySuggestionResult>;
+  suggestCategory(prompt: string, categories: AICategoryOption[]): Promise<AICategorySuggestionResult>;
 }
