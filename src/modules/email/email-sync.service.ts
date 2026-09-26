@@ -5,8 +5,8 @@ import { AppError } from '../../errors/AppError.js';
 import { EmailClassificationEngine, buildClassificationHaystack, extractAmount, hasStrongPurchaseEvidence } from './classification.engine.js';
 import { EmailService } from './email.service.js';
 import type { GmailMessageDetail, GmailMessageQueryResult } from './gmail.types.js';
-import { RequestyProvider } from './requesty.provider.js';
 import { AIRateLimitError, type AIProvider } from './ai-provider.js';
+import { createAIProvider } from './ai-provider.factory.js';
 import type { ExtractedPurchase, NormalizedEmail } from './email-contracts.js';
 import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
@@ -86,6 +86,40 @@ function parseDateFromMessage(message: GmailMessageDetail) {
 function safeErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : 'Erro desconhecido';
   return message.slice(0, 255);
+}
+
+function logSyncErrorDiagnostic(error: unknown) {
+  const axiosError = error as {
+    name?: string;
+    message?: string;
+    code?: string;
+    response?: { status?: number; data?: unknown };
+    config?: { method?: string; url?: string; params?: Record<string, unknown> };
+  };
+  const responseData = axiosError.response?.data as {
+    error?: string | { code?: number; message?: string; status?: string };
+    error_description?: string;
+  } | undefined;
+  const nestedGoogleError = typeof responseData?.error === 'object' && responseData.error !== null
+    ? responseData.error
+    : undefined;
+
+  console.error('[EmailSyncService] sync error diagnostic', {
+    name: axiosError.name,
+    message: axiosError.message,
+    code: axiosError.code,
+    responseStatus: axiosError.response?.status,
+    responseData: {
+      oauthError: typeof responseData?.error === 'string' ? responseData.error : undefined,
+      oauthErrorDescription: responseData?.error_description,
+      googleCode: nestedGoogleError?.code,
+      googleStatus: nestedGoogleError?.status,
+      googleMessage: nestedGoogleError?.message,
+    },
+    method: axiosError.config?.method,
+    url: axiosError.config?.url,
+    params: axiosError.config?.params,
+  });
 }
 
 function truncatePromptText(value: string | null | undefined, limit = 1200) {
@@ -518,6 +552,7 @@ export class EmailSyncService {
    * a janela, enquanto as constraints únicas impedem registros duplicados.
    */
   static async syncUser(userId: number): Promise<GmailMessageQueryResult | SyncUserResult> {
+    console.info('[EmailSyncService] sync started');
     const integration = await EmailService.findIntegrationByUserId(userId);
     if (!integration) {
       throw new AppError('Integração Gmail não encontrada', 404);
@@ -535,16 +570,19 @@ export class EmailSyncService {
     const executionLimit = isBootstrap ? env.emailSyncInitialMessages : env.emailSyncMaxMessagesPerRun;
 
     try {
+      console.info('[EmailSyncService] obtaining Gmail credentials');
       const accessToken = await EmailService.getValidAccessToken(integration);
+      console.info('[EmailSyncService] Gmail credentials resolved');
+      console.info('[EmailSyncService] listing Gmail messages');
       const messages = await EmailService.listMessages(
         accessToken,
         query,
         env.emailSyncBatchSize,
         isBootstrap ? env.emailSyncInitialMessages : undefined
       );
-      const aiProvider: AIProvider | null = env.requestyApiKey
-        ? new RequestyProvider()
-        : null;
+      console.info(`[EmailSyncService] Gmail messages fetched count=${messages.length} bootstrap=${isBootstrap}`);
+      console.info('[EmailSyncService] creating AI provider');
+      const aiProvider: AIProvider | null = createAIProvider();
       const result: GmailMessageQueryResult = { processed: 0, created: 0, skipped: 0 };
       let shouldFailRun = false;
       let failureReason: string | null = null;
@@ -562,7 +600,9 @@ export class EmailSyncService {
         }
 
         result.processed += 1;
+        console.info(`[EmailSyncService] fetching Gmail message idPresent=${Boolean(summary.id)}`);
         const detail = await EmailService.getMessage(accessToken, summary.id);
+        console.info('[EmailSyncService] Gmail message fetched');
         const classification = EmailClassificationEngine.classify(detail);
 
         if (classification.outcome === 'COMPRA') {
@@ -648,6 +688,7 @@ export class EmailSyncService {
       return result;
     } catch (error) {
       console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', safeErrorMessage(error));
+      logSyncErrorDiagnostic(error);
       await prisma.tb_integracao.update({
         where: { integracao_id: integration.integracao_id },
         data: {

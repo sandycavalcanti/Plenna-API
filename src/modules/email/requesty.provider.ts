@@ -17,7 +17,7 @@ const requestyPurchaseSchema = z.object({
   paymentMethodName: z.string().nullable().optional(),
 });
 
-const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
+export const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
   z.object({
     classificacao: z.literal('COMPRA'),
     categoryName: z.string().nullable().optional(),
@@ -35,7 +35,7 @@ const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
   }),
 ]);
 
-const requestyCategorySchema = z.object({
+export const requestyCategorySchema = z.object({
   categoryName: z.string().nullable().optional(),
 });
 
@@ -138,7 +138,7 @@ function parseJsonPayload<T>(payload: string, schema: z.ZodType<T>) {
   return schema.parse(parsed);
 }
 
-function buildClassificationInstructions() {
+export function buildClassificationInstructions() {
   return [
     'Não invente dados que não estejam explicitamente suportados pelo e-mail.',
     'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
@@ -153,7 +153,7 @@ function buildClassificationInstructions() {
   ].join(' ');
 }
 
-function buildPurchaseExtractionInstructions() {
+export function buildPurchaseExtractionInstructions() {
   return [
     'Voce esta EXTRAINDO informacoes existentes no e-mail; o e-mail ja foi classificado como COMPRA.',
     'Nao classifique o e-mail e nao use conhecimento externo.',

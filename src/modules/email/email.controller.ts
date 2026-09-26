@@ -14,6 +14,14 @@ function timingSafeEqualString(left: string, right: string) {
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
+
+function semCache(res: Response) {
+  res.set({
+    'Cache-Control': 'no-store',
+    Pragma: 'no-cache',
+    Expires: '0',
+  });
+}
 /**
  * Controla as operações HTTP da integração de e-mail.
  *
