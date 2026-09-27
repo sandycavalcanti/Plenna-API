@@ -263,9 +263,15 @@ function normalizePurchaseDiscount(value: number | null | undefined) {
     : new Prisma.Decimal(0);
 }
 
-function testMarkerFromMessage(message: GmailMessageDetail) {
-  const match = message.subject?.match(/^\[PLENNA TEST\s+(HTML-\d+)\]/i);
-  return match?.[1]?.toUpperCase() ?? null;
+export function testMarkerFromMessage(message: GmailMessageDetail) {
+  const subject = message.subject ?? '';
+  const match = subject.match(/^\[PLENNA TEST\s+(?:(HTML-\d+)|(\d{1,3}))\]/i);
+  if (!match) return null;
+
+  // O marcador serve somente para observabilidade dos fixtures, sem influenciar
+  // qualquer decisão de classificação, extração ou persistência.
+  if (match[1]) return match[1].toUpperCase();
+  return `HTML-${match[2].padStart(3, '0')}`;
 }
 
 function testItemDiagnostic(item: Pick<ExtractedPurchaseItem, 'name' | 'quantity' | 'unitPrice' | 'totalPrice' | 'categoryName'>, source: 'DETERMINISTIC' | 'AI' | 'MERGED') {

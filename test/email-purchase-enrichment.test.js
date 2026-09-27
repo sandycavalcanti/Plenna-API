@@ -250,6 +250,13 @@ test('reconcilia produto e frete positivos contra o total da compra', () => {
   ], null), true);
 });
 
+test('reconcilia taxa positiva com quantidade ausente como uma unidade', () => {
+  assert.equal(reconcilePurchaseTotal(262.80, [
+    { name: 'Jaqueta Jeans Oversized', quantity: 1, unit: null, unitPrice: 249.90, totalPrice: 249.90, categoryName: null },
+    { name: 'Taxa de entrega', quantity: null, unit: null, unitPrice: 12.90, totalPrice: 12.90, categoryName: 'Frete/Taxas' },
+  ], null), true);
+});
+
 test('desconto explicito participa da reconciliacao sem virar item', () => {
   assert.equal(reconcilePurchaseTotal(90, [
     { name: 'Produtos', quantity: 1, unit: null, unitPrice: 100, totalPrice: 100, categoryName: null },

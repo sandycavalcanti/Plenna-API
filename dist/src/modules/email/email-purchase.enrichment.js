@@ -337,9 +337,15 @@ export function reconcilePurchaseTotal(totalAmount, items, discountAmount) {
     for (const item of items) {
         if (!isPersistablePurchaseItem(item))
             continue;
-        if (item.quantity === null || !Number.isFinite(item.quantity) || item.quantity <= 0)
+        // Componentes positivos explicitamente cobrados representam uma linha
+        // única quando a origem não informou quantidade; isso é compatível com a
+        // persistência, que aceita quantidade nula, sem flexibilizar produtos.
+        const effectiveQuantity = (item.quantity === null || item.quantity === undefined) && isPositivePurchaseComponent(item)
+            ? 1
+            : item.quantity;
+        if (effectiveQuantity === null || !Number.isFinite(effectiveQuantity) || effectiveQuantity <= 0)
             return false;
-        representedTotal += item.quantity * item.unitPrice;
+        representedTotal += effectiveQuantity * item.unitPrice;
     }
     const discount = discountAmount ?? 0;
     if (!Number.isFinite(discount) || discount < 0)
