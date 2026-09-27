@@ -12,7 +12,7 @@ import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
 import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
-import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, needsAiEnrichment, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
+import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, needsAiEnrichment, normalizePurchaseItemPrices, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
 import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
 import type { AIPurchaseExtractionProvider, AIExtractedPurchase, AICategoryOption } from './ai-provider.js';
@@ -362,12 +362,26 @@ async function createCompraFromMessage(
     danfe: [...attachmentFiscal.danfe, ...linkFiscal.danfe],
   };
   const merged = mergePurchaseSources(deterministic, aiPurchase, fiscal);
+  const beforeSingleItemResolution = {
+    // Diagnostico sanitizado: registra somente presenca de campos, nunca dados do email.
+    itemHasName: Boolean(merged.items[0]?.name?.trim()),
+    itemHasQuantity: merged.items[0]?.quantity !== null && merged.items[0]?.quantity !== undefined,
+    itemHasUnitPrice: merged.items[0]?.unitPrice !== null && merged.items[0]?.unitPrice !== undefined,
+    itemHasTotalPrice: merged.items[0]?.totalPrice !== null && merged.items[0]?.totalPrice !== undefined,
+  };
   // A decisão final usa todas as fontes; o item único só é completado quando
   // o texto sustenta o nome e o total sem sinais de valores compostos.
   const extracted = resolveSafeSingleItemPrice(
-    merged,
+    normalizePurchaseItemPrices(merged),
     buildPurchaseEvidenceText(normalizedEmail),
   );
+  const afterSingleItemResolution = {
+    // Permite comparar o item antes e depois da regra segura sem expor conteudo.
+    itemHasName: Boolean(extracted.items[0]?.name?.trim()),
+    itemHasQuantity: extracted.items[0]?.quantity !== null && extracted.items[0]?.quantity !== undefined,
+    itemHasUnitPrice: extracted.items[0]?.unitPrice !== null && extracted.items[0]?.unitPrice !== undefined,
+    itemHasTotalPrice: extracted.items[0]?.totalPrice !== null && extracted.items[0]?.totalPrice !== undefined,
+  };
   const horario = parseDateFromMessage(message);
   if (!horario) {
     throw new Error('Data inválida no e-mail');
@@ -425,6 +439,8 @@ async function createCompraFromMessage(
     mergedItemsCount: extracted.items.length,
     persistenceInputItemsCount: extracted.items.length,
     persistenceAcceptedItemsCount: persistedItems.length,
+    beforeSingleItemResolution,
+    afterSingleItemResolution,
     persistenceDropReasons,
     purchaseComplete,
     autoConfirmed: purchaseComplete,

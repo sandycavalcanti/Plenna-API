@@ -162,6 +162,13 @@ test('needsAiEnrichment identifica lacunas e compra completa', () => {
     totalAmount: 47.99,
     paymentMethod: { rawName: 'Pix' },
     items: [{ name: 'Item', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  })), true);
+  assert.equal(needsAiEnrichment(purchase({
+    establishment: 'C&A',
+    orderNumber: 'ABC123',
+    totalAmount: 47.99,
+    paymentMethod: { rawName: 'Pix' },
+    items: [{ name: 'Item', quantity: 1, unitPrice: 47.99, totalPrice: null, categoryName: null }],
   })), false);
 });
 
@@ -210,4 +217,28 @@ test('merge preserva itens determinísticos e aceita itens AI quando lista está
   const ai = aiPurchase({ items: [{ name: 'Novo', quantity: 1, unitPrice: 10, totalPrice: null, categoryName: null }] });
   assert.equal(mergeExtractedPurchase(deterministicItems, ai).items[0].name, 'Existente');
   assert.equal(mergeExtractedPurchase(purchase(), ai).items[0].name, 'Novo');
+});
+
+test('merge completa item deterministico incompleto quando o nome corresponde', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Produto X', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [{ name: 'produto x', quantity: 1, unitPrice: 59.90, totalPrice: 59.90, categoryName: null }],
+  }));
+
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[0].unitPrice, 59.90);
+  assert.equal(result.items[0].totalPrice, 59.90);
+});
+
+test('merge nao substitui item deterministico por item AI diferente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Produto X', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [{ name: 'Produto Y', quantity: 1, unitPrice: 59.90, totalPrice: 59.90, categoryName: null }],
+  }));
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[0].unitPrice, null);
 });

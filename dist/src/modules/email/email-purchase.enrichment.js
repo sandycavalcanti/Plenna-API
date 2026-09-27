@@ -1,3 +1,4 @@
+import { isPersistablePurchaseItem } from './purchase-items.persistence.js';
 const MAX_EXTRACTION_TEXT_LENGTH = 12000;
 function textOrNull(value) {
     const normalized = value?.trim();
@@ -21,12 +22,41 @@ export function buildPurchaseExtractionPrompt(email) {
 export function buildPurchaseEvidenceText(email) {
     return [email.subject, email.snippet, email.textBody].filter((value) => Boolean(value?.trim())).join('\n');
 }
+/**
+ * Normaliza o preco unitario a partir do total da propria linha do item.
+ * Nao usa o total geral da compra, pois frete, taxas e descontos podem estar
+ * fora do item. A divisao so ocorre com quantidade e total positivos e finitos.
+ */
+export function normalizePurchaseItemPrices(purchase) {
+    return {
+        ...purchase,
+        items: purchase.items.map((item) => {
+            if (item.unitPrice !== null && Number.isFinite(item.unitPrice) && item.unitPrice > 0)
+                return item;
+            const totalPrice = item.totalPrice;
+            const quantity = item.quantity;
+            if (totalPrice === null
+                || !Number.isFinite(totalPrice)
+                || totalPrice <= 0
+                || quantity === null
+                || !Number.isFinite(quantity)
+                || quantity <= 0)
+                return item;
+            const unitPrice = totalPrice / quantity;
+            if (!Number.isFinite(unitPrice) || unitPrice <= 0)
+                return item;
+            return { ...item, unitPrice: Number(unitPrice.toFixed(2)) };
+        }),
+    };
+}
 export function needsAiEnrichment(purchase) {
+    // Um item identificado, mas sem nome e preco unitario validos, ainda e uma lacuna.
+    const hasPersistableItem = purchase.items.some(isPersistablePurchaseItem);
     return Boolean(!textOrNull(purchase.establishment)
         || !textOrNull(purchase.orderNumber)
         || purchase.totalAmount === null
         || !textOrNull(purchase.paymentMethod.rawName)
-        || purchase.items.length === 0);
+        || !hasPersistableItem);
 }
 function normalizeComparable(value) {
     return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
@@ -86,9 +116,31 @@ function addAiEvidence(purchase, field) {
         context: null,
     });
 }
+function normalizeItemName(value) {
+    return normalizeComparable(value?.trim() ?? '');
+}
 /**
- * O dado deterministico tem precedencia. A IA somente preenche lacunas e
- * seus itens sao aceitos apenas quando nao existe item deterministico.
+ * Completa somente um item deterministico incompleto quando a IA retornou
+ * exatamente o mesmo nome. Dados determinísticos preenchidos permanecem prioritarios.
+ */
+function mergeMatchingIncompleteItem(deterministic, ai) {
+    if (isPersistablePurchaseItem(deterministic))
+        return deterministic;
+    if (!deterministic.name?.trim() || !ai.name?.trim())
+        return deterministic;
+    if (normalizeItemName(deterministic.name) !== normalizeItemName(ai.name))
+        return deterministic;
+    return {
+        ...deterministic,
+        quantity: deterministic.quantity ?? ai.quantity,
+        unitPrice: deterministic.unitPrice ?? ai.unitPrice,
+        totalPrice: deterministic.totalPrice ?? ai.totalPrice,
+        categoryName: deterministic.categoryName ?? ai.categoryName,
+    };
+}
+/**
+ * O dado deterministico tem precedencia. A IA preenche lacunas gerais e,
+ * com correspondencia segura, completa um item deterministico incompleto.
  */
 export function mergeExtractedPurchase(deterministic, ai) {
     const merged = {
@@ -120,6 +172,13 @@ export function mergeExtractedPurchase(deterministic, ai) {
     if (merged.items.length === 0 && aiItems.length > 0) {
         merged.items = aiItems;
         addAiEvidence(merged, 'items');
+    }
+    else if (merged.items.length === 1 && aiItems.length === 1) {
+        const completedItem = mergeMatchingIncompleteItem(merged.items[0], aiItems[0]);
+        if (completedItem !== merged.items[0]) {
+            merged.items = [completedItem];
+            addAiEvidence(merged, 'items');
+        }
     }
     return merged;
 }
