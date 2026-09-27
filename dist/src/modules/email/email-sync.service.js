@@ -219,9 +219,10 @@ function testMarkerFromMessage(message) {
     const match = message.subject?.match(/^\[PLENNA TEST\s+(HTML-\d+)\]/i);
     return match?.[1]?.toUpperCase() ?? null;
 }
-function testItemDiagnostic(item) {
+function testItemDiagnostic(item, source) {
     const role = isPositivePurchaseComponent({ ...item, unit: null }) ? 'COMPONENT' : 'MAIN';
     return {
+        source,
         role,
         hasName: Boolean(item.name?.trim()),
         hasQuantity: item.quantity !== null && item.quantity !== undefined,
@@ -245,9 +246,9 @@ function logTestPurchaseDiagnostics(message, deterministic, aiPurchase, extracte
     });
     console.info('[TestPurchaseItems]', {
         testMarker,
-        deterministicItems: deterministic.items.map(testItemDiagnostic),
-        aiItems: (aiPurchase?.items ?? []).map(testItemDiagnostic),
-        mergedItems: extracted.items.map(testItemDiagnostic),
+        deterministicItems: deterministic.items.map((item) => testItemDiagnostic(item, 'DETERMINISTIC')),
+        aiItems: (aiPurchase?.items ?? []).map((item) => testItemDiagnostic(item, 'AI')),
+        mergedItems: extracted.items.map((item) => testItemDiagnostic(item, 'MERGED')),
     });
 }
 function logTestEmailFlow(message, values) {

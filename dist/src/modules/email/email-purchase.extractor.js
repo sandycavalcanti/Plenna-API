@@ -148,6 +148,8 @@ function findLabeledMoney(lines, start, labels, limit = 16) {
 }
 function findQuantity(lines, start, limit = 16) {
     for (let index = start; index < Math.min(lines.length, start + limit); index += 1) {
+        if (isPurchaseBlockBoundary(lines[index]))
+            break;
         if (index > start && isProductStart(lines[index]))
             break;
         const candidate = lineValue(lines, index, ['quantidade', 'qtd']);
@@ -159,6 +161,27 @@ function findQuantity(lines, start, limit = 16) {
         const quantity = Number(match[0].replace(',', '.'));
         if (Number.isFinite(quantity) && quantity > 0)
             return { quantity, label: candidate.label, context: candidate.context, index };
+    }
+    return null;
+}
+function isPurchaseBlockBoundary(line) {
+    const normalizedLine = normalize(line);
+    return /^(?:subtotal(?: dos produtos)?|total(?: da compra| do pedido| pago| final)?|valor total|valor final|frete|entrega|taxa(?: de [^:]+)?|desconto|cupom|cashback|parcela|juros|forma de pagamento|pagamento|voce tambem pode gostar|recomendados?|produtos recomendados|compre tambem|talvez voce goste)\b/i.test(normalizedLine);
+}
+function isItemAttribute(line) {
+    const normalizedLine = normalize(line);
+    return /^(?:tamanho|cor|modelo|variante|voltagem|marca|sku)\s*:/i.test(normalizedLine);
+}
+function findNameBeforeQuantity(lines, quantityIndex) {
+    for (let index = quantityIndex - 1; index >= Math.max(0, quantityIndex - 6); index -= 1) {
+        const line = lines[index].trim();
+        if (!line || isPurchaseBlockBoundary(line))
+            break;
+        if (/^(?:quantidade|qtd)\b/i.test(normalize(line)))
+            break;
+        if (isItemAttribute(line) || isItemLabel(line) || /^r\$?\s*[\d.,]+$/i.test(line))
+            continue;
+        return { name: line, index };
     }
     return null;
 }
@@ -187,12 +210,11 @@ function extractItems(text, evidence) {
         .map((line) => line.trim())
         .filter(Boolean);
     const items = [];
+    const handledNames = new Set();
+    // Primeiro preservamos o formato legado com o rótulo "Produto".
     for (let index = 0; index < lines.length; index += 1) {
         const labeledProduct = lineValue(lines, index, PRODUCT_LABELS);
-        const product = labeledProduct ??
-            (!isItemLabel(lines[index]) && !lineValue(lines, index - 1, PRODUCT_LABELS) && lineValue(lines, index + 1, ['quantidade', 'qtd'])
-                ? { value: lines[index], label: 'item', context: lines[index] }
-                : null);
+        const product = labeledProduct;
         if (!product)
             continue;
         const name = product.value.trim();
@@ -204,6 +226,10 @@ function extractItems(text, evidence) {
         const adjacentPrice = !unitPrice && !totalPrice && quantity
             ? findAdjacentItemMoney(lines, quantity.index + 1)
             : null;
+        const normalizedName = normalize(product.value.trim());
+        if (handledNames.has(normalizedName))
+            continue;
+        handledNames.add(normalizedName);
         items.push({
             name,
             quantity: quantity?.quantity ?? null,
@@ -218,16 +244,55 @@ function extractItems(text, evidence) {
         if (quantity)
             addEvidence(evidence, { field: 'items', rawLabel: quantity.label, context: quantity.context });
     }
+    // Tabelas HTML frequentemente removem o rótulo "Produto". Nesse formato,
+    // a quantidade delimita o bloco e o valor monetário do próprio bloco pode
+    // ser usado sem exigir um rótulo adicional de preço.
+    for (let index = 0; index < lines.length; index += 1) {
+        const quantityCandidate = lineValue(lines, index, ['quantidade', 'qtd']);
+        if (!quantityCandidate)
+            continue;
+        const quantityMatch = quantityCandidate.value.match(/^\d+(?:[.,]\d+)?$/);
+        const quantity = quantityMatch ? Number(quantityMatch[0].replace(',', '.')) : null;
+        if (quantity === null || !Number.isFinite(quantity) || quantity <= 0)
+            continue;
+        const quantityIndex = /^\s*(?:quantidade|qtd)\s*:/i.test(lines[index]) ? index : index + 1;
+        const nameCandidate = findNameBeforeQuantity(lines, index);
+        if (!nameCandidate)
+            continue;
+        const normalizedName = normalize(nameCandidate.name);
+        if (handledNames.has(normalizedName))
+            continue;
+        const price = findAdjacentItemMoney(lines, quantityIndex + 1, 6);
+        const labeledUnitPrice = findLabeledMoney(lines, quantityIndex + 1, ['valor unitario', 'preco unitario', 'valor do produto', 'preco do produto']);
+        const labeledTotalPrice = findLabeledMoney(lines, quantityIndex + 1, ['subtotal', 'total do item', 'valor total do item', 'valor dos produtos']);
+        const resolvedUnitPrice = labeledUnitPrice?.amount ?? (quantity === 1 ? price : null);
+        const resolvedTotalPrice = labeledTotalPrice?.amount ?? (quantity > 1 ? price : quantity === 1 ? price : null);
+        items.push({
+            name: nameCandidate.name,
+            quantity,
+            unit: null,
+            unitPrice: resolvedUnitPrice,
+            totalPrice: resolvedTotalPrice,
+            categoryName: null,
+        });
+        handledNames.add(normalizedName);
+        addEvidence(evidence, { field: 'items', rawLabel: 'item', context: nameCandidate.name });
+        addEvidence(evidence, { field: 'items', rawLabel: 'quantidade', context: quantityCandidate.context });
+    }
     return items;
 }
 function extractPositiveComponents(text, evidence) {
     const components = [];
-    for (const line of text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    const lines = text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
         const normalizedLine = normalize(line);
-        const component = POSITIVE_COMPONENT_LABELS.find(({ label }) => new RegExp(`^${label}\\s*:`).test(normalizedLine));
+        const component = POSITIVE_COMPONENT_LABELS.find(({ label }) => new RegExp(`^${label}(?:\\s*:|$)`).test(normalizedLine));
         if (!component)
             continue;
-        const match = normalizedLine.match(/:\s*(?:r\$\s*)?(\d[\d.]*[,.]\d{2})\s*$/i);
+        const inlineMatch = normalizedLine.match(/:\s*(?:r\$\s*)?(\d[\d.]*[,.]\d{2})\s*$/i);
+        const nextLineMatch = lines[index + 1]?.match(/^\s*(?:r\$\s*)?(\d[\d.]*[,.]\d{2})\s*$/i);
+        const match = inlineMatch ?? nextLineMatch;
         const amount = match?.[1] ? parseMoney(match[1]) : null;
         if (amount === null)
             continue;

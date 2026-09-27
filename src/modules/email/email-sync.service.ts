@@ -261,9 +261,10 @@ function testMarkerFromMessage(message: GmailMessageDetail) {
   return match?.[1]?.toUpperCase() ?? null;
 }
 
-function testItemDiagnostic(item: Pick<ExtractedPurchaseItem, 'name' | 'quantity' | 'unitPrice' | 'totalPrice' | 'categoryName'>) {
+function testItemDiagnostic(item: Pick<ExtractedPurchaseItem, 'name' | 'quantity' | 'unitPrice' | 'totalPrice' | 'categoryName'>, source: 'DETERMINISTIC' | 'AI' | 'MERGED') {
   const role = isPositivePurchaseComponent({ ...item, unit: null }) ? 'COMPONENT' : 'MAIN';
   return {
+    source,
     role,
     hasName: Boolean(item.name?.trim()),
     hasQuantity: item.quantity !== null && item.quantity !== undefined,
@@ -294,9 +295,9 @@ function logTestPurchaseDiagnostics(
   });
   console.info('[TestPurchaseItems]', {
     testMarker,
-    deterministicItems: deterministic.items.map(testItemDiagnostic),
-    aiItems: (aiPurchase?.items ?? []).map(testItemDiagnostic),
-    mergedItems: extracted.items.map(testItemDiagnostic),
+    deterministicItems: deterministic.items.map((item) => testItemDiagnostic(item, 'DETERMINISTIC')),
+    aiItems: (aiPurchase?.items ?? []).map((item) => testItemDiagnostic(item, 'AI')),
+    mergedItems: extracted.items.map((item) => testItemDiagnostic(item, 'MERGED')),
   });
 }
 

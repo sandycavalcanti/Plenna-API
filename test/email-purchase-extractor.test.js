@@ -214,3 +214,45 @@ test('prioriza total semantico em linha consecutiva', () => {
   assert.equal(result.totalAmount, 184.8);
   assert.equal(result.totalAmountSource, 'DETERMINISTIC_SEMANTIC');
 });
+test('extrai produto com atributos, preco e frete sem atravessar delimitadores', () => {
+  const result = EmailPurchaseExtractor.extract(email([
+    'Tenis Casual Branco',
+    'Tamanho: 37',
+    'Quantidade: 1',
+    'R$ 189,90',
+    'Frete',
+    'R$ 14,90',
+  ].join('\n')));
+  assert.equal(result.items[0].name, 'Tenis Casual Branco');
+  assert.equal(result.items[0].unitPrice, 189.9);
+  assert.equal(result.items[1].name, 'Frete');
+  assert.equal(result.items[1].unitPrice, 14.9);
+});
+
+test('extrai tres produtos de blocos consecutivos sem confundir subtotal', () => {
+  const result = EmailPurchaseExtractor.extract(email([
+    'Mouse Gamer RGB', 'Quantidade: 1', 'R$ 149,90',
+    'Teclado Mecânico', 'Quantidade: 1', 'R$ 229,90',
+    'Mousepad XL', 'Quantidade: 1', 'R$ 69,90',
+    'Subtotal dos produtos', 'R$ 449,70',
+    'Frete', 'R$ 18,50',
+  ].join('\n')));
+  assert.deepEqual(result.items.slice(0, 3).map((item) => [item.name, item.unitPrice]), [
+    ['Mouse Gamer RGB', 149.9],
+    ['Teclado Mecânico', 229.9],
+    ['Mousepad XL', 69.9],
+  ]);
+});
+
+test('extrai produto e taxa mas ignora recomendacoes sem quantidade', () => {
+  const result = EmailPurchaseExtractor.extract(email([
+    'Jaqueta Jeans Oversized', 'Cor: Azul', 'Tamanho: M', 'Quantidade: 1', 'R$ 249,90',
+    'Subtotal', 'R$ 249,90',
+    'Taxa de entrega', 'R$ 12,90',
+    'Você também pode gostar', 'Bolsa Transversal', 'R$ 79,90',
+  ].join('\n')));
+  assert.equal(result.items[0].name, 'Jaqueta Jeans Oversized');
+  assert.equal(result.items[0].unitPrice, 249.9);
+  assert.equal(result.items[1].name, 'Taxa de entrega');
+  assert.equal(result.items.length, 2);
+});
