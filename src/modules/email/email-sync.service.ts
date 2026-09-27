@@ -12,7 +12,7 @@ import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
 import { buildNestedPurchaseItems, buildPersistedPurchaseItems, isPersistablePurchaseItem, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
-import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, isPositivePurchaseComponent, needsAiEnrichment, normalizePurchaseItemPrices, reconcilePurchaseTotal, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
+import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, isPositivePurchaseComponent, needsAiEnrichment, normalizePositiveComponentPrices, normalizePurchaseItemPrices, reconcilePurchaseTotal, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
 import { parseFiscalAttachments, mergePurchaseSources, type FiscalSourceResults } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
 import type { AIPurchaseExtractionProvider, AIExtractedPurchase, AICategoryOption } from './ai-provider.js';
@@ -437,9 +437,10 @@ async function createCompraFromMessage(
   };
   // A decisão final usa todas as fontes; o item único só é completado quando
   // o texto sustenta o nome e o total sem sinais de valores compostos.
+  const evidenceText = buildPurchaseEvidenceText(normalizedEmail);
   const extracted = resolveSafeSingleItemPrice(
-    normalizePurchaseItemPrices(merged),
-    buildPurchaseEvidenceText(normalizedEmail),
+    normalizePositiveComponentPrices(normalizePurchaseItemPrices(merged), evidenceText),
+    evidenceText,
   );
   const afterSingleItemResolution = {
     // Permite comparar o item antes e depois da regra segura sem expor conteudo.

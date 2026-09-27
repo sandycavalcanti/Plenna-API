@@ -98,7 +98,79 @@ export function isPositivePurchaseComponent(item: ExtractedPurchaseItem) {
   const category = normalizedComponentName(item.categoryName);
   const name = normalizedComponentName(item.name);
   return category === 'frete/taxas'
-    || ['frete', 'taxa', 'taxa de servico', 'taxa de entrega', 'taxa de conveniencia'].includes(name);
+    || [
+      'frete',
+      'taxa',
+      'taxa de servico',
+      'taxa de entrega',
+      'taxa de conveniencia',
+      'taxa adicional',
+      'taxa administrativa',
+    ].includes(name);
+}
+
+function parseExplicitComponentAmount(value: string) {
+  const match = value.match(/(?:r\$\s*)?((?:\d{1,3}(?:\.\d{3})+|\d+)[,.]\d{2})/i);
+  if (!match?.[1]) return null;
+
+  const normalized = match[1].includes(',')
+    ? match[1].replace(/\./g, '').replace(',', '.')
+    : match[1];
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+/**
+ * Recupera o valor de uma taxa somente quando o rótulo e o dinheiro estão
+ * explicitamente associados no texto. Isso evita usar totais ou diferenças
+ * matemáticas como preço de componente.
+ */
+function findExplicitComponentAmount(itemName: string | null, sourceText: string) {
+  const target = normalizedComponentName(itemName);
+  if (!target) return null;
+
+  const lines = sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const normalizedLine = normalizedComponentName(line).replace(/:\s*$/, '');
+    if (normalizedLine !== target) continue;
+
+    const inlineAmount = parseExplicitComponentAmount(line.split(':').slice(1).join(':'));
+    if (inlineAmount !== null) return inlineAmount;
+
+    const nextLineAmount = parseExplicitComponentAmount(lines[index + 1] ?? '');
+    if (nextLineAmount !== null) return nextLineAmount;
+  }
+
+  return null;
+}
+
+/**
+ * Completa apenas componentes positivos cujo valor aparece junto ao rótulo
+ * da taxa. Produtos e regras gerais de reconciliação não passam por este
+ * ajuste, preservando o escopo cirúrgico do enriquecimento.
+ */
+export function normalizePositiveComponentPrices(purchase: ExtractedPurchase, sourceText: string): ExtractedPurchase {
+  return {
+    ...purchase,
+    items: purchase.items.map((item) => {
+      if (!isPositivePurchaseComponent(item)) return item;
+      if (item.unitPrice !== null && Number.isFinite(item.unitPrice) && item.unitPrice > 0) return item;
+
+      const quantity = item.quantity ?? 1;
+      if (!Number.isFinite(quantity) || quantity <= 0) return item;
+
+      const explicitAmount = findExplicitComponentAmount(item.name, sourceText);
+      if (explicitAmount === null) return item;
+
+      return {
+        ...item,
+        quantity,
+        unitPrice: Number((explicitAmount / quantity).toFixed(2)),
+        totalPrice: item.totalPrice ?? explicitAmount,
+      };
+    }),
+  };
 }
 
 function samePositiveComponent(left: ExtractedPurchaseItem, right: ExtractedPurchaseItem) {

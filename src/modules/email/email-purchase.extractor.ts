@@ -5,6 +5,8 @@ const PRODUCT_LABELS = ['produto', 'item', 'descricao'];
 const POSITIVE_COMPONENT_LABELS = [
   { label: 'taxa de servico', name: 'Taxa de serviço' },
   { label: 'taxa de conveniencia', name: 'Taxa de conveniência' },
+  { label: 'taxa adicional', name: 'Taxa adicional' },
+  { label: 'taxa administrativa', name: 'Taxa administrativa' },
   { label: 'taxa de entrega', name: 'Taxa de entrega' },
   { label: 'valor do frete', name: 'Frete' },
   { label: 'frete', name: 'Frete' },

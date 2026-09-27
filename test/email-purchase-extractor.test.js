@@ -42,6 +42,32 @@ test('extrai frete explicito como componente positivo', () => {
   });
 });
 
+test('extrai taxa de entrega com preco explicitamente associado', () => {
+  const result = EmailPurchaseExtractor.extract(email('Taxa de entrega\nR$ 12,90'));
+  assert.deepEqual(result.items[0], {
+    name: 'Taxa de entrega',
+    quantity: 1,
+    unit: null,
+    unitPrice: 12.9,
+    totalPrice: 12.9,
+    categoryName: 'Frete/Taxas',
+  });
+});
+
+test('extrai taxa de servico com preco explicitamente associado', () => {
+  const result = EmailPurchaseExtractor.extract(email('Taxa de servico\nR$ 9,90'));
+  assert.equal(result.items[0].name, 'Taxa de servi\u00e7o');
+  assert.equal(result.items[0].quantity, 1);
+  assert.equal(result.items[0].unitPrice, 9.9);
+  assert.equal(result.items[0].totalPrice, 9.9);
+  assert.equal(result.items[0].categoryName, 'Frete/Taxas');
+});
+
+test('nao interpreta total como taxa positiva', () => {
+  const result = EmailPurchaseExtractor.extract(email('Total\nR$ 262,80'));
+  assert.equal(result.items.length, 0);
+});
+
 test('extrai taxa positiva especifica e desconto como ajuste', () => {
   const result = EmailPurchaseExtractor.extract(email('Produto: Produto X\nValor do produto: R$ 50,00\nTaxa de serviço: R$ 5,00\nDesconto: R$ 2,00\nTotal: R$ 53,00'));
   assert.equal(result.items[0].name, 'Produto X');

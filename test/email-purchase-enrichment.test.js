@@ -7,7 +7,7 @@ process.env.REQUESTY_API_KEY = process.env.REQUESTY_API_KEY ?? 'requesty-key';
 
 const axios = (await import('axios')).default;
 const { RequestyProvider } = await import('../dist/src/modules/email/requesty.provider.js');
-const { mergeExtractedPurchase, needsAiEnrichment, buildPurchaseExtractionPrompt, reconcilePurchaseTotal } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
+const { mergeExtractedPurchase, needsAiEnrichment, buildPurchaseExtractionPrompt, normalizePositiveComponentPrices, reconcilePurchaseTotal } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
 
 const email = (textBody = '', overrides = {}) => ({
   id: 'enrichment-test',
@@ -275,6 +275,27 @@ test('merge encontra produto correspondente entre varios itens da IA e anexa com
   assert.equal(result.items.length, 2);
   assert.equal(result.items[0].unitPrice, 249.9);
   assert.equal(result.items[1].name, 'Taxa de entrega');
+});
+
+test('normaliza preco de taxa explicitamente associada no texto', () => {
+  const result = normalizePositiveComponentPrices(purchase({
+    items: [{ name: 'Taxa de entrega', quantity: 1, unitPrice: null, totalPrice: null, categoryName: 'Frete/Taxas' }],
+  }), 'Taxa de entrega\nR$ 12,90\nTotal\nR$ 262,80');
+
+  assert.equal(result.items[0].quantity, 1);
+  assert.equal(result.items[0].unitPrice, 12.9);
+  assert.equal(result.items[0].totalPrice, 12.9);
+});
+
+test('merge completa taxa deterministica sem duplicar componente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Taxa de servico', quantity: 1, unitPrice: null, totalPrice: null, categoryName: 'Frete/Taxas' }],
+  }), aiPurchase({
+    items: [{ name: 'Taxa de servico', quantity: 1, unitPrice: 9.9, totalPrice: 9.9, categoryName: 'Frete/Taxas' }],
+  }));
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].unitPrice, 9.9);
 });
 
 test('total da IA pode substituir somente fallback quando sustentado pelo texto', () => {
