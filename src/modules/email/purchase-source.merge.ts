@@ -141,8 +141,9 @@ export function mergePurchaseSources(
   deterministic: ExtractedPurchase,
   ai: AIExtractedPurchase | null,
   fiscal: FiscalSourceResults,
+  sourceText = '',
 ): ExtractedPurchase {
-  const merged = ai ? mergeExtractedPurchase(deterministic, ai) : mergeExtractedPurchase(deterministic, {
+  const merged = ai ? mergeExtractedPurchase(deterministic, ai, sourceText) : mergeExtractedPurchase(deterministic, {
     establishment: null,
     orderNumber: null,
     totalAmount: null,
@@ -164,6 +165,7 @@ export function mergePurchaseSources(
   const total = xml?.totalAmount ?? danfe?.totalAmount;
   if (total !== null && total !== undefined) {
     merged.totalAmount = total;
+    merged.totalAmountSource = 'FISCAL';
     addSourceEvidence(merged, 'totalAmount', xml?.totalAmount !== null && xml?.totalAmount !== undefined ? 'NFE_XML' : 'DANFE_PDF');
   }
 

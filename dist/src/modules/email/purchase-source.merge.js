@@ -113,8 +113,8 @@ function invoiceFromSources(xml, danfe) {
  * possuem autoridades diferentes. Arrays de itens sao substituidos pela
  * fonte fiscal vencedora, nunca concatenados.
  */
-export function mergePurchaseSources(deterministic, ai, fiscal) {
-    const merged = ai ? mergeExtractedPurchase(deterministic, ai) : mergeExtractedPurchase(deterministic, {
+export function mergePurchaseSources(deterministic, ai, fiscal, sourceText = '') {
+    const merged = ai ? mergeExtractedPurchase(deterministic, ai, sourceText) : mergeExtractedPurchase(deterministic, {
         establishment: null,
         orderNumber: null,
         totalAmount: null,
@@ -134,6 +134,7 @@ export function mergePurchaseSources(deterministic, ai, fiscal) {
     const total = xml?.totalAmount ?? danfe?.totalAmount;
     if (total !== null && total !== undefined) {
         merged.totalAmount = total;
+        merged.totalAmountSource = 'FISCAL';
         addSourceEvidence(merged, 'totalAmount', xml?.totalAmount !== null && xml?.totalAmount !== undefined ? 'NFE_XML' : 'DANFE_PDF');
     }
     const fiscalDiscount = xml?.discountAmount ?? danfe?.discountAmount;

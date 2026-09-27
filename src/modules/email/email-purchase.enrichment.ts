@@ -35,6 +35,18 @@ export function buildPurchaseEvidenceText(email: NormalizedEmail) {
   return [email.subject, email.snippet, email.textBody].filter((value): value is string => Boolean(value?.trim())).join('\n');
 }
 
+function amountTextCandidates(amount: number) {
+  const fixed = amount.toFixed(2);
+  const ptBr = fixed.replace('.', ',');
+  return [`${fixed}`, `${ptBr}`, `R$ ${fixed}`, `R$ ${ptBr}`];
+}
+
+function amountIsSupportedByText(amount: number | null, sourceText: string) {
+  if (amount === null || !Number.isFinite(amount) || amount <= 0) return false;
+  const normalized = sourceText.toLowerCase().replace(/\s+/g, ' ');
+  return amountTextCandidates(amount).some((candidate) => normalized.includes(candidate.toLowerCase()));
+}
+
 /**
  * Normaliza o preco unitario a partir do total da propria linha do item.
  * Nao usa o total geral da compra, pois frete, taxas e descontos podem estar
@@ -191,11 +203,12 @@ function mergeMatchingIncompleteItem(deterministic: ExtractedPurchaseItem, ai: E
  * O dado deterministico tem precedencia. A IA preenche lacunas gerais e,
  * com correspondencia segura, completa um item deterministico incompleto.
  */
-export function mergeExtractedPurchase(deterministic: ExtractedPurchase, ai: AIExtractedPurchase): ExtractedPurchase {
+export function mergeExtractedPurchase(deterministic: ExtractedPurchase, ai: AIExtractedPurchase, sourceText = ''): ExtractedPurchase {
   const merged: ExtractedPurchase = {
     establishment: deterministic.establishment,
     orderNumber: deterministic.orderNumber,
     totalAmount: deterministic.totalAmount,
+    totalAmountSource: deterministic.totalAmountSource ?? null,
     discountAmount: deterministic.discountAmount ?? null,
     paymentMethod: { rawName: deterministic.paymentMethod.rawName },
     items: [...deterministic.items],
@@ -213,8 +226,16 @@ export function mergeExtractedPurchase(deterministic: ExtractedPurchase, ai: AIE
     addAiEvidence(merged, 'orderNumber');
   }
 
-  if (merged.totalAmount === null && ai.totalAmount !== null) {
+  // O total da IA so pode superar um fallback fraco quando o proprio valor
+  // aparece no texto recebido; um valor semanticamente deterministico sempre vence.
+  const aiTotalSupported = ai.totalAmount !== null
+    && (!sourceText || amountIsSupportedByText(ai.totalAmount, sourceText));
+  if (
+    aiTotalSupported
+    && (merged.totalAmount === null || merged.totalAmountSource === 'CLASSIFICATION_FALLBACK')
+  ) {
     merged.totalAmount = ai.totalAmount;
+    merged.totalAmountSource = 'AI';
     addAiEvidence(merged, 'totalAmount');
   }
 
@@ -231,10 +252,32 @@ export function mergeExtractedPurchase(deterministic: ExtractedPurchase, ai: AIE
   if (merged.items.length === 0 && aiItems.length > 0) {
     merged.items = aiItems;
     addAiEvidence(merged, 'items');
-  } else if (merged.items.length === 1 && aiItems.length === 1) {
-    const completedItem = mergeMatchingIncompleteItem(merged.items[0], aiItems[0]);
-    if (completedItem !== merged.items[0]) {
-      merged.items = [completedItem];
+  } else if (merged.items.length > 0 && aiItems.length > 0) {
+    const remainingAiItems = [...aiItems];
+    let itemEvidenceAdded = false;
+    merged.items = merged.items.map((deterministicItem) => {
+      const deterministicName = normalizeItemName(deterministicItem.name);
+      const matchIndex = deterministicName
+        ? remainingAiItems.findIndex((aiItem) => deterministicName === normalizeItemName(aiItem.name))
+        : -1;
+      if (matchIndex < 0) return deterministicItem;
+
+      const [aiItem] = remainingAiItems.splice(matchIndex, 1);
+      const completedItem = mergeMatchingIncompleteItem(deterministicItem, aiItem);
+      if (completedItem !== deterministicItem) itemEvidenceAdded = true;
+      return completedItem;
+    });
+    if (itemEvidenceAdded) {
+      addAiEvidence(merged, 'items');
+    }
+
+    // Componentes positivos sem correspondencia podem complementar a lista,
+    // mesmo quando a IA tambem retornou o produto principal.
+    const newComponents = remainingAiItems
+      .filter((item) => isPositivePurchaseComponent(item))
+      .filter((item) => !merged.items.some((existing) => samePositiveComponent(existing, item)));
+    if (newComponents.length > 0) {
+      merged.items.push(...newComponents);
       addAiEvidence(merged, 'items');
     }
   }

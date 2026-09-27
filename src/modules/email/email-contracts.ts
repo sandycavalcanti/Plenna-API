@@ -59,6 +59,8 @@ export type ExtractedPurchaseField =
   | 'items'
   | 'invoice';
 
+export type PurchaseTotalSource = 'DETERMINISTIC_SEMANTIC' | 'CLASSIFICATION_FALLBACK' | 'AI' | 'FISCAL';
+
 /**
  * Registra a origem de um dado extraido, sem afirmar que ele foi confirmado
  * pelo usuario ou persistido como dado definitivo da compra.
@@ -90,6 +92,8 @@ export interface ExtractedPurchase {
   establishment: string | null;
   orderNumber: string | null;
   totalAmount: number | null;
+  /** Mantem a origem do total para aplicar precedencia sem misturar fallback fraco. */
+  totalAmountSource?: PurchaseTotalSource | null;
   /** Desconto explicito usado somente na conciliacao, nunca como item positivo. */
   discountAmount?: number | null;
   paymentMethod: ExtractedPaymentMethod;

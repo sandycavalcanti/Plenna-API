@@ -196,3 +196,21 @@ test('preserva a representação original do estabelecimento', () => {
   assert.equal(EmailPurchaseExtractor.extract(email('Loja: C&A')).establishment, 'C&A');
   assert.equal(EmailPurchaseExtractor.extract(email('Vendido por: Loja São José')).establishment, 'Loja São José');
 });
+test('associa preco adjacente de tabela HTML linearizada ao item', () => {
+  const result = EmailPurchaseExtractor.extract(email('Jaqueta Jeans Oversized\nQuantidade: 1\nR$ 249,90'));
+  assert.equal(result.items[0].name, 'Jaqueta Jeans Oversized');
+  assert.equal(result.items[0].quantity, 1);
+  assert.equal(result.items[0].unitPrice, 249.9);
+});
+
+test('nao associa preco de recomendacao ao produto principal', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto A\nQuantidade: 1\nR$ 50,00\nVoce tambem pode gostar\nBolsa\nR$ 79,90'));
+  assert.equal(result.items[0].unitPrice, 50);
+  assert.equal(result.items.length, 1);
+});
+
+test('prioriza total semantico em linha consecutiva', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto A\nR$ 189,90\nFrete\nR$ 14,90\nDesconto\nR$ 20,00\nTotal final\nR$ 184,80'));
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'DETERMINISTIC_SEMANTIC');
+});

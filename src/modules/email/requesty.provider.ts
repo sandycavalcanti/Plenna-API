@@ -166,6 +166,8 @@ export function buildPurchaseExtractionInstructions() {
     'Extraia orderNumber somente com evidencia textual de pedido e nao confunda CNPJ, CPF, rastreio ou chave NF-e.',
     'Retorne somente paymentMethodName textual quando a forma estiver explicitamente presente, sem ID de banco.',
     'Extraia itens somente quando nome, quantidade ou precos estiverem explicitamente presentes.',
+    'Em e-mails originalmente estruturados como tabelas HTML, o nome, a quantidade e o preco podem aparecer em linhas consecutivas apos a normalizacao; associe um valor imediatamente adjacente ao bloco do produto somente quando a relacao estiver clara.',
+    'Nao associe precos de blocos distantes, totais gerais, frete, desconto ou secoes como "voce tambem pode gostar" a um produto comprado.',
     'Extraia tambem frete e taxas positivas explicitamente cobradas como itens, usando o nome especifico e categoryName "Frete/Taxas".',
     'Nao invente frete ou taxa por diferenca matematica; so extraia componentes com rotulo ou evidencia explicita.',
     'Nao transforme desconto, juros, parcela, cashback, economia ou cupom em item positivo. Retorne descontoAmount somente quando o desconto estiver explicitamente informado.',

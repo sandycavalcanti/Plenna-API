@@ -199,14 +199,62 @@ function toNormalizedEmail(message) {
 }
 function buildExtractedPurchase(message, supplemental) {
     const deterministic = EmailPurchaseExtractor.extract(toNormalizedEmail(message));
+    const totalAmount = deterministic.totalAmount ?? supplemental?.amount ?? null;
+    const totalAmountSource = deterministic.totalAmount !== null
+        ? deterministic.totalAmountSource ?? 'DETERMINISTIC_SEMANTIC'
+        : supplemental?.amount !== null && supplemental?.amount !== undefined
+            ? 'CLASSIFICATION_FALLBACK'
+            : null;
     return {
         ...deterministic,
         establishment: deterministic.establishment ?? supplemental?.establishment ?? null,
-        totalAmount: deterministic.totalAmount ?? supplemental?.amount ?? null,
+        totalAmount,
+        totalAmountSource,
         paymentMethod: {
             rawName: deterministic.paymentMethod.rawName ?? supplemental?.paymentMethodName ?? null,
         },
     };
+}
+function testMarkerFromMessage(message) {
+    const match = message.subject?.match(/^\[PLENNA TEST\s+(HTML-\d+)\]/i);
+    return match?.[1]?.toUpperCase() ?? null;
+}
+function testItemDiagnostic(item) {
+    const role = isPositivePurchaseComponent({ ...item, unit: null }) ? 'COMPONENT' : 'MAIN';
+    return {
+        role,
+        hasName: Boolean(item.name?.trim()),
+        hasQuantity: item.quantity !== null && item.quantity !== undefined,
+        hasUnitPrice: item.unitPrice !== null && item.unitPrice !== undefined,
+        hasTotalPrice: item.totalPrice !== null && item.totalPrice !== undefined,
+        persistable: Boolean(item.name?.trim()) && item.unitPrice !== null && Number.isFinite(item.unitPrice) && item.unitPrice > 0,
+    };
+}
+function logTestPurchaseDiagnostics(message, deterministic, aiPurchase, extracted, fiscal) {
+    const testMarker = testMarkerFromMessage(message);
+    if (!testMarker)
+        return;
+    console.info('[TestPurchaseTotals]', {
+        testMarker,
+        deterministicSemanticTotalFound: deterministic.totalAmountSource === 'DETERMINISTIC_SEMANTIC',
+        classificationFallbackTotalUsed: deterministic.totalAmountSource === 'CLASSIFICATION_FALLBACK',
+        aiTotalFound: aiPurchase?.totalAmount !== null && aiPurchase?.totalAmount !== undefined,
+        fiscalTotalFound: fiscal.nfe.some((source) => source.totalAmount !== null && source.totalAmount !== undefined)
+            || fiscal.danfe.some((source) => source.totalAmount !== null && source.totalAmount !== undefined),
+        finalTotalSource: extracted.totalAmountSource ?? 'NONE',
+    });
+    console.info('[TestPurchaseItems]', {
+        testMarker,
+        deterministicItems: deterministic.items.map(testItemDiagnostic),
+        aiItems: (aiPurchase?.items ?? []).map(testItemDiagnostic),
+        mergedItems: extracted.items.map(testItemDiagnostic),
+    });
+}
+function logTestEmailFlow(message, values) {
+    const testMarker = testMarkerFromMessage(message);
+    if (!testMarker)
+        return;
+    console.info('[TestEmailFlow]', { testMarker, ...values });
 }
 /**
  * Obtém o estabelecimento de uma propaganda sem depender de IA.
@@ -310,7 +358,7 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
         nfe: [...attachmentFiscal.nfe, ...linkFiscal.nfe],
         danfe: [...attachmentFiscal.danfe, ...linkFiscal.danfe],
     };
-    const merged = mergePurchaseSources(deterministic, aiPurchase, fiscal);
+    const merged = mergePurchaseSources(deterministic, aiPurchase, fiscal, buildPurchaseEvidenceText(normalizedEmail));
     const beforeSingleItemResolution = {
         // Diagnostico sanitizado: registra somente presenca de campos, nunca dados do email.
         itemHasName: Boolean(merged.items[0]?.name?.trim()),
@@ -328,6 +376,7 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
         itemHasUnitPrice: extracted.items[0]?.unitPrice !== null && extracted.items[0]?.unitPrice !== undefined,
         itemHasTotalPrice: extracted.items[0]?.totalPrice !== null && extracted.items[0]?.totalPrice !== undefined,
     };
+    logTestPurchaseDiagnostics(message, deterministic, aiPurchase, extracted, fiscal);
     const horario = parseDateFromMessage(message);
     if (!horario) {
         throw new Error('Data inválida no e-mail');
@@ -338,8 +387,23 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
         ? await PaymentMethodResolver.resolve(extracted.paymentMethod.rawName)
         : null;
     const existing = await resolveExistingPurchase(userId, message, extracted, paymentMethod?.id ?? null);
-    if (existing)
+    if (existing) {
+        // Observabilidade restrita aos fixtures permite distinguir reconciliação de
+        // falha sem registrar assunto, corpo, valores ou identificadores pessoais.
+        logTestEmailFlow(message, {
+            classification: 'COMPRA',
+            classificationPath,
+            purchaseExtractionAttempted: aiAttempted,
+            purchaseExtractionCompleted: aiPurchase !== null || !aiAttempted,
+            reconciliationMatched: true,
+            purchaseCreated: false,
+            purchaseReconciled: true,
+            promotionCreated: false,
+            ignored: false,
+            skippedDuplicate: false,
+        });
         return existing;
+    }
     const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
     const hasMainPurchaseItem = extracted.items.some((item) => isPersistablePurchaseItem(item) && !isPositivePurchaseComponent(item));
     const financiallyReconciled = reconcilePurchaseTotal(amount, extracted.items, extracted.discountAmount);
@@ -424,10 +488,34 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
         const compra = purchaseComplete
             ? await prisma.$transaction((tx) => createPurchase(tx))
             : await createPurchase(prisma);
+        logTestEmailFlow(message, {
+            classification: 'COMPRA',
+            classificationPath,
+            purchaseExtractionAttempted: aiAttempted,
+            purchaseExtractionCompleted: aiPurchase !== null || !aiAttempted,
+            reconciliationMatched: false,
+            purchaseCreated: true,
+            purchaseReconciled: purchaseComplete,
+            promotionCreated: false,
+            ignored: false,
+            skippedDuplicate: false,
+        });
         return { created: compra };
     }
     catch (error) {
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+            logTestEmailFlow(message, {
+                classification: 'COMPRA',
+                classificationPath,
+                purchaseExtractionAttempted: aiAttempted,
+                purchaseExtractionCompleted: aiPurchase !== null || !aiAttempted,
+                reconciliationMatched: false,
+                purchaseCreated: false,
+                purchaseReconciled: false,
+                promotionCreated: false,
+                ignored: false,
+                skippedDuplicate: true,
+            });
             return { skipped: true };
         }
         throw error;

@@ -262,3 +262,37 @@ test('diferenca sem componente explicito nao e reconciliada', () => {
     { name: 'Produtos', quantity: 1, unit: null, unitPrice: 79.80, totalPrice: 79.80, categoryName: null },
   ], null), false);
 });
+test('merge encontra produto correspondente entre varios itens da IA e anexa componente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Jaqueta Jeans Oversized', quantity: null, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [
+      { name: 'Jaqueta Jeans Oversized', quantity: 1, unitPrice: 249.9, totalPrice: 249.9, categoryName: null },
+      { name: 'Taxa de entrega', quantity: 1, unitPrice: 12.9, totalPrice: 12.9, categoryName: 'Frete/Taxas' },
+    ],
+  }));
+
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0].unitPrice, 249.9);
+  assert.equal(result.items[1].name, 'Taxa de entrega');
+});
+
+test('total da IA pode substituir somente fallback quando sustentado pelo texto', () => {
+  const result = mergeExtractedPurchase(
+    purchase({ totalAmount: 189.9, totalAmountSource: 'CLASSIFICATION_FALLBACK' }),
+    aiPurchase({ totalAmount: 184.8 }),
+    'Produto R$ 189,90 Total final R$ 184,80',
+  );
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'AI');
+});
+
+test('total semantico deterministico permanece acima da IA', () => {
+  const result = mergeExtractedPurchase(
+    purchase({ totalAmount: 184.8, totalAmountSource: 'DETERMINISTIC_SEMANTIC' }),
+    aiPurchase({ totalAmount: 189.9 }),
+    'Total final R$ 184,80 Produto R$ 189,90',
+  );
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'DETERMINISTIC_SEMANTIC');
+});

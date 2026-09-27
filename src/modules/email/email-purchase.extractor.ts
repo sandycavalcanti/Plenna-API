@@ -175,7 +175,24 @@ function findQuantity(lines: string[], start: number, limit = 16) {
     const match = candidate.value.match(/^\d+(?:[.,]\d+)?$/);
     if (!match) continue;
     const quantity = Number(match[0].replace(',', '.'));
-    if (Number.isFinite(quantity) && quantity > 0) return { quantity, label: candidate.label, context: candidate.context };
+    if (Number.isFinite(quantity) && quantity > 0) return { quantity, label: candidate.label, context: candidate.context, index };
+  }
+  return null;
+}
+
+/**
+ * Em tabelas HTML linearizadas, o preco pode ficar em uma linha isolada logo
+ * apos a quantidade. A proximidade e os bloqueios semanticos evitam capturar
+ * frete, desconto, total ou recomendacoes como preco do produto.
+ */
+function findAdjacentItemMoney(lines: string[], start: number, limit = 3) {
+  for (let index = start; index < Math.min(lines.length, start + limit); index += 1) {
+    const normalizedLine = normalize(lines[index]);
+    if (/\b(frete|taxa|desconto|total|cupom|cashback|parcela|juros|recomend|voce tambem pode gostar)\b/i.test(normalizedLine)) return null;
+    const match = lines[index].trim().match(new RegExp(`^(?:r\\$\\s*)?(${MONEY_VALUE})$`, 'i'));
+    const amount = match?.[1] ? parseMoney(match[1]) : null;
+    if (amount !== null) return amount;
+    if (isItemLabel(lines[index])) return null;
   }
   return null;
 }
@@ -202,13 +219,16 @@ function extractItems(text: string, evidence: ExtractionEvidence[]): ExtractedPu
     const quantity = findQuantity(lines, index + 1);
     const unitPrice = findLabeledMoney(lines, index + 1, ['valor unitario', 'preco unitario', 'valor do produto', 'preco do produto']);
     const totalPrice = findLabeledMoney(lines, index + 1, ['subtotal', 'total do item', 'valor total do item', 'valor dos produtos']);
+    const adjacentPrice = !unitPrice && !totalPrice && quantity
+      ? findAdjacentItemMoney(lines, quantity.index + 1)
+      : null;
     items.push({
       name,
       quantity: quantity?.quantity ?? null,
       // A extracao de email ainda nao possui evidencia de unidade comercial.
       // Por isso nao inventamos UN para produtos que mostram apenas quantidade.
       unit: null,
-      unitPrice: unitPrice?.amount ?? null,
+      unitPrice: unitPrice?.amount ?? adjacentPrice,
       totalPrice: totalPrice?.amount ?? null,
       categoryName: null,
     });
@@ -271,7 +291,7 @@ export class EmailPurchaseExtractor {
   static extract(email: NormalizedEmail): ExtractedPurchase {
     const text = sourceText(email);
     const evidence: ExtractionEvidence[] = [];
-    const total = findSemanticMoney(text, ['valor total pago', 'total da compra', 'total do pedido', 'total pago', 'voce pagou', 'valor pago', 'valor total', 'total']);
+    const total = findSemanticMoney(text, ['valor total pago', 'total da compra', 'total do pedido', 'total final', 'valor final', 'total pago', 'voce pagou', 'valor pago', 'valor total', 'total']);
     const order = extractOrderNumber(text);
     const payment = extractPaymentMethod(text);
     const establishment = extractEstablishment(email, text, evidence);
@@ -289,6 +309,7 @@ export class EmailPurchaseExtractor {
       establishment,
       orderNumber: order?.value ?? null,
       totalAmount: total?.amount ?? null,
+      totalAmountSource: total ? 'DETERMINISTIC_SEMANTIC' : null,
       discountAmount: discount?.amount ?? null,
       paymentMethod: { rawName: payment?.name ?? null },
       items,
