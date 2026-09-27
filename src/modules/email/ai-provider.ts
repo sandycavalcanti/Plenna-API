@@ -38,6 +38,8 @@ export interface AIExtractedPurchase {
   establishment: string | null;
   orderNumber: string | null;
   totalAmount: number | null;
+  /** Ajuste negativo explicito; nao deve virar item positivo. */
+  discountAmount?: number | null;
   paymentMethodName: string | null;
   items: AIExtractedPurchaseItem[];
 }

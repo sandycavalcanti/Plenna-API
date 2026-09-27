@@ -104,9 +104,12 @@ test('totalPrice do item nao depende do total geral da compra nem de frete', () 
 
 test('auto-confirmacao exige estabelecimento, total, pagamento, data e item persistido', () => {
   const date = new Date('2026-09-26T12:00:00Z');
-  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, 1, 1, date), true);
-  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, null, 1, date), false);
-  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, 1, 0, date), false);
-  assert.equal(isCompleteAutomaticPurchase(null, 89.90, 1, 1, date), false);
-  assert.equal(isCompleteAutomaticPurchase('Loja', null, 1, 1, date), false);
+  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, 1, 1, date, true, true), true);
+  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, null, 1, date, true, true), false);
+  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, 1, 0, date, true, true), false);
+  assert.equal(isCompleteAutomaticPurchase(null, 89.90, 1, 1, date, true, true), false);
+  assert.equal(isCompleteAutomaticPurchase('Loja', null, 1, 1, date, true, true), false);
+  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, 1, 1, date, false, true), false);
+  assert.equal(isCompleteAutomaticPurchase('Loja', 89.90, 1, 1, date, true, false), false);
+  assert.equal(isCompleteAutomaticPurchase('Loja', 10, 1, 1, date, true, false), false);
 });

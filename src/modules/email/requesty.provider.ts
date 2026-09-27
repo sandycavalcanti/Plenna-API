@@ -55,6 +55,7 @@ export const requestyPurchaseExtractionSchema = z.object({
   establishment: z.string().max(120).nullable().default(null),
   orderNumber: z.string().max(80).nullable().default(null),
   totalAmount: z.number().finite().positive().nullable().default(null),
+  discountAmount: z.number().finite().nonnegative().nullable().optional(),
   paymentMethodName: z.string().max(80).nullable().default(null),
   items: z.array(requestyExtractedPurchaseItemSchema).max(100).default([]),
 }).strict();
@@ -165,10 +166,13 @@ export function buildPurchaseExtractionInstructions() {
     'Extraia orderNumber somente com evidencia textual de pedido e nao confunda CNPJ, CPF, rastreio ou chave NF-e.',
     'Retorne somente paymentMethodName textual quando a forma estiver explicitamente presente, sem ID de banco.',
     'Extraia itens somente quando nome, quantidade ou precos estiverem explicitamente presentes.',
+    'Extraia tambem frete e taxas positivas explicitamente cobradas como itens, usando o nome especifico e categoryName "Frete/Taxas".',
+    'Nao invente frete ou taxa por diferenca matematica; so extraia componentes com rotulo ou evidencia explicita.',
+    'Nao transforme desconto, juros, parcela, cashback, economia ou cupom em item positivo. Retorne descontoAmount somente quando o desconto estiver explicitamente informado.',
     'Quando houver exatamente um produto ou servico explicitamente identificado e o total corresponder a ele, extraia esse item mesmo que nao exista uma tabela formal.',
     'Nao crie item generico, nao use o estabelecimento como nome e nao use o total como valor do item quando houver frete, taxa, desconto, parcela ou mais de um produto.',
     'categoryName deve ser null quando nao houver categoria explicitamente indicada no e-mail.',
-    'Responda em JSON estrito com establishment, orderNumber, totalAmount, paymentMethodName e items.',
+    'Responda em JSON estrito com establishment, orderNumber, totalAmount, discountAmount, paymentMethodName e items.',
   ].join(' ');
 }
 

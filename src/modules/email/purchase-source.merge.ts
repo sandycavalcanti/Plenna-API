@@ -1,7 +1,7 @@
 import { normalizePaymentMethodName } from '../forma-pagamento/payment-method.normalizer.js';
 import { parseDanfePdf, type ParsedDanfe, type DanfePdfResult } from './danfe.pdf.parser.js';
 import { parseNFeXml, type ParsedNFe } from './nfe.parser.js';
-import { mergeExtractedPurchase } from './email-purchase.enrichment.js';
+import { isPositivePurchaseComponent, mergeExtractedPurchase } from './email-purchase.enrichment.js';
 import type { EmailAttachmentMetadata, ExtractedPurchase, ExtractedPurchaseItem } from './email-contracts.js';
 import type { AIExtractedPurchase } from './ai-provider.js';
 import { GmailAttachmentError } from './gmail.attachment.js';
@@ -47,6 +47,32 @@ function danfeItems(source: ParsedDanfe): ExtractedPurchaseItem[] {
       totalPrice: item.totalPrice,
       categoryName: null,
     }));
+}
+
+function normalized(value: string | null | undefined) {
+  return (value ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+}
+
+function appendFiscalFreight(items: ExtractedPurchaseItem[], freightAmount: number | null | undefined) {
+  if (freightAmount === null || freightAmount === undefined || !Number.isFinite(freightAmount) || freightAmount <= 0) return;
+  const alreadyPresent = items.some((item) =>
+    isPositivePurchaseComponent(item)
+    && normalized(item.name) === 'frete'
+    && item.unitPrice !== null
+    && Math.abs(item.unitPrice - freightAmount) < 0.01,
+  );
+  if (alreadyPresent) return;
+
+  // O frete fiscal e um componente positivo explicito; o nome permanece
+  // "Frete" e a categoria textual sera resolvida pelo ID real na persistencia.
+  items.push({
+    name: 'Frete',
+    quantity: 1,
+    unit: null,
+    unitPrice: freightAmount,
+    totalPrice: freightAmount,
+    categoryName: 'Frete/Taxas',
+  });
 }
 
 function fiscalIdentity(source: ParsedNFe | ParsedDanfe) {
@@ -141,6 +167,11 @@ export function mergePurchaseSources(
     addSourceEvidence(merged, 'totalAmount', xml?.totalAmount !== null && xml?.totalAmount !== undefined ? 'NFE_XML' : 'DANFE_PDF');
   }
 
+  const fiscalDiscount = xml?.discountAmount ?? danfe?.discountAmount;
+  if (fiscalDiscount !== null && fiscalDiscount !== undefined) {
+    merged.discountAmount = fiscalDiscount;
+  }
+
   const xmlItems = xml ? nfeItems(xml) : [];
   const danfeItemValues = danfe ? danfeItems(danfe) : [];
   const fiscalItems = xmlItems.length > 0 ? xmlItems : danfeItemValues;
@@ -150,6 +181,8 @@ export function mergePurchaseSources(
   } else if (!merged.items.some(validExtractedItem)) {
     merged.items = [];
   }
+
+  appendFiscalFreight(merged.items, xml?.freightAmount ?? danfe?.freightAmount);
 
   const fiscalPayment = singleNfePayment(xml) ?? singleDanfePayment(danfe);
   if (fiscalPayment) {

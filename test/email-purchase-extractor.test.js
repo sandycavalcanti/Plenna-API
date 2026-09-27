@@ -29,6 +29,27 @@ test('extrai total da compra depois de produtos e frete', () => {
   assert.equal(result.totalAmount, 89.8);
 });
 
+test('extrai frete explicito como componente positivo', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto\nCamiseta\nQuantidade: 2\nValor dos produtos: R$ 79,80\nFrete: R$ 10,00\nTotal da compra: R$ 89,80'));
+  assert.equal(result.items[0].totalPrice, 79.8);
+  assert.deepEqual(result.items[1], {
+    name: 'Frete',
+    quantity: 1,
+    unit: null,
+    unitPrice: 10,
+    totalPrice: 10,
+    categoryName: 'Frete/Taxas',
+  });
+});
+
+test('extrai taxa positiva especifica e desconto como ajuste', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto: Produto X\nValor do produto: R$ 50,00\nTaxa de serviço: R$ 5,00\nDesconto: R$ 2,00\nTotal: R$ 53,00'));
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[1].name, 'Taxa de serviço');
+  assert.equal(result.items[1].categoryName, 'Frete/Taxas');
+  assert.equal(result.discountAmount, 2);
+});
+
 test('extrai Total e ignora parcela anterior', () => {
   const result = EmailPurchaseExtractor.extract(email('Parcela: R$ 30,00\nTotal: R$ 90,00'));
   assert.equal(result.totalAmount, 90);

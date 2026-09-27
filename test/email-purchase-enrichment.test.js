@@ -7,7 +7,7 @@ process.env.REQUESTY_API_KEY = process.env.REQUESTY_API_KEY ?? 'requesty-key';
 
 const axios = (await import('axios')).default;
 const { RequestyProvider } = await import('../dist/src/modules/email/requesty.provider.js');
-const { mergeExtractedPurchase, needsAiEnrichment, buildPurchaseExtractionPrompt } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
+const { mergeExtractedPurchase, needsAiEnrichment, buildPurchaseExtractionPrompt, reconcilePurchaseTotal } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
 
 const email = (textBody = '', overrides = {}) => ({
   id: 'enrichment-test',
@@ -241,4 +241,24 @@ test('merge nao substitui item deterministico por item AI diferente', () => {
   assert.equal(result.items.length, 1);
   assert.equal(result.items[0].name, 'Produto X');
   assert.equal(result.items[0].unitPrice, null);
+});
+
+test('reconcilia produto e frete positivos contra o total da compra', () => {
+  assert.equal(reconcilePurchaseTotal(89.80, [
+    { name: 'Camiseta', quantity: 2, unit: null, unitPrice: 39.90, totalPrice: 79.80, categoryName: null },
+    { name: 'Frete', quantity: 1, unit: null, unitPrice: 10, totalPrice: 10, categoryName: 'Frete/Taxas' },
+  ], null), true);
+});
+
+test('desconto explicito participa da reconciliacao sem virar item', () => {
+  assert.equal(reconcilePurchaseTotal(90, [
+    { name: 'Produtos', quantity: 1, unit: null, unitPrice: 100, totalPrice: 100, categoryName: null },
+    { name: 'Frete', quantity: 1, unit: null, unitPrice: 10, totalPrice: 10, categoryName: 'Frete/Taxas' },
+  ], 20), true);
+});
+
+test('diferenca sem componente explicito nao e reconciliada', () => {
+  assert.equal(reconcilePurchaseTotal(89.80, [
+    { name: 'Produtos', quantity: 1, unit: null, unitPrice: 79.80, totalPrice: 79.80, categoryName: null },
+  ], null), false);
 });

@@ -58,6 +58,26 @@ export function needsAiEnrichment(purchase) {
         || !textOrNull(purchase.paymentMethod.rawName)
         || !hasPersistableItem);
 }
+function normalizedComponentName(value) {
+    return normalizeComparable(value?.trim() ?? '');
+}
+/** Componentes auxiliares positivos usam categoria textual, sem ID fixo. */
+export function isPositivePurchaseComponent(item) {
+    const category = normalizedComponentName(item.categoryName);
+    const name = normalizedComponentName(item.name);
+    return category === 'frete/taxas'
+        || ['frete', 'taxa', 'taxa de servico', 'taxa de entrega', 'taxa de conveniencia'].includes(name);
+}
+function samePositiveComponent(left, right) {
+    const leftAmount = left.unitPrice ?? left.totalPrice;
+    const rightAmount = right.unitPrice ?? right.totalPrice;
+    return isPositivePurchaseComponent(left)
+        && isPositivePurchaseComponent(right)
+        && normalizedComponentName(left.name) === normalizedComponentName(right.name)
+        && leftAmount !== null
+        && rightAmount !== null
+        && Math.abs(leftAmount - rightAmount) < 0.01;
+}
 function normalizeComparable(value) {
     return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
 }
@@ -147,6 +167,7 @@ export function mergeExtractedPurchase(deterministic, ai) {
         establishment: deterministic.establishment,
         orderNumber: deterministic.orderNumber,
         totalAmount: deterministic.totalAmount,
+        discountAmount: deterministic.discountAmount ?? null,
         paymentMethod: { rawName: deterministic.paymentMethod.rawName },
         items: [...deterministic.items],
         invoice: deterministic.invoice,
@@ -164,6 +185,9 @@ export function mergeExtractedPurchase(deterministic, ai) {
         merged.totalAmount = ai.totalAmount;
         addAiEvidence(merged, 'totalAmount');
     }
+    if (merged.discountAmount === null && ai.discountAmount !== undefined) {
+        merged.discountAmount = ai.discountAmount;
+    }
     if (!textOrNull(merged.paymentMethod.rawName) && textOrNull(ai.paymentMethodName)) {
         merged.paymentMethod = { rawName: textOrNull(ai.paymentMethodName) };
         addAiEvidence(merged, 'paymentMethod');
@@ -180,5 +204,36 @@ export function mergeExtractedPurchase(deterministic, ai) {
             addAiEvidence(merged, 'items');
         }
     }
+    // Componentes positivos retornados pela IA podem complementar produtos
+    // determinísticos, mas somente quando o próprio modelo os marcou como
+    // Frete/Taxas e sem duplicar nome e valor já presentes.
+    const aiComponents = aiItems.filter((item) => isPositivePurchaseComponent(item));
+    const newComponents = aiComponents.filter((item) => !merged.items.some((existing) => samePositiveComponent(existing, item)));
+    if (newComponents.length > 0) {
+        merged.items.push(...newComponents);
+        addAiEvidence(merged, 'items');
+    }
     return merged;
+}
+/**
+ * Soma produtos e componentes positivos persistíveis e aplica desconto
+ * explicitamente conhecido. Sem quantidade válida, a reconciliação permanece
+ * inconclusiva para evitar confirmar uma compra com valor inventado.
+ */
+export function reconcilePurchaseTotal(totalAmount, items, discountAmount) {
+    if (totalAmount === null || !Number.isFinite(totalAmount) || totalAmount <= 0)
+        return false;
+    let representedTotal = 0;
+    for (const item of items) {
+        if (!isPersistablePurchaseItem(item))
+            continue;
+        if (item.quantity === null || !Number.isFinite(item.quantity) || item.quantity <= 0)
+            return false;
+        representedTotal += item.quantity * item.unitPrice;
+    }
+    const discount = discountAmount ?? 0;
+    if (!Number.isFinite(discount) || discount < 0)
+        return false;
+    const reconciledTotal = representedTotal - discount;
+    return Math.abs(reconciledTotal - totalAmount) <= 0.01;
 }

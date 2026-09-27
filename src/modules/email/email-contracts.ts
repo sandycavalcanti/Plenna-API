@@ -90,6 +90,8 @@ export interface ExtractedPurchase {
   establishment: string | null;
   orderNumber: string | null;
   totalAmount: number | null;
+  /** Desconto explicito usado somente na conciliacao, nunca como item positivo. */
+  discountAmount?: number | null;
   paymentMethod: ExtractedPaymentMethod;
   items: ExtractedPurchaseItem[];
   invoice: InvoiceMetadata | null;

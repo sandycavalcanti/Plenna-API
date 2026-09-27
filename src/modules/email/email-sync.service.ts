@@ -11,8 +11,8 @@ import type { ExtractedPurchase, NormalizedEmail } from './email-contracts.js';
 import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
-import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
-import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, needsAiEnrichment, normalizePurchaseItemPrices, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
+import { buildNestedPurchaseItems, buildPersistedPurchaseItems, isPersistablePurchaseItem, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
+import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, isPositivePurchaseComponent, needsAiEnrichment, normalizePurchaseItemPrices, reconcilePurchaseTotal, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
 import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
 import type { AIPurchaseExtractionProvider, AIExtractedPurchase, AICategoryOption } from './ai-provider.js';
@@ -396,14 +396,25 @@ async function createCompraFromMessage(
 
   const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
 
+  const hasMainPurchaseItem = extracted.items.some((item) =>
+    isPersistablePurchaseItem(item) && !isPositivePurchaseComponent(item),
+  );
+  const financiallyReconciled = reconcilePurchaseTotal(
+    amount,
+    extracted.items,
+    extracted.discountAmount,
+  );
+
   // Somente uma compra completa, com pagamento resolvido e item persistido,
-  // pode ser confirmada automaticamente. A classificacao continua PENDENTE.
+  // item principal e total reconciliado pode ser confirmada automaticamente.
   const purchaseComplete = isCompleteAutomaticPurchase(
     establishment,
     amount,
     paymentMethod?.id ?? null,
     persistedItems.length,
     horario,
+    financiallyReconciled,
+    hasMainPurchaseItem,
   );
   const purchaseStatus = purchaseComplete ? 'CONFIRMADA' : 'AGUARDANDO_CONFIRMACAO';
 
@@ -442,6 +453,12 @@ async function createCompraFromMessage(
     beforeSingleItemResolution,
     afterSingleItemResolution,
     persistenceDropReasons,
+    freightDetected: extracted.items.some((item) => isPositivePurchaseComponent(item) && item.name?.trim().toLowerCase() === 'frete'),
+    feeDetected: extracted.items.some((item) => isPositivePurchaseComponent(item) && item.name?.trim().toLowerCase() !== 'frete'),
+    discountDetected: extracted.discountAmount !== null && extracted.discountAmount !== undefined,
+    financiallyReconciled,
+    unexplainedDifference: !financiallyReconciled,
+    hasMainPurchaseItem,
     purchaseComplete,
     autoConfirmed: purchaseComplete,
     missingEstablishment: !Boolean(establishment),
@@ -577,6 +594,8 @@ export function isCompleteAutomaticPurchase(
   paymentMethodId: number | null,
   persistedItemsCount: number,
   messageDate: Date | null,
+  financiallyReconciled = false,
+  hasMainPurchaseItem = false,
 ) {
   return Boolean(
     establishment
@@ -585,6 +604,8 @@ export function isCompleteAutomaticPurchase(
     && amount > 0
     && paymentMethodId !== null
     && persistedItemsCount > 0
+    && hasMainPurchaseItem
+    && financiallyReconciled
     && messageDate,
   );
 }

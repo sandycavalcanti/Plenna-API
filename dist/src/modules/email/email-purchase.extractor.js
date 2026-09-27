@@ -1,5 +1,14 @@
 const MONEY_VALUE = '(?:(?:\\d{1,3}(?:\\.\\d{3})+|\\d+),\\d{2}|\\d+\\.\\d{2})';
 const PRODUCT_LABELS = ['produto', 'item', 'descricao'];
+const POSITIVE_COMPONENT_LABELS = [
+    { label: 'taxa de servico', name: 'Taxa de serviço' },
+    { label: 'taxa de conveniencia', name: 'Taxa de conveniência' },
+    { label: 'taxa de entrega', name: 'Taxa de entrega' },
+    { label: 'valor do frete', name: 'Frete' },
+    { label: 'frete', name: 'Frete' },
+    { label: 'entrega', name: 'Frete' },
+    { label: 'taxa', name: 'Taxa' },
+];
 const ITEM_LABELS = [
     ...PRODUCT_LABELS,
     'quantidade',
@@ -172,7 +181,7 @@ function extractItems(text, evidence) {
             continue;
         const quantity = findQuantity(lines, index + 1);
         const unitPrice = findLabeledMoney(lines, index + 1, ['valor unitario', 'preco unitario', 'valor do produto', 'preco do produto']);
-        const totalPrice = findLabeledMoney(lines, index + 1, ['subtotal', 'total do item', 'valor total do item']);
+        const totalPrice = findLabeledMoney(lines, index + 1, ['subtotal', 'total do item', 'valor total do item', 'valor dos produtos']);
         items.push({
             name,
             quantity: quantity?.quantity ?? null,
@@ -188,6 +197,29 @@ function extractItems(text, evidence) {
             addEvidence(evidence, { field: 'items', rawLabel: quantity.label, context: quantity.context });
     }
     return items;
+}
+function extractPositiveComponents(text, evidence) {
+    const components = [];
+    for (const line of text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+        const normalizedLine = normalize(line);
+        const component = POSITIVE_COMPONENT_LABELS.find(({ label }) => new RegExp(`^${label}\\s*:`).test(normalizedLine));
+        if (!component)
+            continue;
+        const match = normalizedLine.match(/:\s*(?:r\$\s*)?(\d[\d.]*[,.]\d{2})\s*$/i);
+        const amount = match?.[1] ? parseMoney(match[1]) : null;
+        if (amount === null)
+            continue;
+        components.push({
+            name: component.name,
+            quantity: 1,
+            unit: null,
+            unitPrice: amount,
+            totalPrice: amount,
+            categoryName: 'Frete/Taxas',
+        });
+        addEvidence(evidence, { field: 'items', rawLabel: component.name, context: line });
+    }
+    return components;
 }
 function extractEstablishment(email, text, evidence) {
     const senderName = cleanSenderName(email.from);
@@ -215,7 +247,11 @@ export class EmailPurchaseExtractor {
         const order = extractOrderNumber(text);
         const payment = extractPaymentMethod(text);
         const establishment = extractEstablishment(email, text, evidence);
-        const items = extractItems(email.textBody ?? '', evidence);
+        const items = [
+            ...extractItems(email.textBody ?? '', evidence),
+            ...extractPositiveComponents(email.textBody ?? '', evidence),
+        ];
+        const discount = findSemanticMoney(text, ['valor do desconto', 'desconto']);
         if (total)
             addEvidence(evidence, { field: 'totalAmount', rawLabel: total.label, context: total.context });
         if (order)
@@ -226,6 +262,7 @@ export class EmailPurchaseExtractor {
             establishment,
             orderNumber: order?.value ?? null,
             totalAmount: total?.amount ?? null,
+            discountAmount: discount?.amount ?? null,
             paymentMethod: { rawName: payment?.name ?? null },
             items,
             invoice: null,

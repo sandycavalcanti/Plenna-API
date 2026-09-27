@@ -58,6 +58,18 @@ test('item normalizado com totalPrice e quantidade chega a persistencia', async 
   assert.equal(result[0].compra_item_valor.toString(), '89.9');
 });
 
+test('componente Frete/Taxas resolve o ID real sem hardcode', async () => {
+  const result = await buildPersistedPurchaseItems([item({
+    name: 'Frete',
+    quantity: 1,
+    unitPrice: 10,
+    totalPrice: 10,
+    categoryName: 'Frete/Taxas',
+  })], repository([{ categoria_id: 42 }]));
+
+  assert.equal(result[0].categoria_id, 42);
+});
+
 test('persiste item valido usando unitPrice e quantidade', async () => {
   const result = await buildPersistedPurchaseItems([item()], repository());
   assert.equal(result.length, 1);

@@ -9,8 +9,8 @@ import { createAIProvider } from './ai-provider.factory.js';
 import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch } from './purchase-reconciliation.service.js';
-import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
-import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, needsAiEnrichment, normalizePurchaseItemPrices, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
+import { buildNestedPurchaseItems, buildPersistedPurchaseItems, isPersistablePurchaseItem, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
+import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, isPositivePurchaseComponent, needsAiEnrichment, normalizePurchaseItemPrices, reconcilePurchaseTotal, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
 import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
 import { MetricasService } from '../compra/metricas.service.js';
@@ -341,9 +341,11 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
     if (existing)
         return existing;
     const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
+    const hasMainPurchaseItem = extracted.items.some((item) => isPersistablePurchaseItem(item) && !isPositivePurchaseComponent(item));
+    const financiallyReconciled = reconcilePurchaseTotal(amount, extracted.items, extracted.discountAmount);
     // Somente uma compra completa, com pagamento resolvido e item persistido,
-    // pode ser confirmada automaticamente. A classificacao continua PENDENTE.
-    const purchaseComplete = isCompleteAutomaticPurchase(establishment, amount, paymentMethod?.id ?? null, persistedItems.length, horario);
+    // item principal e total reconciliado pode ser confirmada automaticamente.
+    const purchaseComplete = isCompleteAutomaticPurchase(establishment, amount, paymentMethod?.id ?? null, persistedItems.length, horario, financiallyReconciled, hasMainPurchaseItem);
     const purchaseStatus = purchaseComplete ? 'CONFIRMADA' : 'AGUARDANDO_CONFIRMACAO';
     const persistenceDropReasons = {
         missingName: 0,
@@ -382,6 +384,12 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
         beforeSingleItemResolution,
         afterSingleItemResolution,
         persistenceDropReasons,
+        freightDetected: extracted.items.some((item) => isPositivePurchaseComponent(item) && item.name?.trim().toLowerCase() === 'frete'),
+        feeDetected: extracted.items.some((item) => isPositivePurchaseComponent(item) && item.name?.trim().toLowerCase() !== 'frete'),
+        discountDetected: extracted.discountAmount !== null && extracted.discountAmount !== undefined,
+        financiallyReconciled,
+        unexplainedDifference: !financiallyReconciled,
+        hasMainPurchaseItem,
         purchaseComplete,
         autoConfirmed: purchaseComplete,
         missingEstablishment: !Boolean(establishment),
@@ -506,13 +514,15 @@ function normalizeEstablishment(value) {
     return normalized ? normalized.slice(0, 45) : null;
 }
 /** Regra única de completude usada para auto-confirmar compras de e-mail. */
-export function isCompleteAutomaticPurchase(establishment, amount, paymentMethodId, persistedItemsCount, messageDate) {
+export function isCompleteAutomaticPurchase(establishment, amount, paymentMethodId, persistedItemsCount, messageDate, financiallyReconciled = false, hasMainPurchaseItem = false) {
     return Boolean(establishment
         && amount !== null
         && Number.isFinite(amount)
         && amount > 0
         && paymentMethodId !== null
         && persistedItemsCount > 0
+        && hasMainPurchaseItem
+        && financiallyReconciled
         && messageDate);
 }
 export class EmailSyncService {
