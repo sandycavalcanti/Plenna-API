@@ -165,6 +165,8 @@ export function buildPurchaseExtractionInstructions() {
     'Extraia orderNumber somente com evidencia textual de pedido e nao confunda CNPJ, CPF, rastreio ou chave NF-e.',
     'Retorne somente paymentMethodName textual quando a forma estiver explicitamente presente, sem ID de banco.',
     'Extraia itens somente quando nome, quantidade ou precos estiverem explicitamente presentes.',
+    'Quando houver exatamente um produto ou servico explicitamente identificado e o total corresponder a ele, extraia esse item mesmo que nao exista uma tabela formal.',
+    'Nao crie item generico, nao use o estabelecimento como nome e nao use o total como valor do item quando houver frete, taxa, desconto, parcela ou mais de um produto.',
     'categoryName deve ser null quando nao houver categoria explicitamente indicada no e-mail.',
     'Responda em JSON estrito com establishment, orderNumber, totalAmount, paymentMethodName e items.',
   ].join(' ');

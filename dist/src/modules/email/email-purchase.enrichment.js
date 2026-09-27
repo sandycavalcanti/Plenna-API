@@ -17,12 +17,48 @@ export function buildPurchaseExtractionPrompt(email) {
         `textBody: ${textBody}`,
     ].join('\n');
 }
+/** Usa o mesmo corpo textual normalizado consumido pelo extrator e pela IA. */
+export function buildPurchaseEvidenceText(email) {
+    return [email.subject, email.snippet, email.textBody].filter((value) => Boolean(value?.trim())).join('\n');
+}
 export function needsAiEnrichment(purchase) {
     return Boolean(!textOrNull(purchase.establishment)
         || !textOrNull(purchase.orderNumber)
         || purchase.totalAmount === null
         || !textOrNull(purchase.paymentMethod.rawName)
         || purchase.items.length === 0);
+}
+function normalizeComparable(value) {
+    return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+}
+/**
+ * Resolve o caso seguro de item único sem inventar produto ou valor.
+ * O total só vira unitPrice quando o nome aparece no texto, há um único item,
+ * os valores coincidem e não há sinais de frete, taxa, desconto ou parcela.
+ */
+export function resolveSafeSingleItemPrice(purchase, sourceText) {
+    if (purchase.items.length !== 1 || purchase.totalAmount === null)
+        return purchase;
+    const [item] = purchase.items;
+    if (!item.name?.trim() || (item.quantity !== null && item.quantity !== 1) || item.unitPrice !== null)
+        return purchase;
+    const normalizedSource = normalizeComparable(sourceText);
+    const normalizedName = normalizeComparable(item.name.trim());
+    const hasNameEvidence = normalizedName.length >= 3 && normalizedSource.includes(normalizedName);
+    const hasModifier = /\b(frete|taxa|desconto|cupom|cashback|parcela|juros)\b/i.test(normalizedSource);
+    if (!hasNameEvidence || hasModifier)
+        return purchase;
+    const candidate = item.totalPrice ?? null;
+    const hasOneCurrencyValue = (sourceText.match(/R\$\s*\d[\d.]*[,.]\d{2}/gi) ?? []).length === 1;
+    const matchesTotal = candidate !== null
+        ? Math.abs(candidate - purchase.totalAmount) < 0.01
+        : hasOneCurrencyValue;
+    if (!matchesTotal)
+        return purchase;
+    return {
+        ...purchase,
+        items: [{ ...item, quantity: item.quantity ?? 1, unitPrice: candidate ?? purchase.totalAmount }],
+    };
 }
 function usableItem(item) {
     return Boolean(textOrNull(item.name)

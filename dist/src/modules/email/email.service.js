@@ -25,6 +25,24 @@ const gmailMessageResponseSchema = z.object({
     payload: z.any().optional(),
 });
 const userInfoSchema = z.object({ email: z.string().email() });
+function logGmailRequestError(operation, error) {
+    const axiosError = error;
+    const googleError = axiosError.response?.data;
+    console.error('[EmailService] Gmail request failed', {
+        operation,
+        status: axiosError.response?.status,
+        googleCode: googleError?.error?.code,
+        googleStatus: googleError?.error?.status,
+        googleMessage: googleError?.error?.message,
+        method: axiosError.config?.method,
+        url: axiosError.config?.url,
+        params: axiosError.config?.params,
+        responseHeaders: {
+            'content-type': axiosError.response?.headers?.['content-type'],
+            'retry-after': axiosError.response?.headers?.['retry-after'],
+        },
+    });
+}
 /**
  * Centraliza acesso ao Google/Gmail e validação das respostas externas.
  */
@@ -138,10 +156,17 @@ export class EmailService {
         const messages = [];
         let pageToken;
         do {
-            const response = await axios.get('https://gmail.googleapis.com/gmail/v1/users/me/messages', {
-                headers: { Authorization: `Bearer ${accessToken}` },
-                params: { q: query, maxResults, pageToken },
-            });
+            let response;
+            try {
+                response = await axios.get('https://gmail.googleapis.com/gmail/v1/users/me/messages', {
+                    headers: { Authorization: `Bearer ${accessToken}` },
+                    params: { q: query, maxResults, pageToken },
+                });
+            }
+            catch (error) {
+                logGmailRequestError('listMessages', error);
+                throw error;
+            }
             const parsed = gmailListResponseSchema.parse(response.data);
             for (const message of parsed.messages ?? []) {
                 messages.push({ id: message.id, threadId: message.threadId, labelIds: [] });
@@ -154,10 +179,17 @@ export class EmailService {
         return messages;
     }
     static async fetchMessage(accessToken, messageId) {
-        const response = await axios.get(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-            params: { format: 'full' },
-        });
+        let response;
+        try {
+            response = await axios.get(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`, {
+                headers: { Authorization: `Bearer ${accessToken}` },
+                params: { format: 'full' },
+            });
+        }
+        catch (error) {
+            logGmailRequestError('getMessage', error);
+            throw error;
+        }
         return gmailMessageResponseSchema.parse(response.data);
     }
     static async getNormalizedMessage(accessToken, messageId) {

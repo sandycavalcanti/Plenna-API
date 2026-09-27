@@ -4,7 +4,7 @@ export const createPreferenciaCategoriaSchema = z.object({
     metaMensal: z.coerce.number().positive(),
 });
 export const createPreferenciasCategoriaBulkSchema = z.object({
-    preferencias: z.array(createPreferenciaCategoriaSchema),
+    preferencias: z.array(createPreferenciaCategoriaSchema).min(1, 'Informe ao menos uma preferência'),
 });
 export const updatePreferenciaCategoriaSchema = z.object({
     categoriaId: z.coerce.number().int().positive().optional(),

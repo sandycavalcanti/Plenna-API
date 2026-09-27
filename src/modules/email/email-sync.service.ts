@@ -12,10 +12,11 @@ import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
 import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
-import { buildPurchaseExtractionPrompt, needsAiEnrichment } from './email-purchase.enrichment.js';
+import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, needsAiEnrichment, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
 import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
 import type { AIPurchaseExtractionProvider, AIExtractedPurchase, AICategoryOption } from './ai-provider.js';
+import { MetricasService } from '../compra/metricas.service.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -332,6 +333,7 @@ async function createCompraFromMessage(
   aiProvider?: AIProvider | null,
   classificationPath: 'DETERMINISTIC_COMPRA' | 'AI_COMPRA' = 'DETERMINISTIC_COMPRA',
 ) {
+  const normalizedEmail = toNormalizedEmail(message);
   const deterministic = buildExtractedPurchase(message, supplemental);
   let aiPurchase: AIExtractedPurchase | null = null;
   let aiAttempted = false;
@@ -341,7 +343,7 @@ async function createCompraFromMessage(
   if (extractor && needsAiEnrichment(deterministic)) {
     aiAttempted = true;
     try {
-      aiPurchase = await extractor.extractPurchase(buildPurchaseExtractionPrompt(toNormalizedEmail(message)));
+      aiPurchase = await extractor.extractPurchase(buildPurchaseExtractionPrompt(normalizedEmail));
     } catch {
       aiPurchase = null;
     }
@@ -359,7 +361,13 @@ async function createCompraFromMessage(
     nfe: [...attachmentFiscal.nfe, ...linkFiscal.nfe],
     danfe: [...attachmentFiscal.danfe, ...linkFiscal.danfe],
   };
-  const extracted = mergePurchaseSources(deterministic, aiPurchase, fiscal);
+  const merged = mergePurchaseSources(deterministic, aiPurchase, fiscal);
+  // A decisão final usa todas as fontes; o item único só é completado quando
+  // o texto sustenta o nome e o total sem sinais de valores compostos.
+  const extracted = resolveSafeSingleItemPrice(
+    merged,
+    buildPurchaseEvidenceText(normalizedEmail),
+  );
   const horario = parseDateFromMessage(message);
   if (!horario) {
     throw new Error('Data inválida no e-mail');
@@ -373,6 +381,17 @@ async function createCompraFromMessage(
   if (existing) return existing;
 
   const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
+
+  // Somente uma compra completa, com pagamento resolvido e item persistido,
+  // pode ser confirmada automaticamente. A classificacao continua PENDENTE.
+  const purchaseComplete = isCompleteAutomaticPurchase(
+    establishment,
+    amount,
+    paymentMethod?.id ?? null,
+    persistedItems.length,
+    horario,
+  );
+  const purchaseStatus = purchaseComplete ? 'CONFIRMADA' : 'AGUARDANDO_CONFIRMACAO';
 
   const persistenceDropReasons = {
     missingName: 0,
@@ -407,25 +426,41 @@ async function createCompraFromMessage(
     persistenceInputItemsCount: extracted.items.length,
     persistenceAcceptedItemsCount: persistedItems.length,
     persistenceDropReasons,
+    purchaseComplete,
+    autoConfirmed: purchaseComplete,
+    missingEstablishment: !Boolean(establishment),
+    missingTotalAmount: !(amount !== null && Number.isFinite(amount) && amount > 0),
+    missingPaymentMethod: paymentMethod?.id === null || paymentMethod?.id === undefined,
+    missingItems: persistedItems.length === 0,
   });
 
   try {
-    const compra = await prisma.tb_compra.create({
-      data: {
-        usuario_id: userId,
-        forma_pagamento_id: paymentMethod?.id ?? null,
-        compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
-        compra_horario: horario,
-        compra_fonte: establishment,
-        compra_email: true,
-        compra_classificacao: 'PENDENTE',
-        compra_acima_limite: null,
-        compra_email_mensagem_id: message.id,
-        compra_pedido_externo_id: extracted.orderNumber,
-        compra_status: 'AGUARDANDO_CONFIRMACAO',
-        ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
-      },
-    });
+    const createPurchase = async (db: Prisma.TransactionClient | typeof prisma) => {
+      const compra = await db.tb_compra.create({
+        data: {
+          usuario_id: userId,
+          forma_pagamento_id: paymentMethod?.id ?? null,
+          compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
+          compra_horario: horario,
+          compra_fonte: establishment,
+          compra_email: true,
+          compra_classificacao: 'PENDENTE',
+          compra_acima_limite: null,
+          compra_email_mensagem_id: message.id,
+          compra_pedido_externo_id: extracted.orderNumber,
+          compra_status: purchaseStatus,
+          ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
+        },
+      });
+      if (purchaseComplete) {
+        // A métrica usa a mesma transação para não confirmar sem atualizar os indicadores.
+        await MetricasService.recalculateMonthlyMetrics(userId, horario, db);
+      }
+      return compra;
+    };
+    const compra = purchaseComplete
+      ? await prisma.$transaction((tx) => createPurchase(tx))
+      : await createPurchase(prisma);
     return { created: compra };
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
@@ -517,6 +552,25 @@ function normalizeEstablishment(value: string | null | undefined) {
     .trim();
 
   return normalized ? normalized.slice(0, 45) : null;
+}
+
+/** Regra única de completude usada para auto-confirmar compras de e-mail. */
+export function isCompleteAutomaticPurchase(
+  establishment: string | null,
+  amount: number | null,
+  paymentMethodId: number | null,
+  persistedItemsCount: number,
+  messageDate: Date | null,
+) {
+  return Boolean(
+    establishment
+    && amount !== null
+    && Number.isFinite(amount)
+    && amount > 0
+    && paymentMethodId !== null
+    && persistedItemsCount > 0
+    && messageDate,
+  );
 }
 
 export class EmailSyncService {

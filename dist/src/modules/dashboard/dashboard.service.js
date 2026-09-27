@@ -12,7 +12,14 @@ function getMonthBounds(referenceDate = new Date()) {
     return { start, end };
 }
 function toNumber(value) {
-    return Number(value ?? 0);
+    return Number(value);
+}
+// Somente contagens agregadas; nunca dados de compras ou identidade do usuário.
+// Expor cobertura dos indicadores no Mobile exige uma evolução futura do contrato.
+function registrarIgnorados(indicador, quantidade) {
+    if (quantidade > 0) {
+        console.info('dashboard_dados_insuficientes', { indicador, quantidade });
+    }
 }
 /**
  * Calcula os indicadores financeiros utilizados pelo dashboard.
@@ -23,36 +30,51 @@ function toNumber(value) {
 export class DashboardService {
     static async findGastosPorCategoria(userId) {
         const { start, end } = getMonthBounds();
-        const items = await prisma.tb_compra_item.findMany({
+        const compras = await prisma.tb_compra.findMany({
             where: {
-                tb_compra: {
-                    usuario_id: userId,
-                    compra_status: 'CONFIRMADA',
-                    compra_horario: {
-                        gte: start,
-                        lt: end,
-                    },
+                // O filtro de propriedade fica diretamente na compra, porque
+                // `tb_compra` é o model consultado e não uma relação dele mesmo.
+                usuario_id: userId,
+                // O dashboard considera somente compras ainda ativas.
+                compra_ativo: 1,
+                compra_status: 'CONFIRMADA',
+                compra_horario: {
+                    gte: start,
+                    lt: end,
                 },
             },
             select: {
-                compra_item_valor: true,
-                tb_categoria: {
+                compra_valor: true,
+                tb_compra_item: {
+                    // Itens excluídos logicamente não entram na soma por categoria.
+                    where: { compra_item_ativo: 1 },
                     select: {
-                        categoria_nome: true,
+                        compra_item_valor: true,
+                        tb_categoria: { select: { categoria_nome: true } },
                     },
                 },
             },
         });
         const totalsByCategory = new Map();
+        let ignorados = 0;
+        // A consulta traz as compras do usuário e, dentro de cada compra, seus
+        // itens. O loop abaixo precisa trabalhar com os itens achatados; antes,
+        // `items` não existia neste escopo e causava ReferenceError/erro 500.
+        const items = compras.flatMap((compra) => compra.tb_compra_item);
         for (const item of items) {
-            // Itens sem categoria nao entram nesta visao, pois o contrato do
-            // dashboard exige um nome real e nao devemos inventar uma categoria.
-            if (!item.tb_categoria)
+            // Itens sem categoria não entram nesta visão, pois o contrato do
+            // dashboard exige um nome real e não devemos inventar uma categoria.
+            if (!item.tb_categoria) {
+                ignorados += 1;
                 continue;
+            }
+            // Cada item contribui com seu próprio valor; itens da mesma categoria
+            // acumulam no mesmo grupo e categorias diferentes ficam separadas.
             const categoriaNome = item.tb_categoria.categoria_nome;
             const totalAtual = totalsByCategory.get(categoriaNome) ?? 0;
             totalsByCategory.set(categoriaNome, totalAtual + toNumber(item.compra_item_valor));
         }
+        registrarIgnorados('gastos_categoria', ignorados);
         return [...totalsByCategory.entries()].map(([categoria_nome, total]) => ({ categoria_nome, total })).sort((left, right) => right.total - left.total);
     }
     static async findGastosPorFormaPagamento(userId) {
@@ -60,6 +82,7 @@ export class DashboardService {
         const compras = await prisma.tb_compra.findMany({
             where: {
                 usuario_id: userId,
+                compra_ativo: 1,
                 compra_status: 'CONFIRMADA',
                 compra_horario: {
                     gte: start,
@@ -76,11 +99,13 @@ export class DashboardService {
             },
         });
         const totalsByFormaPagamento = new Map();
+        let ignorados = 0;
         for (const compra of compras) {
             const formaPagamentoNome = compra.tb_forma_pagamento?.forma_pagamento_nome ?? 'Sem forma de pagamento';
             const totalAtual = totalsByFormaPagamento.get(formaPagamentoNome) ?? 0;
             totalsByFormaPagamento.set(formaPagamentoNome, totalAtual + toNumber(compra.compra_valor));
         }
+        registrarIgnorados('gastos_forma_pagamento', ignorados);
         return [...totalsByFormaPagamento.entries()].map(([forma_pagamento_nome, total]) => ({ forma_pagamento_nome, total })).sort((left, right) => right.total - left.total);
     }
     static async findImpulsividade(userId) {
@@ -88,6 +113,7 @@ export class DashboardService {
         const grupos = await prisma.tb_compra.groupBy({
             where: {
                 usuario_id: userId,
+                compra_ativo: 1,
                 compra_status: 'CONFIRMADA',
                 compra_horario: {
                     gte: start,
@@ -97,22 +123,26 @@ export class DashboardService {
             by: ['compra_classificacao'],
             _count: {
                 _all: true,
+                compra_valor: true,
             },
             _sum: {
                 compra_valor: true,
             },
         });
-        return grupos.map((grupo) => ({
-            compra_classificacao: grupo.compra_classificacao,
-            quantidade: grupo._count._all,
-            valor_total: toNumber(grupo._sum.compra_valor),
-        }));
+        registrarIgnorados('impulsividade', grupos.reduce((total, grupo) => total + grupo._count._all - grupo._count.compra_valor, 0));
+        return grupos.flatMap((grupo) => grupo._sum.compra_valor === null ? [] : [{
+                compra_classificacao: grupo.compra_classificacao,
+                quantidade: grupo._count.compra_valor,
+                valor_total: toNumber(grupo._sum.compra_valor),
+            }]);
     }
     static async findComprasAcimaLimite(userId) {
         const { start, end } = getMonthBounds();
         const grupos = await prisma.tb_compra.groupBy({
             where: {
                 usuario_id: userId,
+                // Indicadores de limite também ignoram compras excluídas.
+                compra_ativo: 1,
                 compra_status: 'CONFIRMADA',
                 compra_horario: {
                     gte: start,
@@ -135,6 +165,9 @@ export class DashboardService {
             else if (grupo.compra_acima_limite === false) {
                 resultado.dentro_limite = grupo._count._all;
             }
+            else {
+                registrarIgnorados('compras_acima_limite', grupo._count._all);
+            }
         }
         return resultado;
     }
@@ -146,19 +179,21 @@ export class DashboardService {
             prisma.tb_tempo_uso.findMany({
                 where: {
                     usuario_id: userId,
-                    tempo_uso_data: {
-                        gte: start,
-                        lt: end,
-                    },
+                    OR: [
+                        { tempo_uso_inicio: { gte: start, lt: end } },
+                        { tempo_uso_inicio: null, tempo_uso_data: { gte: start, lt: end } },
+                    ],
                 },
                 select: {
                     tempo_uso_nome: true,
                     tempo_uso_minutos: true,
+                    tempo_uso_duracao_segundos: true,
                 },
             }),
             prisma.tb_compra.groupBy({
                 where: {
                     usuario_id: userId,
+                    compra_ativo: 1,
                     compra_status: 'CONFIRMADA',
                     compra_horario: {
                         gte: start,
@@ -169,25 +204,42 @@ export class DashboardService {
                 _sum: {
                     compra_valor: true,
                 },
+                _count: { _all: true, compra_valor: true },
             }),
         ]);
         const tempoTotalPorApp = new Map();
+        let temposIgnorados = 0;
         for (const tempo of temposUso) {
             const totalAtual = tempoTotalPorApp.get(tempo.tempo_uso_nome) ?? 0;
-            tempoTotalPorApp.set(tempo.tempo_uso_nome, totalAtual + toNumber(tempo.tempo_uso_minutos));
+            const minutos = tempo.tempo_uso_duracao_segundos !== null
+                ? tempo.tempo_uso_duracao_segundos / 60
+                : tempo.tempo_uso_minutos === null ? null : toNumber(tempo.tempo_uso_minutos);
+            if (minutos === null) {
+                temposIgnorados += 1;
+                continue;
+            }
+            tempoTotalPorApp.set(tempo.tempo_uso_nome, totalAtual + minutos);
         }
         const gastoTotalPorApp = new Map();
+        let comprasIgnoradas = 0;
         for (const gasto of gastosPorApp) {
             if (!gasto.compra_fonte)
                 continue;
+            if (gasto.compra_fonte === null || gasto._sum.compra_valor === null) {
+                comprasIgnoradas += gasto._count._all;
+                continue;
+            }
+            comprasIgnoradas += gasto._count._all - gasto._count.compra_valor;
             gastoTotalPorApp.set(gasto.compra_fonte, toNumber(gasto._sum.compra_valor));
         }
+        registrarIgnorados('gastos_fonte', comprasIgnoradas);
+        registrarIgnorados('tempo_uso', temposIgnorados);
+        registrarIgnorados('tempo_sem_gasto_conhecido', [...tempoTotalPorApp.keys()].filter((app) => !gastoTotalPorApp.has(app)).length);
         return [...tempoTotalPorApp.entries()]
-            .map(([app, tempo_total]) => ({
-            app,
-            tempo_total,
-            gasto_total: gastoTotalPorApp.get(app) ?? 0,
-        }))
+            .flatMap(([app, tempo_total]) => {
+            const gasto_total = gastoTotalPorApp.get(app);
+            return gasto_total === undefined ? [] : [{ app, tempo_total, gasto_total }];
+        })
             .sort((left, right) => right.gasto_total - left.gasto_total);
     }
 }

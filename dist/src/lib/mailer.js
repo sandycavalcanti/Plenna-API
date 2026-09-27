@@ -1,0 +1,29 @@
+import nodemailer from "nodemailer";
+import { env } from "./env.js";
+let transporter = null;
+function getTransporter() {
+    if (!env.smtp.host || !env.smtp.user || !env.smtp.pass) {
+        throw new Error("Envio de e-mail não configurado: defina SMTP_HOST, SMTP_USER e SMTP_PASS no .env");
+    }
+    if (!transporter) {
+        transporter = nodemailer.createTransport({
+            host: env.smtp.host,
+            port: env.smtp.port,
+            secure: env.smtp.port === 465,
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 15000,
+            auth: { user: env.smtp.user, pass: env.smtp.pass },
+        });
+    }
+    return transporter;
+}
+export async function sendMail(to, subject, html) {
+    const client = getTransporter();
+    await client.sendMail({
+        from: env.smtp.from,
+        to,
+        subject,
+        html,
+    });
+}
