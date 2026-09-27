@@ -51,6 +51,7 @@ function resolveCompraValor(
   explicitValue: Prisma.Decimal | number | null | undefined,
   items: PurchaseItemInput | undefined,
   fallbackValue: Prisma.Decimal | null,
+  discountAmount: Prisma.Decimal | number | null | undefined = null,
 ) {
   if (explicitValue !== null && explicitValue !== undefined) {
     return new Prisma.Decimal(Number(explicitValue).toFixed(2));
@@ -59,7 +60,10 @@ function resolveCompraValor(
   if (items !== undefined) {
     if (items.length === 0) return null;
     const totalCents = items.reduce((sum, item) => sum + toCents(item.valor), 0);
-    return fromCents(totalCents);
+    // Ao recalcular itens, preservamos o desconto da compra sem permitir total
+    // negativo. O desconto continua sendo atributo financeiro, nunca item.
+    const discountCents = discountAmount == null ? 0 : Math.max(0, toCents(discountAmount));
+    return fromCents(Math.max(0, totalCents - discountCents));
   }
 
   return fallbackValue;
@@ -90,6 +94,7 @@ async function applyCompraConfirmation(
   existing: {
     compra_horario: Date;
     compra_valor: Prisma.Decimal | null;
+    compra_desconto: Prisma.Decimal;
     compra_status: string;
     compra_usuario_concorda: boolean | null;
     compra_usuario_anotacao: string | null;
@@ -117,7 +122,7 @@ async function applyCompraConfirmation(
   const compraFonte = data.compraFonte !== undefined ? data.compraFonte : existing.compra_fonte;
   const compraUsuarioConcorda = data.compraUsuarioConcorda ?? existing.compra_usuario_concorda;
   const compraUsuarioAnotacao = data.compraUsuarioAnotacao ?? existing.compra_usuario_anotacao;
-  const compraValor = resolveCompraValor(data.compraValor, items, existing.compra_valor);
+  const compraValor = resolveCompraValor(data.compraValor, items, existing.compra_valor, existing.compra_desconto);
   const purchaseLimitCents = await recalculatePurchaseLimit(tx, userId);
   const compraAcimaLimite = purchaseLimitCents !== null
     ? compraValor !== null && toCents(compraValor) > purchaseLimitCents
@@ -243,6 +248,9 @@ export class CompraService {
           usuario_id: userId,
           forma_pagamento_id: formaPagamentoId,
           compra_valor: compraValor,
+          // Compras manuais nao recebem desconto nesta etapa; o default
+          // financeiro explicito mantem o contrato uniforme das respostas.
+          compra_desconto: new Prisma.Decimal(0),
           compra_horario: data.compraHorario,
           compra_fonte: data.compraFonte ?? null,
           compra_email: false,
@@ -409,7 +417,7 @@ export class CompraService {
       // tratadas como inexistentes, sem revelar sua existência ao solicitante.
       const existing = await tx.tb_compra.findFirst({
         where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
-        select: { compra_id: true, compra_horario: true, compra_status: true },
+        select: { compra_id: true, compra_horario: true, compra_status: true, compra_desconto: true },
       });
       if (!existing) throw new AppError('Compra não encontrada', 404);
 
@@ -449,7 +457,10 @@ export class CompraService {
         select: { compra_item_valor: true },
       });
       const totalCents = remainingItems.reduce((sum, remainingItem) => sum + toCents(remainingItem.compra_item_valor), 0);
-      const compraValor = fromCents(totalCents);
+      // O valor armazenado e o total liquido: itens restantes menos o desconto
+      // original, limitado a zero para impedir valores financeiros negativos.
+      const descontoCents = Math.max(0, toCents(existing.compra_desconto ?? 0));
+      const compraValor = fromCents(Math.max(0, totalCents - descontoCents));
 
       // O limite é recalculado a partir da configuração atual do usuário para
       // manter compra_acima_limite coerente com o novo valor total.

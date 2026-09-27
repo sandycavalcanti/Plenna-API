@@ -26,45 +26,43 @@ model tb_compra {
   compra_valor             Decimal?                  @db.Decimal(10, 2)
   compra_horario           DateTime                  @db.Timestamp(6)
   compra_fonte             String?                   @db.VarChar(45)
+  compra_pedido_externo_id String?                   @db.VarChar(100)
   compra_email             Boolean                   @default(true)
   compra_classificacao     compra_classificacao_enum
   compra_acima_limite      Boolean?
   compra_usuario_concorda  Boolean?
   compra_usuario_anotacao  String?
   compra_email_mensagem_id String?                   @db.VarChar(255)
-  // Nao e identidade global: a igualdade do pedido depende do usuario e do estabelecimento.
-  compra_pedido_externo_id String?                   @db.VarChar(100)
   compra_status            compra_status_enum        @default(CONFIRMADA)
   compra_data_criacao      DateTime                  @default(now()) @db.Timestamp(6)
-  // Soft delete: 1 mantém a compra visível; 0 preserva o histórico como excluído.
-  compra_ativo              Int                       @default(1) @db.SmallInt
-  compra_excluido_em        DateTime?                 @db.Timestamp(6)
+  compra_ativo             Int                       @default(1) @db.SmallInt
+  compra_excluido_em       DateTime?                 @db.Timestamp(6)
+  compra_desconto          Decimal                   @default(0) @db.Decimal(10, 2)
   tb_forma_pagamento       tb_forma_pagamento?       @relation(fields: [forma_pagamento_id], references: [forma_pagamento_id], onDelete: NoAction, onUpdate: NoAction)
   tb_usuario               tb_usuario                @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra_item           tb_compra_item[]
 
   @@unique([usuario_id, compra_email_mensagem_id])
-  @@index([usuario_id, compra_pedido_externo_id])
+  @@index([usuario_id, compra_ativo], map: "idx_compra_usuario_ativo")
+  @@index([usuario_id, compra_pedido_externo_id], map: "idx_compra_usuario_pedido_externo")
   @@schema("public")
 }
 
 model tb_compra_item {
-  compra_item_id           Int          @id @default(autoincrement())
-  compra_id                Int
-  // A ausencia de categoria representa falta de evidencia, nao uma categoria inventada.
-  categoria_id             Int?
-  compra_item_nome         String       @db.VarChar(45)
-  compra_item_valor        Decimal      @db.Decimal(10, 2)
-  // Null nao significa quantidade 1; a mensagem pode nao informar a quantidade.
-  compra_item_quantidade   Decimal?     @db.Decimal(12, 3)
-  compra_item_unidade_medida String?    @db.VarChar(10)
-  compra_item_data_criacao DateTime     @default(now()) @db.Timestamp(6)
-  // Soft delete do item: o registro permanece para histórico e auditoria.
-  compra_item_ativo         Int          @default(1) @db.SmallInt
-  compra_item_excluido_em   DateTime?    @db.Timestamp(6)
-  tb_categoria             tb_categoria? @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
-  tb_compra                tb_compra    @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
+  compra_item_id             Int           @id @default(autoincrement())
+  compra_id                  Int
+  categoria_id               Int?
+  compra_item_nome           String        @db.VarChar(45)
+  compra_item_valor          Decimal       @db.Decimal(10, 2)
+  compra_item_quantidade     Decimal?      @db.Decimal(12, 3)
+  compra_item_unidade_medida String?       @db.VarChar(10)
+  compra_item_data_criacao   DateTime      @default(now()) @db.Timestamp(6)
+  compra_item_ativo          Int           @default(1) @db.SmallInt
+  compra_item_excluido_em    DateTime?     @db.Timestamp(6)
+  tb_categoria               tb_categoria? @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_compra                  tb_compra     @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@index([compra_id, compra_item_ativo], map: "idx_compra_item_compra_ativo")
   @@schema("public")
 }
 
@@ -83,26 +81,23 @@ model tb_consentimento {
 
 model tb_consentimento_tipo {
   consentimento_tipo_id           Int                @id @default(autoincrement())
-  consentimento_tipo_codigo       String             @unique @db.VarChar(45)
   consentimento_tipo_nome         String             @db.VarChar(45)
   consentimento_tipo_data_criacao DateTime           @default(now()) @db.Timestamp(6)
+  consentimento_tipo_codigo       String             @unique @db.VarChar(45)
   tb_consentimento                tb_consentimento[]
 
   @@schema("public")
 }
 
-// Modelo persistido pela migration de redefinição de senha e consumido pelo
-// fluxo de recuperação de acesso. A relação mantém os registros vinculados ao
-// usuário sem alterar o comportamento existente do backend.
 model tb_redefinicao_senha {
-  redefinicao_senha_id              Int        @id @default(autoincrement())
-  usuario_id                        Int
-  redefinicao_senha_codigo_hash     String     @db.VarChar(255)
-  redefinicao_senha_expira_em       DateTime   @db.Timestamp(6)
-  redefinicao_senha_tentativas      Int        @default(0)
-  redefinicao_senha_usado            Boolean    @default(false)
-  redefinicao_senha_data_criacao     DateTime   @default(now()) @db.Timestamp(6)
-  tb_usuario                        tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction)
+  redefinicao_senha_id           Int        @id @default(autoincrement())
+  usuario_id                     Int
+  redefinicao_senha_codigo_hash  String     @db.VarChar(255)
+  redefinicao_senha_expira_em    DateTime   @db.Timestamp(6)
+  redefinicao_senha_tentativas   Int        @default(0)
+  redefinicao_senha_usado        Boolean    @default(false)
+  redefinicao_senha_data_criacao DateTime   @default(now()) @db.Timestamp(6)
+  tb_usuario                     tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_redefinicao_senha_usuario")
 
   @@index([usuario_id, redefinicao_senha_usado, redefinicao_senha_data_criacao(sort: Desc)], map: "idx_redefinicao_senha_usuario")
   @@schema("public")
@@ -118,7 +113,6 @@ model tb_forma_pagamento {
 }
 
 model tb_usuario {
-  tb_oauth_tentativa        tb_oauth_tentativa[]
   usuario_id                Int                    @id @default(autoincrement())
   usuario_email             String                 @unique @db.VarChar(64)
   usuario_senha             String                 @db.VarChar(255)
@@ -143,9 +137,8 @@ model tb_usuario {
   tb_metricas               tb_metricas[]
   tb_preferencia            tb_preferencia[]
   tb_propaganda             tb_propaganda[]
-  tb_tempo_uso              tb_tempo_uso[]
-  // Relação usada pelo fluxo de recuperação de senha.
   tb_redefinicao_senha      tb_redefinicao_senha[]
+  tb_tempo_uso              tb_tempo_uso[]
 
   @@schema("public")
 }
@@ -164,25 +157,6 @@ model tb_integracao {
   integracao_ultimo_erro             String?                              @db.VarChar(255)
   tb_usuario                         tb_usuario                           @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@schema("public")
-}
-
-// Tentativa temporária de OAuth criada pela integração de e-mail. O model é
-// necessário porque o serviço OAuth usa este delegate diretamente no Prisma.
-model tb_oauth_tentativa {
-  oauth_tentativa_id       String             @id @db.Uuid
-  usuario_id               Int
-  oauth_provedor           email_provedor_enum
-  oauth_state_hash         String             @unique @db.VarChar(64)
-  oauth_finalizacao_hash   String             @db.VarChar(64)
-  oauth_status             oauth_status_enum  @default(PENDENTE)
-  oauth_criada_em          DateTime           @default(now()) @db.Timestamptz(3)
-  oauth_expira_em          DateTime           @db.Timestamptz(3)
-  oauth_finalizada_em      DateTime?          @db.Timestamptz(3)
-  tb_usuario               tb_usuario         @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade, onUpdate: Cascade)
-
-  @@index([usuario_id, oauth_provedor, oauth_status])
-  @@index([oauth_expira_em])
   @@schema("public")
 }
 
@@ -282,14 +256,24 @@ model tb_propaganda {
 }
 
 model tb_tempo_uso {
-  tempo_uso_id           Int        @id @default(autoincrement())
-  usuario_id             Int
-  tempo_uso_nome         String     @db.VarChar(45)
-  tempo_uso_minutos      Decimal    @db.Decimal(10, 2)
-  tempo_uso_data         DateTime   @db.Timestamp(6)
-  tempo_uso_data_criacao DateTime   @default(now()) @db.Timestamp(6)
-  tb_usuario             tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tempo_uso_id               Int        @id @default(autoincrement())
+  usuario_id                 Int
+  tempo_uso_nome             String     @db.VarChar(100)
+  tempo_uso_minutos          Decimal?   @db.Decimal(10, 2)
+  tempo_uso_data             DateTime?  @db.Timestamp(6)
+  tempo_uso_data_criacao     DateTime   @default(now()) @db.Timestamp(6)
+  tempo_uso_package_id       String?    @db.VarChar(255)
+  tempo_uso_inicio           DateTime?  @db.Timestamptz(3)
+  tempo_uso_fim              DateTime?  @db.Timestamptz(3)
+  tempo_uso_duracao_segundos Int?
+  tempo_uso_data_local       DateTime?  @db.Date
+  tempo_uso_timezone         String?    @db.VarChar(64)
+  tempo_uso_origem           String     @default("LEGADO") @db.VarChar(30)
+  tempo_uso_data_modificacao DateTime   @default(now()) @db.Timestamp(6)
+  tb_usuario                 tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([usuario_id, tempo_uso_package_id, tempo_uso_inicio, tempo_uso_fim], map: "tempo_uso_usuario_package_periodo_unique")
+  @@index([usuario_id, tempo_uso_inicio], map: "tempo_uso_usuario_inicio_idx")
   @@schema("public")
 }
 
@@ -321,16 +305,6 @@ enum integracao_sincronizacao_status_enum {
   PROCESSANDO
   FINALIZADA
   ERRO
-
-  @@schema("public")
-}
-
-enum oauth_status_enum {
-  PENDENTE
-  PROCESSANDO
-  CONCLUIDA
-  CANCELADA
-  FALHOU
 
   @@schema("public")
 }

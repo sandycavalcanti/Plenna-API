@@ -24,6 +24,7 @@ const { CompraService } = await import('../dist/src/modules/compra/compra.servic
 const { createCompraSchema } = await import('../dist/src/modules/compra/compra.schemas.js');
 const { prisma } = await import('../dist/src/lib/prisma.js');
 const { env } = await import('../dist/src/lib/env.js');
+const { PaymentMethodResolver } = await import('../dist/src/modules/forma-pagamento/payment-method.resolver.js');
 
 function fakeResponse() {
   return {
@@ -1518,4 +1519,61 @@ test('edicao de compra confirmada recalcula métricas do mês antigo e novo', as
   prisma.$transaction = originalTransaction;
   prisma.tb_compra.update = originalUpdate;
   metricasModule.MetricasService.recalculateMonthlyMetrics = originalRecalc;
+});
+test('sync de compra por email persiste desconto separado do valor final', async () => {
+  const originals = {
+    findIntegration: EmailService.findIntegrationByUserId,
+    token: EmailService.getValidAccessToken,
+    list: EmailService.listMessages,
+    get: EmailService.getMessage,
+    classify: EmailClassificationEngine.classify,
+    updateMany: prisma.tb_integracao.updateMany,
+    integrationUpdate: prisma.tb_integracao.update,
+    purchaseFind: prisma.tb_compra.findFirst,
+    purchaseFindMany: prisma.tb_compra.findMany,
+    promotionFind: prisma.tb_propaganda.findFirst,
+    purchaseCreate: prisma.tb_compra.create,
+    resolvePayment: PaymentMethodResolver.resolve,
+  };
+  let createdData = null;
+
+  EmailService.findIntegrationByUserId = async () => ({ integracao_id: 99, usuario_id: 99, integracao_ultima_sincronizacao_em: new Date('2026-08-01T00:00:00Z') });
+  EmailService.getValidAccessToken = async () => 'token';
+  EmailService.listMessages = async () => [{ id: 'discount-message' }];
+  EmailService.getMessage = async () => ({
+    id: 'discount-message',
+    subject: 'Pedido confirmado',
+    from: 'Loja <vendas@loja.test>',
+    bodyText: 'Pedido #D1\nProduto\nProduto X\nQuantidade: 1\nValor do produto: R$ 100,00\nDesconto: R$ 20,00\nTotal da compra: R$ 80,00\nPix',
+    snippet: 'Pedido confirmado',
+    labelIds: [],
+    internalDate: String(Date.parse('2026-08-10T12:00:00Z')),
+  });
+  EmailClassificationEngine.classify = () => ({ outcome: 'COMPRA', clear: true, confidence: 'ALTA', purchase: { amount: 100, establishment: 'Loja', paymentMethodName: null } });
+  PaymentMethodResolver.resolve = async () => null;
+  prisma.tb_integracao.updateMany = async () => ({ count: 1 });
+  prisma.tb_integracao.update = async () => ({});
+  prisma.tb_compra.findFirst = async () => null;
+  prisma.tb_compra.findMany = async () => [];
+  prisma.tb_propaganda.findFirst = async () => null;
+  prisma.tb_compra.create = async ({ data }) => { createdData = data; return data; };
+
+  const result = await EmailSyncService.syncUser(99);
+
+  assert.equal(result.created, 1);
+  assert.equal(Number(createdData.compra_valor), 80);
+  assert.equal(Number(createdData.compra_desconto), 20);
+
+  EmailService.findIntegrationByUserId = originals.findIntegration;
+  EmailService.getValidAccessToken = originals.token;
+  EmailService.listMessages = originals.list;
+  EmailService.getMessage = originals.get;
+  EmailClassificationEngine.classify = originals.classify;
+  prisma.tb_integracao.updateMany = originals.updateMany;
+  prisma.tb_integracao.update = originals.integrationUpdate;
+  prisma.tb_compra.findFirst = originals.purchaseFind;
+  prisma.tb_compra.findMany = originals.purchaseFindMany;
+  prisma.tb_propaganda.findFirst = originals.promotionFind;
+  prisma.tb_compra.create = originals.purchaseCreate;
+  PaymentMethodResolver.resolve = originals.resolvePayment;
 });

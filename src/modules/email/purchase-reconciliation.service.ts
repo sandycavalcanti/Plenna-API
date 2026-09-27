@@ -12,6 +12,7 @@ export type ReconciliationPurchase = {
   compra_fonte: string | null;
   compra_pedido_externo_id: string | null;
   compra_valor: number | string | { toString(): string } | null;
+  compra_desconto?: number | string | { toString(): string } | null;
   forma_pagamento_id: number | null;
   compra_email_mensagem_id: string | null;
   compra_horario: Date;
@@ -127,12 +128,20 @@ export function buildPurchaseUpdate(existing: ReconciliationPurchase, incoming: 
     compra_pedido_externo_id?: string;
     compra_fonte?: string;
     compra_valor?: number;
+    compra_desconto?: number;
     forma_pagamento_id?: number;
   } = {};
 
   if (!existing.compra_pedido_externo_id && incoming.orderNumber) data.compra_pedido_externo_id = incoming.orderNumber;
   if (!existing.compra_fonte && incoming.establishment) data.compra_fonte = incoming.establishment;
   if (existing.compra_valor === null && incoming.totalAmount !== null) data.compra_valor = incoming.totalAmount;
+  const existingDiscount = amount(existing.compra_desconto ?? 0) ?? 0;
+  const incomingDiscount = incoming.discountAmount ?? 0;
+  if (existingDiscount <= 0 && Number.isFinite(incomingDiscount) && incomingDiscount > 0) {
+    // Reconciliacoes podem complementar compras antigas que ainda nao tinham
+    // o desconto transportado, sem apagar um desconto ja persistido.
+    data.compra_desconto = Number(incomingDiscount.toFixed(2));
+  }
   if (existing.forma_pagamento_id === null && paymentMethodId !== null) data.forma_pagamento_id = paymentMethodId;
 
   return data;

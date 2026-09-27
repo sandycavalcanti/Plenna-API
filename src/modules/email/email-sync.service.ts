@@ -256,6 +256,13 @@ function buildExtractedPurchase(message: GmailMessageDetail, supplemental?: { am
   };
 }
 
+/** Normaliza o desconto para a coluna obrigatoria, sem persistir lixo numerico. */
+function normalizePurchaseDiscount(value: number | null | undefined) {
+  return value !== null && value !== undefined && Number.isFinite(value) && value > 0
+    ? new Prisma.Decimal(value.toFixed(2))
+    : new Prisma.Decimal(0);
+}
+
 function testMarkerFromMessage(message: GmailMessageDetail) {
   const match = message.subject?.match(/^\[PLENNA TEST\s+(HTML-\d+)\]/i);
   return match?.[1]?.toUpperCase() ?? null;
@@ -347,6 +354,7 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
       compra_fonte: true,
       compra_pedido_externo_id: true,
       compra_valor: true,
+      compra_desconto: true,
       forma_pagamento_id: true,
       compra_email_mensagem_id: true,
       compra_horario: true,
@@ -549,6 +557,8 @@ async function createCompraFromMessage(
           usuario_id: userId,
           forma_pagamento_id: paymentMethod?.id ?? null,
           compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
+          // O desconto e atributo financeiro da compra; nao vira item negativo.
+          compra_desconto: normalizePurchaseDiscount(extracted.discountAmount),
           compra_horario: horario,
           compra_fonte: establishment,
           compra_email: true,

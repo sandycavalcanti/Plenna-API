@@ -215,6 +215,12 @@ function buildExtractedPurchase(message, supplemental) {
         },
     };
 }
+/** Normaliza o desconto para a coluna obrigatoria, sem persistir lixo numerico. */
+function normalizePurchaseDiscount(value) {
+    return value !== null && value !== undefined && Number.isFinite(value) && value > 0
+        ? new Prisma.Decimal(value.toFixed(2))
+        : new Prisma.Decimal(0);
+}
 function testMarkerFromMessage(message) {
     const match = message.subject?.match(/^\[PLENNA TEST\s+(HTML-\d+)\]/i);
     return match?.[1]?.toUpperCase() ?? null;
@@ -296,6 +302,7 @@ async function resolveExistingPurchase(userId, message, extracted, paymentMethod
             compra_fonte: true,
             compra_pedido_externo_id: true,
             compra_valor: true,
+            compra_desconto: true,
             forma_pagamento_id: true,
             compra_email_mensagem_id: true,
             compra_horario: true,
@@ -469,6 +476,8 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
                     usuario_id: userId,
                     forma_pagamento_id: paymentMethod?.id ?? null,
                     compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
+                    // O desconto e atributo financeiro da compra; nao vira item negativo.
+                    compra_desconto: normalizePurchaseDiscount(extracted.discountAmount),
                     compra_horario: horario,
                     compra_fonte: establishment,
                     compra_email: true,
