@@ -1,38 +1,12 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
+import type { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
 import { MetricasService } from './metricas.service.js';
 import { AppError } from '../../errors/AppError.js';
-
-// Contrato público anterior à reconciliação. Campos internos novos não são expostos.
-const compraPublicaSelect = {
-  compra_id: true,
-  usuario_id: true,
-  forma_pagamento_id: true,
-  compra_valor: true,
-  compra_horario: true,
-  compra_fonte: true,
-  compra_email: true,
-  compra_classificacao: true,
-  compra_acima_limite: true,
-  compra_usuario_concorda: true,
-  compra_usuario_anotacao: true,
-  compra_data_criacao: true,
-  tb_compra_item: {
-    select: {
-      compra_item_id: true,
-      compra_id: true,
-      categoria_id: true,
-      compra_item_nome: true,
-      compra_item_valor: true,
-      compra_item_data_criacao: true,
-      tb_categoria: {
-        select: { categoria_id: true, categoria_nome: true, categoria_data_criacao: true },
-      },
-    },
-  },
-} satisfies Prisma.tb_compraSelect;
-
+/**
+ * Converte valores monetários para centavos antes de realizar somas
+ * e comparações, reduzindo problemas de precisão de ponto flutuante.
+ */
 function toCents(value: Prisma.Decimal | number | string) {
   return Math.round(Number(value) * 100);
 }
@@ -41,254 +15,299 @@ function fromCents(cents: number) {
   return new Prisma.Decimal((cents / 100).toFixed(2));
 }
 
-function normalizeMonthKey(date: Date) {
-  return date.toISOString().slice(0, 7);
+function calculatePurchaseLimitMeta(value: Prisma.Decimal | number | string | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const cents = toCents(value);
+  return Number.isFinite(cents) && cents > 0 ? cents : null;
 }
 
-export class CompraService {
-  static async create(userId: number, data: CreateCompraDTO) {
-    return prisma.$transaction(async (tx) => {
-      const user = await tx.tb_usuario.findFirst({
-        where: {
-          usuario_id: userId,
-          usuario_status: true,
-        },
-        select: {
-          usuario_meta_valor_compra: true,
-        },
-      });
+type PurchasePayload = {
+  formaPagamentoId: number | null;
+  compraValor: Prisma.Decimal | null;
+  compraHorario: Date;
+  compraFonte: string | null;
+  compraEmail: boolean;
+  compraClassificacao: CreateCompraDTO['compraClassificacao'];
+  compraAcimaLimite: boolean | null;
+  compraUsuarioConcorda?: boolean | null;
+  compraUsuarioAnotacao?: string | null;
+};
 
-      if (!user) {
-        throw new AppError('Usuário não encontrado', 404);
-      }
+type PurchaseUpdatePayload = {
+  formaPagamentoId: number | null;
+  compraValor: Prisma.Decimal | null;
+  compraHorario: Date;
+  compraFonte: string | null;
+  compraEmail: boolean;
+  compraClassificacao: UpdateCompraDTO['compraClassificacao'];
+  compraAcimaLimite: boolean | null;
+  compraUsuarioConcorda?: boolean | null;
+  compraUsuarioAnotacao?: string | null;
+};
 
-      const formaPagamento = await tx.tb_forma_pagamento.findUnique({
-        where: { forma_pagamento_id: data.formaPagamentoId },
-      });
+type PurchaseItemInput = NonNullable<UpdateCompraDTO['items']>;
 
-      if (!formaPagamento) {
-        throw new AppError('Forma de pagamento não encontrada', 404);
-      }
+function resolveCompraValor(
+  explicitValue: Prisma.Decimal | number | null | undefined,
+  items: PurchaseItemInput | undefined,
+  fallbackValue: Prisma.Decimal | null,
+) {
+  if (explicitValue !== null && explicitValue !== undefined) {
+    return new Prisma.Decimal(Number(explicitValue).toFixed(2));
+  }
 
-      const categoriaIds = [...new Set(data.items.map((item) => item.categoriaId))];
-      const categoriasEncontradas = await tx.tb_categoria.count({
-        where: {
-          categoria_id: {
-            in: categoriaIds,
-          },
-        },
-      });
+  if (items !== undefined) {
+    if (items.length === 0) return null;
+    const totalCents = items.reduce((sum, item) => sum + toCents(item.valor), 0);
+    return fromCents(totalCents);
+  }
 
-      if (categoriasEncontradas !== categoriaIds.length) {
-        throw new AppError('Categoria não encontrada', 404);
-      }
+  return fallbackValue;
+}
 
-      const totalCents = data.items.reduce((sum, item) => sum + toCents(item.valor), 0);
-  const purchaseLimitCents = user.usuario_meta_valor_compra ? toCents(user.usuario_meta_valor_compra) : null;
-  const compraAcimaLimite = purchaseLimitCents === null ? false : totalCents > purchaseLimitCents;
+function resolveMetricPeriods(previousDate: Date, currentDate: Date) {
+  const previousMonth = previousDate.getUTCFullYear() * 100 + previousDate.getUTCMonth();
+  const currentMonth = currentDate.getUTCFullYear() * 100 + currentDate.getUTCMonth();
+  return previousMonth === currentMonth ? [currentDate] : [previousDate, currentDate];
+}
 
-      const compra = await tx.tb_compra.create({
-        data: {
-          usuario_id: userId,
-          forma_pagamento_id: data.formaPagamentoId,
-          compra_valor: fromCents(totalCents),
-          compra_horario: data.compraHorario,
-          compra_fonte: data.compraFonte ?? '',
-          compra_email: data.compraEmail ?? true,
-          compra_classificacao: data.compraClassificacao,
-          compra_acima_limite: compraAcimaLimite,
-          compra_usuario_concorda: data.compraUsuarioConcorda,
-          compra_usuario_anotacao: data.compraUsuarioAnotacao,
-        },
-      });
+async function recalculatePurchaseLimit(tx: typeof prisma, userId: number) {
+  const user = await tx.tb_usuario.findFirst({
+    where: { usuario_id: userId, usuario_status: true },
+    select: { usuario_meta_valor_compra: true },
+  });
 
+  return calculatePurchaseLimitMeta(user?.usuario_meta_valor_compra ?? null);
+}
+
+async function applyCompraConfirmation(
+  tx: any,
+  userId: number,
+  compraId: number,
+  data: UpdateCompraDTO,
+  existing: {
+    compra_horario: Date;
+    compra_valor: Prisma.Decimal | null;
+    compra_status: string;
+    compra_usuario_concorda: boolean | null;
+    compra_usuario_anotacao: string | null;
+    compra_classificacao: string;
+    compra_email: boolean;
+    compra_fonte: string | null;
+    forma_pagamento_id: number | null;
+  },
+) {
+  const items = data.items ?? undefined;
+  if (items && items.length > 0) {
+    const categoriaIds = [...new Set(items.map((item) => item.categoriaId))];
+    const categoriasEncontradas = await tx.tb_categoria.count({ where: { categoria_id: { in: categoriaIds } } });
+    if (categoriasEncontradas !== categoriaIds.length) throw new AppError('Categoria não encontrada', 404);
+  }
+
+  const formaPagamentoId = data.formaPagamentoId !== undefined ? data.formaPagamentoId : existing.forma_pagamento_id;
+  if (formaPagamentoId !== null) {
+    const formaPagamento = await tx.tb_forma_pagamento.findUnique({ where: { forma_pagamento_id: formaPagamentoId } });
+    if (!formaPagamento) throw new AppError('Forma de pagamento não encontrada', 404);
+  }
+
+  const compraHorario = data.compraHorario ?? existing.compra_horario;
+  const compraClassificacao = data.compraClassificacao ?? existing.compra_classificacao;
+  const compraFonte = data.compraFonte !== undefined ? data.compraFonte : existing.compra_fonte;
+  const compraUsuarioConcorda = data.compraUsuarioConcorda ?? existing.compra_usuario_concorda;
+  const compraUsuarioAnotacao = data.compraUsuarioAnotacao ?? existing.compra_usuario_anotacao;
+  const compraValor = resolveCompraValor(data.compraValor, items, existing.compra_valor);
+  const purchaseLimitCents = await recalculatePurchaseLimit(tx, userId);
+  const compraAcimaLimite = purchaseLimitCents !== null
+    ? compraValor !== null && toCents(compraValor) > purchaseLimitCents
+    : null;
+
+  if (items) {
+    await tx.tb_compra_item.deleteMany({ where: { compra_id: compraId } });
+    if (items.length > 0) {
       await tx.tb_compra_item.createMany({
-        data: data.items.map((item) => ({
-          compra_id: compra.compra_id,
+        data: items.map((item) => ({
+          compra_id: compraId,
           categoria_id: item.categoriaId,
           compra_item_nome: item.nome,
           compra_item_valor: fromCents(toCents(item.valor)),
         })),
       });
+    }
+  }
 
-      const metricas = await MetricasService.recalculateMonthlyMetrics(userId, data.compraHorario, tx);
+  const compra = await tx.tb_compra.update({
+    where: { compra_id: compraId },
+    data: {
+      forma_pagamento_id: formaPagamentoId,
+      compra_valor: compraValor,
+      compra_horario: compraHorario,
+      compra_fonte: compraFonte,
+      compra_classificacao: compraClassificacao,
+      compra_acima_limite: compraAcimaLimite,
+      compra_usuario_concorda: compraUsuarioConcorda,
+      compra_usuario_anotacao: compraUsuarioAnotacao,
+    },
+  });
 
-      const compraComItens = await tx.tb_compra.findFirst({
-        where: { compra_id: compra.compra_id },
-        select: compraPublicaSelect,
+  return { compra, compraHorario, compraValor };
+}
+
+export class CompraService {
+  /**
+   * Cria uma compra cadastrada manualmente pelo usuário.
+   *
+   * A compra, seus itens e o recálculo das métricas são executados dentro
+   * da mesma transação para evitar persistência parcial em caso de erro.
+   */
+  static async create(userId: number, data: CreateCompraDTO) {
+    return prisma.$transaction(async (tx) => {
+      const user = await tx.tb_usuario.findFirst({
+        where: { usuario_id: userId, usuario_status: true },
+        select: { usuario_meta_valor_compra: true },
+      });
+      if (!user) throw new AppError('Usuário não encontrado', 404);
+
+      const formaPagamentoId = data.formaPagamentoId ?? null;
+      if (formaPagamentoId !== null) {
+        const formaPagamento = await tx.tb_forma_pagamento.findUnique({ where: { forma_pagamento_id: formaPagamentoId } });
+        if (!formaPagamento) throw new AppError('Forma de pagamento não encontrada', 404);
+      }
+
+      const items = data.items ?? [];
+      if (items.length > 0) {
+        const categoriaIds = [...new Set(items.map((item) => item.categoriaId))];
+        const categoriasEncontradas = await tx.tb_categoria.count({
+          where: { categoria_id: { in: categoriaIds } },
+        });
+        if (categoriasEncontradas !== categoriaIds.length) throw new AppError('Categoria não encontrada', 404);
+      }
+
+      const compraValor = resolveCompraValor(data.compraValor, items, null);
+      if (compraValor === null) {
+        throw new AppError('Compra manual sem valor não pode ser criada', 400);
+      }
+      const purchaseLimitCents = calculatePurchaseLimitMeta(user.usuario_meta_valor_compra);
+      // `null` representa "não foi possível determinar". Isso é diferente de
+      // `false`, que significa que a compra foi efetivamente considerada dentro do limite.
+      const compraAcimaLimite = compraValor !== null && purchaseLimitCents !== null
+        ? toCents(compraValor) > purchaseLimitCents
+        : null;
+      const compra = await tx.tb_compra.create({
+        data: {
+          usuario_id: userId,
+          forma_pagamento_id: formaPagamentoId,
+          compra_valor: compraValor,
+          compra_horario: data.compraHorario,
+          compra_fonte: data.compraFonte ?? null,
+          compra_email: false,
+          compra_classificacao: data.compraClassificacao,
+          compra_acima_limite: compraAcimaLimite,
+          compra_usuario_concorda: data.compraUsuarioConcorda,
+          compra_usuario_anotacao: data.compraUsuarioAnotacao,
+          compra_status: 'CONFIRMADA',
+          compra_email_mensagem_id: null,
+        },
       });
 
+      if (items.length > 0) {
+        await tx.tb_compra_item.createMany({
+          data: items.map((item) => ({
+            compra_id: compra.compra_id,
+            categoria_id: item.categoriaId,
+            compra_item_nome: item.nome,
+            compra_item_valor: fromCents(toCents(item.valor)),
+          })),
+        });
+      }
+
       return {
-        compra: compraComItens,
-        metricas,
+        compra,
+        metricas: await MetricasService.recalculateMonthlyMetrics(userId, data.compraHorario, tx),
       };
     });
   }
 
   static async update(userId: number, compraId: number, data: UpdateCompraDTO) {
     return prisma.$transaction(async (tx) => {
-      const existingCompra = await tx.tb_compra.findFirst({
-        where: {
-          compra_id: compraId,
-          usuario_id: userId,
-        },
-        select: compraPublicaSelect,
-      });
+      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId } });
+      if (!existing) throw new AppError('Compra não encontrada', 404);
+      const result = await applyCompraConfirmation(tx, userId, compraId, data, existing);
 
-      if (!existingCompra) {
-        throw new AppError('Compra não encontrada', 404);
+      if (existing.compra_status === 'CONFIRMADA' && result.compraValor === null) {
+        throw new AppError('Compra confirmada deve possuir valor', 400);
       }
 
-      const user = await tx.tb_usuario.findFirst({
-        where: {
-          usuario_id: userId,
-          usuario_status: true,
-        },
-        select: {
-          usuario_meta_valor_compra: true,
-        },
-      });
-
-      if (!user) {
-        throw new AppError('Usuário não encontrado', 404);
-      }
-
-      if (data.formaPagamentoId !== undefined) {
-        const formaPagamento = await tx.tb_forma_pagamento.findUnique({
-          where: { forma_pagamento_id: data.formaPagamentoId },
-        });
-
-        if (!formaPagamento) {
-          throw new AppError('Forma de pagamento não encontrada', 404);
+      if (existing.compra_status === 'CONFIRMADA') {
+        const metricPeriods = resolveMetricPeriods(existing.compra_horario, result.compraHorario);
+        for (const period of metricPeriods) {
+          await MetricasService.recalculateMonthlyMetrics(userId, period, tx);
         }
       }
 
-      const categoriaIds = [...new Set(data.items.map((item) => item.categoriaId))];
-      const categoriasEncontradas = await tx.tb_categoria.count({
-        where: {
-          categoria_id: {
-            in: categoriaIds,
-          },
-        },
-      });
-
-      if (categoriasEncontradas !== categoriaIds.length) {
-        throw new AppError('Categoria não encontrada', 404);
-      }
-
-      const purchaseDate = data.compraHorario ?? existingCompra.compra_horario;
-      const totalCents = data.items.reduce((sum, item) => sum + toCents(item.valor), 0);
-      const purchaseLimitCents = user.usuario_meta_valor_compra ? toCents(user.usuario_meta_valor_compra) : null;
-      const compraAcimaLimite = purchaseLimitCents === null ? false : totalCents > purchaseLimitCents;
-
-      await tx.tb_compra_item.deleteMany({
-        where: {
-          compra_id: compraId,
-        },
-      });
-
-      await tx.tb_compra.update({
-        where: {
-          compra_id: compraId,
-        },
-        data: {
-          forma_pagamento_id: data.formaPagamentoId ?? existingCompra.forma_pagamento_id,
-          compra_valor: fromCents(totalCents),
-          compra_horario: purchaseDate,
-          compra_fonte: data.compraFonte ?? existingCompra.compra_fonte,
-          compra_email: data.compraEmail ?? existingCompra.compra_email,
-          compra_classificacao: data.compraClassificacao ?? existingCompra.compra_classificacao,
-          compra_acima_limite: compraAcimaLimite,
-          compra_usuario_concorda: data.compraUsuarioConcorda ?? existingCompra.compra_usuario_concorda,
-          compra_usuario_anotacao: data.compraUsuarioAnotacao ?? existingCompra.compra_usuario_anotacao,
-        },
-      });
-
-      await tx.tb_compra_item.createMany({
-        data: data.items.map((item) => ({
-          compra_id: compraId,
-          categoria_id: item.categoriaId,
-          compra_item_nome: item.nome,
-          compra_item_valor: fromCents(toCents(item.valor)),
-        })),
-      });
-
-      const monthsToRecalculate = new Map<string, Date>();
-      monthsToRecalculate.set(normalizeMonthKey(existingCompra.compra_horario), existingCompra.compra_horario);
-      monthsToRecalculate.set(normalizeMonthKey(purchaseDate), purchaseDate);
-
-      const metricas: NonNullable<Awaited<ReturnType<typeof MetricasService.recalculateMonthlyMetrics>>>[] = [];
-      for (const monthDate of monthsToRecalculate.values()) {
-        const metrica = await MetricasService.recalculateMonthlyMetrics(userId, monthDate, tx);
-        if (metrica !== null) metricas.push(metrica);
-      }
-
-      const compra = await tx.tb_compra.findFirst({
-        where: { compra_id: compraId },
-        select: compraPublicaSelect,
-      });
-
-      return {
-        compra,
-        metricas,
-      };
+      return { compra: await tx.tb_compra.findFirst({ where: { compra_id: compraId } }) };
     });
   }
-
-  static async delete(userId: number, compraId: number) {
+  /**
+   * Confirma uma compra que aguardava validação do usuário.
+   *
+   * A operação é idempotente quando a compra já está confirmada e impede
+   * que uma compra previamente ignorada retorne ao fluxo normal.
+   * Antes da confirmação, os dados enviados pelo usuário podem complementar
+   * ou corrigir as informações identificadas automaticamente.
+   */
+  static async confirm(userId: number, compraId: number, data?: UpdateCompraDTO) {
     return prisma.$transaction(async (tx) => {
-      const existingCompra = await tx.tb_compra.findFirst({
-        where: {
-          compra_id: compraId,
-          usuario_id: userId,
-        },
-      });
-
-      if (!existingCompra) {
-        throw new AppError('Compra não encontrada', 404);
+      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId } });
+      if (!existing) throw new AppError('Compra não encontrada', 404);
+      if (existing.compra_status === 'IGNORADA') throw new AppError('Compra ignorada não pode ser confirmada', 409);
+      if (existing.compra_status === 'CONFIRMADA') return { compra: existing };
+      const result = await applyCompraConfirmation(tx, userId, compraId, data ?? {}, existing);
+      if (result.compraValor === null) {
+        throw new AppError('Compra sem valor não pode ser confirmada', 400);
       }
-
-      await tx.tb_compra_item.deleteMany({
-        where: {
-          compra_id: compraId,
-        },
+      const compra = await tx.tb_compra.update({
+        where: { compra_id: compraId },
+        data: { compra_status: 'CONFIRMADA' },
       });
 
-      await tx.tb_compra.delete({
-        where: {
-          compra_id: compraId,
-        },
+      await MetricasService.recalculateMonthlyMetrics(userId, result.compraHorario, tx);
+      const compraFinal = await tx.tb_compra.findFirst({ where: { compra_id: compraId } });
+      return { compra: compraFinal };
+    });
+  }
+  /**
+   * Marca como ignorada uma compra automática ainda pendente.
+   *
+   * O registro é preservado para manter a deduplicação baseada no messageId
+   * e impedir que o mesmo e-mail volte a gerar uma nova compra.
+   */
+  static async ignore(userId: number, compraId: number) {
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId } });
+      if (!existing) throw new AppError('Compra não encontrada', 404);
+      if (existing.compra_status === 'CONFIRMADA') throw new AppError('Compra confirmada não pode ser ignorada', 409);
+      if (existing.compra_status === 'IGNORADA') return existing;
+      return tx.tb_compra.update({
+        where: { compra_id: compraId },
+        data: { compra_status: 'IGNORADA' },
       });
-
-      const metricas = await MetricasService.recalculateMonthlyMetrics(userId, existingCompra.compra_horario, tx);
-
-      return { metricas };
     });
   }
 
   static async findAllByUserId(userId: number) {
+    return prisma.tb_compra.findMany({ where: { usuario_id: userId }, include: { tb_compra_item: { include: { tb_categoria: true } } }, orderBy: { compra_horario: 'desc' } });
+  }
+
+  static async findPendingByUserId(userId: number) {
     return prisma.tb_compra.findMany({
-      where: { usuario_id: userId },
-      select: compraPublicaSelect,
-      orderBy: {
-        compra_horario: 'desc',
-      },
+      where: { usuario_id: userId, compra_status: 'AGUARDANDO_CONFIRMACAO' },
+      orderBy: { compra_horario: 'desc' },
     });
   }
 
   static async findById(userId: number, compraId: number) {
-    const compra = await prisma.tb_compra.findFirst({
-      where: {
-        compra_id: compraId,
-        usuario_id: userId,
-      },
-      select: compraPublicaSelect,
-    });
-
-    if (!compra) {
-      throw new AppError('Compra não encontrada', 404);
-    }
-
+    const compra = await prisma.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId }, include: { tb_compra_item: { include: { tb_categoria: true } } } });
+    if (!compra) throw new AppError('Compra não encontrada', 404);
     return compra;
   }
 }

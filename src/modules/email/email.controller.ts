@@ -1,54 +1,109 @@
-import type { Request, Response } from 'express';
-import type { AuthRequest } from '../auth/auth.middleware.js';
+import type { Response } from 'express';
+import { AuthRequest } from '../auth/auth.middleware.js';
 import { EmailService } from './email.service.js';
-import { OAuthTentativaService } from './oauth-tentativa.service.js';
-import { finalizarEmailSchema, stateSchema, tentativaSchema } from './email.schemas.js';
+import { EmailSyncService } from './email-sync.service.js';
 import { handleError } from '../../utils/handleError.js';
-import { logSeguro } from '../../utils/logSeguro.js';
-
-function semCache(res: Response) { res.set({ 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'no-referrer' }); }
+import { env } from '../../lib/env.js';
+import crypto from 'node:crypto';
+/**
+ * Compara segredos utilizando tempo constante quando possuem o mesmo tamanho,
+ * reduzindo a exposição a ataques baseados no tempo da comparação.
+ */
+function timingSafeEqualString(left: string, right: string) {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+/**
+ * Controla as operações HTTP da integração de e-mail.
+ *
+ * O controller trata autenticação, parâmetros e respostas HTTP, enquanto
+ * OAuth, acesso ao Gmail e sincronização permanecem concentrados nos services.
+ */
 export class EmailController {
+  /**
+   * Inicia a vinculação da conta Gmail do usuário autenticado.
+   *
+   * A URL OAuth é gerada pelo service com os escopos necessários para leitura
+   * do Gmail e identificação da conta conectada.
+   */
   static async connect(req: AuthRequest, res: Response) {
-    semCache(res);
-    if (!req.userId) return res.sendStatus(401);
-    try { return res.json(await EmailService.iniciar(req.userId)); }
-    catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 500, error); }
+    try {
+      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+      return res.json({ url: EmailService.generateGoogleUrl(req.userId) });
+    } catch (error: any) {
+      return handleError(res, 500, error);
+    }
   }
   static async callback(req: Request, res: Response) {
     semCache(res);
     try {
-      const state = stateSchema.parse(req.query.state);
-      const tentativa = await OAuthTentativaService.callback(state);
-      const params = new URLSearchParams({ state, tentativa });
-      if (req.query.error !== undefined) params.set('resultado', 'cancelado');
-      else {
-        if (typeof req.query.code !== 'string' || !req.query.code || req.query.code.length > 4096) throw new Error('Callback invalido');
-        params.set('code', req.query.code);
-      }
-      return res.redirect(303, 'plenna://oauth-success?' + params);
-    } catch (error) {
-      logSeguro('oauth_falhou', error);
-      return res.redirect(303, 'plenna://oauth-success?resultado=erro');
+      const { code, state } = req.query;
+      if (!code || !state) return res.status(400).json({ error: 'Código e state são obrigatórios' });
+
+      const tokens = await EmailService.exchangeCodeForTokens(String(code));
+      const email = await EmailService.getGoogleUserEmail(tokens.access_token);
+      await EmailService.saveIntegration(Number(state), email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
+
+      return res.redirect(`${env.apiBaseUrl}/oauth-success.html`);
+    } catch {
+      return res.redirect('plenna://oauth-error');
     }
   }
-  static async finalizar(req: AuthRequest, res: Response) {
-    semCache(res);
-    if (!req.userId) return res.sendStatus(401);
-    try { return res.json(await EmailService.finalizar(req.userId, finalizarEmailSchema.parse(req.body))); }
-    catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 400, error); }
-  }
-  static async cancelar(req: AuthRequest, res: Response) {
-    semCache(res);
-    if (!req.userId) return res.sendStatus(401);
+
+  static async sync(req: AuthRequest, res: Response) {
     try {
-      await OAuthTentativaService.encerrar(req.userId, tentativaSchema.parse(req.body), 'CANCELADA');
-      return res.sendStatus(204);
-    } catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 400, error); }
+      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+      return res.json(await EmailSyncService.syncUser(req.userId));
+    } catch (error: any) {
+      return handleError(res, 500, error);
+    }
   }
-  static async estado(req: AuthRequest, res: Response) {
-    semCache(res);
-    if (!req.userId) return res.sendStatus(401);
-    try { return res.json(await EmailService.estado(req.userId)); }
-    catch (error) { logSeguro('oauth_falhou', error); return handleError(res, 500, error); }
+  /**
+   * Executa a sincronização automática disparada pelo scheduler.
+   *
+   * Essa rota não usa JWT de usuário porque representa uma chamada interna da
+   * infraestrutura. O acesso é protegido por um segredo enviado no header
+   * `Authorization`.
+   */
+  static async syncCron(req: any, res: Response) {
+    try {
+      const authHeader = String(req.header('authorization') ?? '');
+      const expected = `Bearer ${env.cronSecret}`;
+      if (!env.cronSecret || !timingSafeEqualString(authHeader, expected)) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      return res.json(await EmailSyncService.syncAllUsers());
+    } catch (error: any) {
+      return handleError(res, 500, error);
+    }
+  }
+
+  static async listMessages(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+      const integration = await EmailService.findIntegrationByUserId(req.userId);
+      if (!integration) return res.status(404).json({ error: 'Integração Gmail não encontrada' });
+
+      const accessToken = await EmailService.getValidAccessToken(integration);
+      const messages = await EmailService.listMessages(accessToken, 'in:inbox', 25);
+      return res.json(messages.map((message) => ({ id: message.id, threadId: message.threadId, snippet: message.snippet, internalDate: message.internalDate, labelIds: message.labelIds })));
+    } catch (error: any) {
+      return handleError(res, 500, error);
+    }
+  }
+
+  static async getMessage(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+      const integration = await EmailService.findIntegrationByUserId(req.userId);
+      if (!integration) return res.status(404).json({ error: 'Integração Gmail não encontrada' });
+
+      const accessToken = await EmailService.getValidAccessToken(integration);
+      return res.json(await EmailService.getMessage(accessToken, String(req.params.messageId)));
+    } catch (error: any) {
+      return handleError(res, 500, error);
+    }
   }
 }

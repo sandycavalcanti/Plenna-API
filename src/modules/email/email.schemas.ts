@@ -1,18 +1,30 @@
 import { z } from 'zod';
-
-export const GoogleTokenResponseSchema = z.object({
-  access_token: z.string().min(1).max(255),
-  refresh_token: z.string().min(1).max(255).optional(),
-  expires_in: z.number().int().positive().max(86400),
-  token_type: z.string().toLowerCase().pipe(z.literal('bearer')),
-  scope: z.string(),
+/**
+ * Schemas de validação dos dados recebidos de serviços externos.
+ *
+ * Respostas do Google, Gmail e providers externos não devem ser utilizadas
+ * diretamente sem validação de estrutura e tipos.
+ */
+export const googleTokenResponseSchema = z.object({
+  access_token: z.string(),
+  expires_in: z.number(),
+  refresh_token: z.string().optional(),
+  scope: z.string().optional(),
+  token_type: z.string().optional(),
 });
 
-export const stateSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-export const tentativaSchema = z.object({
-  tentativa: z.string().uuid(),
-  state: stateSchema,
-  segredo: stateSchema,
-}).strict();
-export const finalizarEmailSchema = tentativaSchema.extend({ code: z.string().min(1).max(4096) });
-export type FinalizarEmailDTO = z.infer<typeof finalizarEmailSchema>;
+export const gmailMessageSummarySchema = z.object({
+  id: z.string(),
+  threadId: z.string().optional(),
+  snippet: z.string().optional(),
+  internalDate: z.string().optional(),
+  labelIds: z.array(z.string()).default([]),
+});
+
+export const gmailMessageDetailSchema = gmailMessageSummarySchema.extend({
+  from: z.string().nullable().optional(),
+  to: z.string().nullable().optional(),
+  subject: z.string().nullable().optional(),
+  date: z.string().nullable().optional(),
+  bodyText: z.string().nullable().optional(),
+});

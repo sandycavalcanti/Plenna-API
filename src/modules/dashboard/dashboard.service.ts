@@ -1,7 +1,13 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type { GastoCategoriaDTO, GastoFormaPagamentoDTO, ImpulsividadeDTO, LimiteComprasDTO, TempoVsGastoDTO } from './dashboard.schemas.js';
-
+/**
+ * Calcula o intervalo UTC correspondente ao mês de referência.
+ *
+ * O intervalo é semiaberto (`>= início` e `< início do próximo mês`),
+ * evitando problemas com diferentes quantidades de dias e milissegundos
+ * no final do mês.
+ */
 function getMonthBounds(referenceDate: Date = new Date()) {
   const start = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1));
   const end = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth() + 1, 1));
@@ -20,17 +26,25 @@ function registrarIgnorados(indicador: string, quantidade: number) {
     console.info('dashboard_dados_insuficientes', { indicador, quantidade });
   }
 }
-
+/**
+ * Calcula os indicadores financeiros utilizados pelo dashboard.
+ *
+ * Apenas compras confirmadas participam das métricas de gasto, evitando
+ * que compras pendentes ou ignoradas alterem os indicadores do usuário.
+ */
 export class DashboardService {
   static async findGastosPorCategoria(userId: number): Promise<GastoCategoriaDTO[]> {
     const { start, end } = getMonthBounds();
 
     const compras = await prisma.tb_compra.findMany({
       where: {
-        usuario_id: userId,
-        compra_horario: {
-          gte: start,
-          lt: end,
+        tb_compra: {
+          usuario_id: userId,
+          compra_status: 'CONFIRMADA',
+          compra_horario: {
+            gte: start,
+            lt: end,
+          },
         },
       },
       select: {
@@ -47,18 +61,13 @@ export class DashboardService {
     const totalsByCategory = new Map<string, number>();
     let ignorados = 0;
 
-    for (const compra of compras) {
-      if (compra.compra_valor === null || compra.tb_compra_item.length === 0 ||
-          compra.tb_compra_item.some((item) => item.tb_categoria === null)) {
-        ignorados += 1;
-        continue;
-      }
-      for (const item of compra.tb_compra_item) {
-        if (item.tb_categoria === null) continue;
-        const categoriaNome = item.tb_categoria.categoria_nome;
-        const totalAtual = totalsByCategory.get(categoriaNome) ?? 0;
-        totalsByCategory.set(categoriaNome, totalAtual + toNumber(item.compra_item_valor));
-      }
+    for (const item of items) {
+      // Itens sem categoria nao entram nesta visao, pois o contrato do
+      // dashboard exige um nome real e nao devemos inventar uma categoria.
+      if (!item.tb_categoria) continue;
+      const categoriaNome = item.tb_categoria.categoria_nome;
+      const totalAtual = totalsByCategory.get(categoriaNome) ?? 0;
+      totalsByCategory.set(categoriaNome, totalAtual + toNumber(item.compra_item_valor));
     }
     registrarIgnorados('gastos_categoria', ignorados);
 
@@ -71,6 +80,7 @@ export class DashboardService {
     const compras = await prisma.tb_compra.findMany({
       where: {
         usuario_id: userId,
+        compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
           lt: end,
@@ -90,11 +100,7 @@ export class DashboardService {
     let ignorados = 0;
 
     for (const compra of compras) {
-      if (compra.compra_valor === null || compra.tb_forma_pagamento === null) {
-        ignorados += 1;
-        continue;
-      }
-      const formaPagamentoNome = compra.tb_forma_pagamento.forma_pagamento_nome;
+      const formaPagamentoNome = compra.tb_forma_pagamento?.forma_pagamento_nome ?? 'Sem forma de pagamento';
       const totalAtual = totalsByFormaPagamento.get(formaPagamentoNome) ?? 0;
       totalsByFormaPagamento.set(formaPagamentoNome, totalAtual + toNumber(compra.compra_valor));
     }
@@ -109,6 +115,7 @@ export class DashboardService {
     const grupos = await prisma.tb_compra.groupBy({
       where: {
         usuario_id: userId,
+        compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
           lt: end,
@@ -138,6 +145,7 @@ export class DashboardService {
     const grupos = await prisma.tb_compra.groupBy({
       where: {
         usuario_id: userId,
+        compra_status: 'CONFIRMADA',
         compra_horario: {
           gte: start,
           lt: end,
@@ -170,6 +178,8 @@ export class DashboardService {
   static async findTempoVsGasto(userId: number): Promise<TempoVsGastoDTO[]> {
     const { start, end } = getMonthBounds();
 
+    // As consultas são independentes e executadas em paralelo para reduzir
+    // o tempo total necessário para montar o indicador.
     const [temposUso, gastosPorApp] = await Promise.all([
       prisma.tb_tempo_uso.findMany({
         where: {
@@ -187,11 +197,12 @@ export class DashboardService {
       }),
       prisma.tb_compra.groupBy({
         where: {
-          usuario_id: userId,
-          compra_horario: {
-            gte: start,
-            lt: end,
-          },
+        usuario_id: userId,
+        compra_status: 'CONFIRMADA',
+        compra_horario: {
+          gte: start,
+          lt: end,
+        },
         },
         by: ['compra_fonte'],
         _sum: {
@@ -220,6 +231,7 @@ export class DashboardService {
     let comprasIgnoradas = 0;
 
     for (const gasto of gastosPorApp) {
+      if (!gasto.compra_fonte) continue;
       if (gasto.compra_fonte === null || gasto._sum.compra_valor === null) {
         comprasIgnoradas += gasto._count._all;
         continue;
