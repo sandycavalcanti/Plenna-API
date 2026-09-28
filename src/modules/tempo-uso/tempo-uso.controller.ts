@@ -5,6 +5,11 @@ import { TempoUsoService } from './tempo-uso.service.js';
 import { handleError } from '../../utils/handleError.js';
 
 export class TempoUsoController {
+  static listarAplicativosCompra(req: AuthRequest, res: Response) {
+    if (!req.userId) return res.status(401).json({ error: 'Token inv\u00e1lido' });
+    return res.json(TempoUsoService.listarAplicativosCompra());
+  }
+
   static async create(req: AuthRequest, res: Response) {
     try {
       if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
