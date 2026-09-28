@@ -1,3 +1,4 @@
+import { segundosDoRegistro } from '../tempo-uso/tempo-uso.duracao.js';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type { GastoCategoriaDTO, GastoFormaPagamentoDTO, ImpulsividadeDTO, LimiteComprasDTO, TempoVsGastoDTO } from './dashboard.schemas.js';
@@ -115,13 +116,22 @@ export class DashboardService {
     const totalsByFormaPagamento = new Map<string, number>();
     let ignorados = 0;
 
-    for (const compra of compras) {
-      const formaPagamentoNome = compra.tb_forma_pagamento?.forma_pagamento_nome ?? 'Sem forma de pagamento';
+     for (const compra of compras) {
+      if (compra.compra_valor === null) {
+        ignorados += 1;
+        continue;
+      }
+
+      const formaPagamentoNome =
+        compra.tb_forma_pagamento?.forma_pagamento_nome ?? 'Sem forma de pagamento';
+
       const totalAtual = totalsByFormaPagamento.get(formaPagamentoNome) ?? 0;
-      totalsByFormaPagamento.set(formaPagamentoNome, totalAtual + toNumber(compra.compra_valor));
+      totalsByFormaPagamento.set(
+        formaPagamentoNome,
+        totalAtual + toNumber(compra.compra_valor),
+      );
     }
     registrarIgnorados('gastos_forma_pagamento', ignorados);
-
     return [...totalsByFormaPagamento.entries()].map(([forma_pagamento_nome, total]) => ({ forma_pagamento_nome, total })).sort((left, right) => right.total - left.total);
   }
 
@@ -237,9 +247,8 @@ export class DashboardService {
 
     for (const tempo of temposUso) {
       const totalAtual = tempoTotalPorApp.get(tempo.tempo_uso_nome) ?? 0;
-      const minutos = tempo.tempo_uso_duracao_segundos !== null
-        ? tempo.tempo_uso_duracao_segundos / 60
-        : tempo.tempo_uso_minutos === null ? null : toNumber(tempo.tempo_uso_minutos);
+      const segundos = segundosDoRegistro(tempo);
+      const minutos = segundos === null ? null : segundos / 60;
       if (minutos === null) {
         temposIgnorados += 1;
         continue;

@@ -3,12 +3,28 @@ export type AplicativoCompra = Readonly<{
   nomeApp: string;
 }>;
 
-// Fonte canônica da API. Permanece vazia até a aprovação dos package IDs reais.
-// Não adicionar nomes ou IDs presumidos neste catálogo.
-export const APLICATIVOS_COMPRA: readonly AplicativoCompra[] = Object.freeze([]);
+// Fonte canônica da API.
+// Package IDs incluídos somente após validação em dispositivo Android real.
+export const APLICATIVOS_COMPRA: readonly AplicativoCompra[] = Object.freeze([
+  {
+    packageId: 'com.shopee.br',
+    nomeApp: 'Shopee',
+  },
+  {
+    packageId: 'com.mercadolibre',
+    nomeApp: 'Mercado Livre',
+  },
+  {
+    packageId: 'com.zzkko',
+    nomeApp: 'SHEIN',
+  },
+]);
 
 const aplicativosPorPackageId = new Map(
-  APLICATIVOS_COMPRA.map((aplicativo) => [aplicativo.packageId, aplicativo]),
+  APLICATIVOS_COMPRA.map((aplicativo) => [
+    aplicativo.packageId,
+    aplicativo,
+  ]),
 );
 
 export function encontrarAplicativoCompra(packageId: string) {
