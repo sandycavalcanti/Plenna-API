@@ -1,10 +1,15 @@
 import { prisma } from '../../lib/prisma.js';
+import { APLICATIVOS_COMPRA } from './aplicativos-compra.catalog.js';
 import { CreateTempoUsoDTO, UpdateTempoUsoDTO } from './tempo-uso.schemas.js';
 import { AppError } from '../../errors/AppError.js';
 import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 import { CONSENTIMENTO_CODIGOS } from '../consentimento/consentimento.constants.js';
 
 export class TempoUsoService {
+  static listarAplicativosCompra() {
+    return { versao: 1, aplicativos: APLICATIVOS_COMPRA };
+  }
+
   static async create(userId: number, data: CreateTempoUsoDTO) {
     const permitido = await ConsentimentoService.temConsentimentoAtivo(userId, CONSENTIMENTO_CODIGOS.MONITORAMENTO_TEMPO_USO);
     if (!permitido) {

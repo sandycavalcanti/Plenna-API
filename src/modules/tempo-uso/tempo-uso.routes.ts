@@ -6,6 +6,7 @@ export const tempoUsoRouter = Router();
 
 tempoUsoRouter.post('/', authMiddleware, TempoUsoController.create);
 tempoUsoRouter.get('/', authMiddleware, TempoUsoController.findAllByUserId);
+tempoUsoRouter.get('/aplicativos', authMiddleware, TempoUsoController.listarAplicativosCompra);
 tempoUsoRouter.get('/:id', authMiddleware, TempoUsoController.findById);
 tempoUsoRouter.put('/:id', authMiddleware, TempoUsoController.update);
 tempoUsoRouter.delete('/:id', authMiddleware, TempoUsoController.delete);
