@@ -1,0 +1,326 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+process.env.DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://localhost:5432/plenna_test';
+process.env.DIRECT_URL = process.env.DIRECT_URL ?? 'postgresql://localhost:5432/plenna_test';
+process.env.REQUESTY_API_KEY = process.env.REQUESTY_API_KEY ?? 'requesty-key';
+
+const axios = (await import('axios')).default;
+const { RequestyProvider } = await import('../dist/src/modules/email/requesty.provider.js');
+const { mergeExtractedPurchase, needsAiEnrichment, buildPurchaseExtractionPrompt, normalizePositiveComponentPrices, reconcilePurchaseTotal } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
+
+const email = (textBody = '', overrides = {}) => ({
+  id: 'enrichment-test',
+  threadId: null,
+  subject: 'Pedido confirmado',
+  from: 'Loja Teste <vendas@example.com>',
+  to: 'cliente@example.com',
+  snippet: 'Pagamento aprovado',
+  internalDate: null,
+  labelIds: [],
+  textBody,
+  htmlBody: null,
+  links: [],
+  attachments: [],
+  ...overrides,
+});
+
+const purchase = (overrides = {}) => ({
+  establishment: null,
+  orderNumber: null,
+  totalAmount: null,
+  paymentMethod: { rawName: null },
+  items: [],
+  invoice: null,
+  evidence: [],
+  ...overrides,
+});
+
+const aiPurchase = (overrides = {}) => ({
+  establishment: null,
+  orderNumber: null,
+  totalAmount: null,
+  paymentMethodName: null,
+  items: [],
+  ...overrides,
+});
+
+test('Requesty extrai uma compra completa pelo contrato dedicado', async () => {
+  const originalPost = axios.post;
+  const originalKey = process.env.REQUESTY_API_KEY;
+  process.env.REQUESTY_API_KEY = 'key';
+  let request;
+  axios.post = async (_url, body) => {
+    request = body;
+    return {
+      data: {
+        choices: [{ message: { content: JSON.stringify({
+          establishment: 'Loja Exemplo',
+          orderNumber: 'ABC123',
+          totalAmount: 89.8,
+          paymentMethodName: 'Cartão de crédito',
+          items: [{ name: 'Camiseta', quantity: 2, unitPrice: 39.9, totalPrice: 79.8, categoryName: null }],
+        }) } }],
+      },
+    };
+  };
+
+  const result = await new RequestyProvider().extractPurchase(buildPurchaseExtractionPrompt(email('Total da compra: R$ 89,80')));
+
+  assert.equal(result.totalAmount, 89.8);
+  assert.equal(result.items[0].name, 'Camiseta');
+  assert.match(request.messages[1].content, /EXTRAINDO/);
+  assert.match(request.messages[1].content, /totalAmount/);
+  axios.post = originalPost;
+  process.env.REQUESTY_API_KEY = originalKey;
+});
+
+test('prompt envia somente subject, from, snippet e textBody', () => {
+  const prompt = buildPurchaseExtractionPrompt(email('Texto útil', {
+    subject: 'Assunto',
+    from: 'Loja <loja@example.com>',
+    snippet: 'Resumo',
+    htmlBody: '<script>segredo</script>',
+    attachments: [{ attachmentId: 'att', filename: 'nota.xml', mimeType: 'application/xml', size: 1 }],
+  }));
+  assert.match(prompt, /subject: Assunto/);
+  assert.match(prompt, /from: Loja <loja@example.com>/);
+  assert.match(prompt, /snippet: Resumo/);
+  assert.match(prompt, /textBody: Texto útil/);
+  assert.doesNotMatch(prompt, /segredo|nota.xml|attachmentId/);
+});
+
+test('Requesty aplica defaults nulos e aceita purchase parcial válida', async () => {
+  const originalPost = axios.post;
+  axios.post = async () => ({ data: { choices: [{ message: { content: JSON.stringify({ totalAmount: 47.99 }) } }] } });
+  const result = await new RequestyProvider().extractPurchase('texto');
+  assert.deepEqual(result, {
+    establishment: null,
+    orderNumber: null,
+    totalAmount: 47.99,
+    paymentMethodName: null,
+    items: [],
+  });
+  axios.post = originalPost;
+});
+
+test('Requesty rejeita respostas inválidas', async () => {
+  const originalPost = axios.post;
+  const invalidResponses = [
+    'not-json',
+    JSON.stringify({ unexpected: true }),
+    JSON.stringify({ totalAmount: -1 }),
+    JSON.stringify({ items: [{ name: 'Item', quantity: -2 }] }),
+    JSON.stringify({ items: [{ name: 42 }] }),
+    JSON.stringify({ establishment: 'x'.repeat(121) }),
+  ];
+
+  for (const content of invalidResponses) {
+    axios.post = async () => ({ data: { choices: [{ message: { content } }] } });
+    await assert.rejects(() => new RequestyProvider().extractPurchase('texto'));
+  }
+  axios.post = originalPost;
+});
+
+test('Requesty aceita todos os campos nulos e resposta completa', async () => {
+  const originalPost = axios.post;
+  axios.post = async () => ({ data: { choices: [{ message: { content: JSON.stringify({
+    establishment: null,
+    orderNumber: null,
+    totalAmount: null,
+    paymentMethodName: null,
+    items: [],
+  }) } }] } });
+  const empty = await new RequestyProvider().extractPurchase('texto');
+  assert.equal(empty.totalAmount, null);
+
+  axios.post = async () => ({ data: { choices: [{ message: { content: JSON.stringify({
+    establishment: 'Loja',
+    orderNumber: 'ABC123',
+    totalAmount: 89.8,
+    paymentMethodName: 'Pix',
+    items: [{ name: 'Produto', quantity: 1, unitPrice: 89.8, totalPrice: null, categoryName: null }],
+  }) } }] } });
+  const complete = await new RequestyProvider().extractPurchase('texto');
+  assert.equal(complete.orderNumber, 'ABC123');
+  assert.equal(complete.items[0].quantity, 1);
+  axios.post = originalPost;
+});
+
+test('falha HTTP do Requesty não vira dado extraído', async () => {
+  const originalPost = axios.post;
+  axios.post = async () => { throw new Error('timeout'); };
+  await assert.rejects(() => new RequestyProvider().extractPurchase('texto'), /timeout/);
+  axios.post = originalPost;
+});
+
+test('needsAiEnrichment identifica lacunas e compra completa', () => {
+  assert.equal(needsAiEnrichment(purchase()), true);
+  assert.equal(needsAiEnrichment(purchase({
+    establishment: 'C&A',
+    orderNumber: 'ABC123',
+    totalAmount: 47.99,
+    paymentMethod: { rawName: 'Pix' },
+    items: [{ name: 'Item', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  })), true);
+  assert.equal(needsAiEnrichment(purchase({
+    establishment: 'C&A',
+    orderNumber: 'ABC123',
+    totalAmount: 47.99,
+    paymentMethod: { rawName: 'Pix' },
+    items: [{ name: 'Item', quantity: 1, unitPrice: 47.99, totalPrice: null, categoryName: null }],
+  })), false);
+});
+
+test('merge preserva determinístico em conflito e não duplica evidência', () => {
+  const deterministic = purchase({
+    establishment: 'C&A',
+    orderNumber: 'v91329869cea-01',
+    totalAmount: 47.99,
+    paymentMethod: { rawName: 'Pix' },
+    items: [{ name: 'Calça', quantity: 1, unitPrice: 59.99, totalPrice: null, categoryName: null }],
+    evidence: [{ field: 'totalAmount', source: 'EMAIL_TEXT', confidence: null, rawLabel: 'Você pagou', context: 'Você pagou R$ 47,99' }],
+  });
+  const result = mergeExtractedPurchase(deterministic, aiPurchase({
+    establishment: 'Outro',
+    orderNumber: 'OUTRO',
+    totalAmount: 59.99,
+    paymentMethodName: 'Cartão',
+    items: [{ name: 'Outra', quantity: 1, unitPrice: 59.99, totalPrice: null, categoryName: null }],
+  }));
+  assert.equal(result.totalAmount, 47.99);
+  assert.equal(result.paymentMethod.rawName, 'Pix');
+  assert.equal(result.items[0].name, 'Calça');
+  assert.equal(result.evidence.filter((item) => item.source === 'AI').length, 0);
+  assert.equal(result.evidence.length, 1);
+});
+
+test('merge usa IA somente para preencher lacunas e registra evidência usada', () => {
+  const result = mergeExtractedPurchase(purchase({ establishment: 'Loja Exemplo', totalAmount: 89.8 }), aiPurchase({
+    establishment: 'Outro',
+    orderNumber: 'ABC123',
+    totalAmount: 10,
+    paymentMethodName: 'Cartão de crédito',
+    items: [{ name: 'Camiseta', quantity: 2, unitPrice: 39.9, totalPrice: 79.8, categoryName: null }],
+  }));
+  assert.equal(result.establishment, 'Loja Exemplo');
+  assert.equal(result.orderNumber, 'ABC123');
+  assert.equal(result.totalAmount, 89.8);
+  assert.equal(result.paymentMethod.rawName, 'Cartão de crédito');
+  assert.equal(result.items[0].totalPrice, 79.8);
+  assert.deepEqual(result.evidence.map((item) => item.field), ['orderNumber', 'paymentMethod', 'items']);
+  assert.ok(result.evidence.every((item) => item.source === 'AI' && item.confidence === null));
+});
+
+test('merge preserva itens determinísticos e aceita itens AI quando lista está vazia', () => {
+  const deterministicItems = purchase({ items: [{ name: 'Existente', quantity: null, unitPrice: null, totalPrice: null, categoryName: null }] });
+  const ai = aiPurchase({ items: [{ name: 'Novo', quantity: 1, unitPrice: 10, totalPrice: null, categoryName: null }] });
+  assert.equal(mergeExtractedPurchase(deterministicItems, ai).items[0].name, 'Existente');
+  assert.equal(mergeExtractedPurchase(purchase(), ai).items[0].name, 'Novo');
+});
+
+test('merge completa item deterministico incompleto quando o nome corresponde', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Produto X', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [{ name: 'produto x', quantity: 1, unitPrice: 59.90, totalPrice: 59.90, categoryName: null }],
+  }));
+
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[0].unitPrice, 59.90);
+  assert.equal(result.items[0].totalPrice, 59.90);
+});
+
+test('merge nao substitui item deterministico por item AI diferente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Produto X', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [{ name: 'Produto Y', quantity: 1, unitPrice: 59.90, totalPrice: 59.90, categoryName: null }],
+  }));
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[0].unitPrice, null);
+});
+
+test('reconcilia produto e frete positivos contra o total da compra', () => {
+  assert.equal(reconcilePurchaseTotal(89.80, [
+    { name: 'Camiseta', quantity: 2, unit: null, unitPrice: 39.90, totalPrice: 79.80, categoryName: null },
+    { name: 'Frete', quantity: 1, unit: null, unitPrice: 10, totalPrice: 10, categoryName: 'Frete/Taxas' },
+  ], null), true);
+});
+
+test('reconcilia taxa positiva com quantidade ausente como uma unidade', () => {
+  assert.equal(reconcilePurchaseTotal(262.80, [
+    { name: 'Jaqueta Jeans Oversized', quantity: 1, unit: null, unitPrice: 249.90, totalPrice: 249.90, categoryName: null },
+    { name: 'Taxa de entrega', quantity: null, unit: null, unitPrice: 12.90, totalPrice: 12.90, categoryName: 'Frete/Taxas' },
+  ], null), true);
+});
+
+test('desconto explicito participa da reconciliacao sem virar item', () => {
+  assert.equal(reconcilePurchaseTotal(90, [
+    { name: 'Produtos', quantity: 1, unit: null, unitPrice: 100, totalPrice: 100, categoryName: null },
+    { name: 'Frete', quantity: 1, unit: null, unitPrice: 10, totalPrice: 10, categoryName: 'Frete/Taxas' },
+  ], 20), true);
+});
+
+test('diferenca sem componente explicito nao e reconciliada', () => {
+  assert.equal(reconcilePurchaseTotal(89.80, [
+    { name: 'Produtos', quantity: 1, unit: null, unitPrice: 79.80, totalPrice: 79.80, categoryName: null },
+  ], null), false);
+});
+test('merge encontra produto correspondente entre varios itens da IA e anexa componente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Jaqueta Jeans Oversized', quantity: null, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [
+      { name: 'Jaqueta Jeans Oversized', quantity: 1, unitPrice: 249.9, totalPrice: 249.9, categoryName: null },
+      { name: 'Taxa de entrega', quantity: 1, unitPrice: 12.9, totalPrice: 12.9, categoryName: 'Frete/Taxas' },
+    ],
+  }));
+
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0].unitPrice, 249.9);
+  assert.equal(result.items[1].name, 'Taxa de entrega');
+});
+
+test('normaliza preco de taxa explicitamente associada no texto', () => {
+  const result = normalizePositiveComponentPrices(purchase({
+    items: [{ name: 'Taxa de entrega', quantity: 1, unitPrice: null, totalPrice: null, categoryName: 'Frete/Taxas' }],
+  }), 'Taxa de entrega\nR$ 12,90\nTotal\nR$ 262,80');
+
+  assert.equal(result.items[0].quantity, 1);
+  assert.equal(result.items[0].unitPrice, 12.9);
+  assert.equal(result.items[0].totalPrice, 12.9);
+});
+
+test('merge completa taxa deterministica sem duplicar componente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Taxa de servico', quantity: 1, unitPrice: null, totalPrice: null, categoryName: 'Frete/Taxas' }],
+  }), aiPurchase({
+    items: [{ name: 'Taxa de servico', quantity: 1, unitPrice: 9.9, totalPrice: 9.9, categoryName: 'Frete/Taxas' }],
+  }));
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].unitPrice, 9.9);
+});
+
+test('total da IA pode substituir somente fallback quando sustentado pelo texto', () => {
+  const result = mergeExtractedPurchase(
+    purchase({ totalAmount: 189.9, totalAmountSource: 'CLASSIFICATION_FALLBACK' }),
+    aiPurchase({ totalAmount: 184.8 }),
+    'Produto R$ 189,90 Total final R$ 184,80',
+  );
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'AI');
+});
+
+test('total semantico deterministico permanece acima da IA', () => {
+  const result = mergeExtractedPurchase(
+    purchase({ totalAmount: 184.8, totalAmountSource: 'DETERMINISTIC_SEMANTIC' }),
+    aiPurchase({ totalAmount: 189.9 }),
+    'Total final R$ 184,80 Produto R$ 189,90',
+  );
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'DETERMINISTIC_SEMANTIC');
+});

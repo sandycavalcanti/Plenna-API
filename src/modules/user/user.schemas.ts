@@ -2,13 +2,21 @@ import { z } from "zod";
 
 export const createUserSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(6),
-  name: z.string().min(2)
+  senha: z.string().min(6),
+  nome: z.string().min(2)
 });
 
 export const updateUserSchema = z.object({
-  name: z.string().min(2).optional(),
-  status: z.boolean().optional()
+  nome: z.string().min(2).optional(),
+  telefone: z.string().optional(),
+  dataNascimento: z.string().optional(),
+  limiteCompra: z.number().optional(),
+  metaValorMensal: z.number().positive().optional(),
+  metaValorCompra: z.number().optional(),
+  metaTempo: z.number().int().optional(),
+  gatilhoConsumo: z.string().optional(),
+  tempoTela: z.string().optional(),
+  incomodoConsumo: z.string().optional()
 });
 
 export type CreateUserDTO = z.infer<typeof createUserSchema>;

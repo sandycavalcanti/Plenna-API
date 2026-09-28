@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Conectando...</title>
+    <script>
+      // tenta abrir o app
+      window.location.href = "plenna://oauth-success";
+
+      // fallback caso não abra
+      setTimeout(() => {
+        document.body.innerHTML =
+          "<h2>Conta conectada com sucesso 🎉</h2><p>Você pode voltar para o app.</p>";
+      }, 1500);
+    </script>
+  </head>
+  <body>
+    <p>Conectando ao aplicativo...</p>
+  </body>
+</html>

@@ -1,0 +1,146 @@
+import { CompraService } from './compra.service.js';
+import { createCompraSchema, updateCompraSchema } from './compra.schemas.js';
+import { handleError } from '../../utils/handleError.js';
+/**
+ * Controla as operações HTTP relacionadas às compras.
+ *
+ * O usuário das operações é obtido do JWT por meio de `req.userId`,
+ * impedindo que o cliente escolha arbitrariamente o proprietário de uma compra.
+ * As regras de negócio permanecem concentradas em `CompraService`.
+ */
+export class CompraController {
+    static async create(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            const data = createCompraSchema.parse(req.body);
+            return res.status(201).json(await CompraService.create(req.userId, data));
+        }
+        catch (error) {
+            return handleError(res, 400, error);
+        }
+    }
+    static async update(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            const data = updateCompraSchema.parse(req.body);
+            return res.json(await CompraService.update(req.userId, Number(req.params.compraId), data));
+        }
+        catch (error) {
+            return handleError(res, 400, error);
+        }
+    }
+    /**
+     * Confirma uma compra detectada automaticamente por e-mail.
+     *
+     * O usuário pode enviar correções ou complementar os dados extraídos
+     * automaticamente antes da confirmação definitiva da compra.
+     */
+    static async confirm(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            const data = updateCompraSchema.partial().parse(req.body);
+            return res.json(await CompraService.confirm(req.userId, Number(req.params.compraId), data));
+        }
+        catch (error) {
+            return handleError(res, 400, error);
+        }
+    }
+    /**
+     * Ignora uma compra automática pendente que o usuário não deseja manter.
+     *
+     * A compra permanece registrada para deduplicação, mas deixa de participar
+     * do fluxo normal de confirmação.
+     */
+    static async ignore(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            await CompraService.ignore(req.userId, Number(req.params.compraId));
+            return res.status(204).send();
+        }
+        catch (error) {
+            return handleError(res, 400, error);
+        }
+    }
+    static async findAllByUserId(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            return res.json(await CompraService.findAllByUserId(req.userId));
+        }
+        catch (error) {
+            return handleError(res, 500, error);
+        }
+    }
+    /**
+     * Retorna as compras que ainda aguardam confirmação do usuário.
+     */
+    static async findPendingByUserId(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            return res.json(await CompraService.findPendingByUserId(req.userId));
+        }
+        catch (error) {
+            return handleError(res, 500, error);
+        }
+    }
+    static async findById(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            return res.json(await CompraService.findById(req.userId, Number(req.params.compraId)));
+        }
+        catch (error) {
+            return handleError(res, 404, error);
+        }
+    }
+    /**
+     * Exclui uma compra pertencente ao usuário autenticado.
+     *
+     * A autorização não usa nenhum identificador enviado no corpo ou na query:
+     * o service recebe exclusivamente o req.userId preenchido pelo JWT.
+     * O status 204 informa sucesso sem devolver dados desnecessários da compra.
+     */
+    static async delete(req, res) {
+        try {
+            // Sem userId não existe contexto seguro para validar ownership.
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            // A conversão mantém o mesmo padrão das demais operações por ID.
+            await CompraService.delete(req.userId, Number(req.params.compraId));
+            return res.status(204).send();
+        }
+        catch (error) {
+            // AppError preserva o 404 de compra inexistente ou de outro usuário.
+            return handleError(res, 500, error);
+        }
+    }
+    /**
+     * Remove um único item de uma compra do usuário autenticado.
+     * A regra de ownership e a regra do último item permanecem no service,
+     * mantendo o controller responsável apenas pelo contrato HTTP.
+     */
+    static async deleteItem(req, res) {
+        try {
+            // O usuário precisa vir do JWT para impedir autorização por ID enviado
+            // pelo cliente em corpo, query string ou parâmetro de rota.
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            // O service devolve a compra atualizada porque o total muda após a remoção.
+            const compra = await CompraService.deleteItem(req.userId, Number(req.params.compraId), Number(req.params.compraItemId));
+            // Ao remover o último item, o service remove a compra inteira e não há
+            // recurso atualizado para serializar; nesse caso respondemos 204.
+            if (!compra)
+                return res.status(204).send();
+            return res.json(compra);
+        }
+        catch (error) {
+            // AppError preserva respostas 404/409 sem expor detalhes internos.
+            return handleError(res, 500, error);
+        }
+    }
+}

@@ -1,0 +1,123 @@
+import { Prisma } from '@prisma/client';
+import type { ExtractedPurchaseItem } from './email-contracts.js';
+
+export type PurchaseItemCategoryRepository = {
+  tb_categoria: {
+    findMany(args: {
+      where: { categoria_nome: { equals: string; mode: 'insensitive' } };
+      select: { categoria_id: true };
+    }): Promise<Array<{ categoria_id: number }>>;
+  };
+};
+
+export type PersistedPurchaseItem = {
+  categoria_id: number | null;
+  compra_item_nome: string;
+  compra_item_valor: Prisma.Decimal;
+  compra_item_quantidade: Prisma.Decimal | null;
+  compra_item_unidade_medida: string | null;
+};
+
+type PersistablePurchaseItemInput = Pick<ExtractedPurchaseItem, 'name' | 'unitPrice'> & {
+  name: string;
+  unitPrice: number;
+};
+
+/**
+ * Mantém em um único lugar a regra mínima para um item chegar ao banco.
+ * Nome e preço unitário válido são obrigatórios; quantidade e total do item
+ * podem permanecer ausentes conforme a evidência disponível no e-mail.
+ */
+export function isPersistablePurchaseItem(
+  item: Pick<ExtractedPurchaseItem, 'name' | 'unitPrice'>,
+): item is PersistablePurchaseItemInput {
+  const name = item.name?.trim();
+  return Boolean(name && item.unitPrice !== null && Number.isFinite(item.unitPrice) && item.unitPrice > 0);
+}
+
+/**
+ * Converte um item extraido em dados aceitos por tb_compra_item.
+ * O valor persistido e sempre o unitPrice; totalPrice nao substitui o preco
+ * unitario porque possui semantica diferente quando ha quantidade.
+ */
+export async function buildPersistedPurchaseItems(
+  items: ExtractedPurchaseItem[],
+  repository: PurchaseItemCategoryRepository,
+): Promise<PersistedPurchaseItem[]> {
+  const persisted: PersistedPurchaseItem[] = [];
+
+  for (const item of items) {
+    if (!isPersistablePurchaseItem(item)) continue;
+    const name = item.name.trim();
+    const unitPrice = item.unitPrice;
+
+    let categoriaId: number | null = null;
+    const categoryName = item.categoryName?.trim();
+    if (categoryName) {
+      const categories = await repository.tb_categoria.findMany({
+        where: { categoria_nome: { equals: categoryName, mode: 'insensitive' } },
+        select: { categoria_id: true },
+      });
+      // Mais de um resultado torna a categoria ambigua; o item continua
+      // valido, mas sem FK inventada ou escolhida arbitrariamente.
+      if (categories.length === 1) categoriaId = categories[0].categoria_id;
+    }
+
+    // Quantidades fiscais podem ser fracionarias; somente ausencia, NaN ou
+    // valor nao positivo invalida a quantidade, sem transforma-la em inteiro.
+    const quantity = item.quantity !== null && Number.isFinite(item.quantity) && item.quantity > 0
+      ? new Prisma.Decimal(item.quantity.toString())
+      : null;
+    const unit = item.unit?.trim() ? item.unit.trim().slice(0, 10) : null;
+
+    persisted.push({
+      categoria_id: categoriaId,
+      // O campo legado possui limite de 45 caracteres; truncar de forma
+      // deterministica evita que um email invalido interrompa a sincronizacao.
+      compra_item_nome: name.slice(0, 45),
+      compra_item_valor: new Prisma.Decimal(unitPrice.toFixed(2)),
+      compra_item_quantidade: quantity,
+      compra_item_unidade_medida: unit,
+    });
+  }
+
+  return persisted;
+}
+
+export function buildNestedPurchaseItems(items: PersistedPurchaseItem[]) {
+  return items.map((item) => ({
+    categoria_id: item.categoria_id,
+    compra_item_nome: item.compra_item_nome,
+    compra_item_valor: item.compra_item_valor,
+    compra_item_quantidade: item.compra_item_quantidade,
+    compra_item_unidade_medida: item.compra_item_unidade_medida,
+  }));
+}
+
+/**
+ * Impede que um email reconciliado substitua ou duplique os itens ja
+ * persistidos. A primeira carga e a unica oportunidade automatica de inserir.
+ */
+export function shouldPersistPurchaseItems(existingItemCount: number, items: PersistedPurchaseItem[]) {
+  return existingItemCount === 0 && items.length > 0;
+}
+
+export type PurchaseItemWriteRepository = {
+  tb_compra_item: {
+    createMany(args: { data: Array<PersistedPurchaseItem & { compra_id: number }> }): Promise<unknown>;
+  };
+};
+
+/** Persiste itens somente quando o chamador ja decidiu que a compra nao possui itens. */
+export async function persistPurchaseItems(
+  compraId: number,
+  items: PersistedPurchaseItem[],
+  repository: PurchaseItemWriteRepository,
+) {
+  if (items.length === 0) return false;
+
+  await repository.tb_compra_item.createMany({
+    data: items.map((item) => ({ ...item, compra_id: compraId })),
+  });
+  return true;
+}

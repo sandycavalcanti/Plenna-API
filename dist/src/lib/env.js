@@ -1,0 +1,108 @@
+import "dotenv/config";
+/**
+ * Recupera uma variável de ambiente obrigatória.
+ *
+ * Configurações essenciais são validadas durante a inicialização para
+ * evitar que a aplicação descubra a ausência delas somente em runtime.
+ */
+function requireEnv(name) {
+    const value = process.env[name];
+    if (!value || value.trim().length === 0) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
+}
+const nodeEnv = process.env.NODE_ENV ?? "development";
+const portRaw = process.env.PORT ?? "3000";
+const port = Number(portRaw);
+// Os limites da sincronização são configuráveis para controlar a quantidade
+// de trabalho realizada por uma única execução serverless.
+const emailSyncInitialMessagesRaw = process.env.EMAIL_SYNC_INITIAL_MESSAGES ?? "30";
+const emailSyncBatchSizeRaw = process.env.EMAIL_SYNC_BATCH_SIZE ?? "25";
+const emailSyncMaxMessagesPerRunRaw = process.env.EMAIL_SYNC_MAX_MESSAGES_PER_RUN ?? "25";
+const emailSyncMaxUsersPerRunRaw = process.env.EMAIL_SYNC_MAX_USERS_PER_RUN ?? "10";
+const emailPurchaseReconciliationWindowHoursRaw = process.env.EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS ?? "48";
+const emailAttachmentMaxBytesRaw = process.env.EMAIL_ATTACHMENT_MAX_BYTES ?? "10485760";
+const emailFiscalLinkFetchEnabledRaw = process.env.EMAIL_FISCAL_LINK_FETCH_ENABLED ?? "false";
+const emailFiscalLinkMaxBytesRaw = process.env.EMAIL_FISCAL_LINK_MAX_BYTES ?? "5242880";
+const emailFiscalLinkTimeoutMsRaw = process.env.EMAIL_FISCAL_LINK_TIMEOUT_MS ?? "8000";
+const emailFiscalLinkMaxRedirectsRaw = process.env.EMAIL_FISCAL_LINK_MAX_REDIRECTS ?? "3";
+const emailFiscalLinkMaxPerEmailRaw = process.env.EMAIL_FISCAL_LINK_MAX_PER_EMAIL ?? "3";
+const requestyTimeoutMsRaw = process.env.REQUESTY_TIMEOUT_MS ?? "8000";
+const requestyRateLimitCooldownMsRaw = process.env.REQUESTY_RATE_LIMIT_COOLDOWN_MS ?? "60000";
+const aiProvider = process.env.AI_PROVIDER ?? "requesty";
+const codexLocalTimeoutMsRaw = process.env.CODEX_LOCAL_TIMEOUT_MS ?? "30000";
+const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
+if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid PORT value: ${portRaw}`);
+}
+/**
+ * Converte e valida configurações que precisam ser inteiros positivos,
+ * como limites de lote, quantidade de usuários e timeouts.
+ */
+function requirePositiveInteger(name, raw) {
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0) {
+        throw new Error(`Invalid ${name} value: ${raw}`);
+    }
+    return value;
+}
+function requireNonNegativeInteger(name, raw) {
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+        throw new Error(`Invalid ${name} value: ${raw}`);
+    }
+    return value;
+}
+function parseStrictBoolean(name, raw) {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === 'true')
+        return true;
+    if (normalized === 'false')
+        return false;
+    throw new Error(`Invalid ${name} value: ${raw}`);
+}
+/**
+ * Centraliza as configurações da aplicação.
+ *
+ * Os demais módulos consomem este objeto em vez de acessar `process.env`
+ * diretamente, mantendo defaults e validações em um único ponto.
+ */
+export const env = {
+    nodeEnv,
+    isProduction: nodeEnv === "production",
+    // Segredo independente, com ao menos 32 bytes; nunca versionar seu valor.
+    rateLimitHmacKey: process.env.RATE_LIMIT_HMAC_KEY,
+    port,
+    dbUrl: process.env.DIRECT_URL ?? requireEnv("DATABASE_URL"),
+    apiBaseUrl: process.env.API_BASE_URL ?? "https://plenna-api-orpin.vercel.app",
+    googleClientId: requireEnv("GOOGLE_CLIENT_ID"),
+    googleClientSecret: requireEnv("GOOGLE_CLIENT_SECRET"),
+    googleRedirectUri: requireEnv("GOOGLE_REDIRECT_URI"),
+    emailSyncEnabled: parseStrictBoolean("EMAIL_SYNC_ENABLED", emailSyncEnabledRaw),
+    emailSyncInitialMessages: requirePositiveInteger("EMAIL_SYNC_INITIAL_MESSAGES", emailSyncInitialMessagesRaw),
+    emailSyncBatchSize: requirePositiveInteger("EMAIL_SYNC_BATCH_SIZE", emailSyncBatchSizeRaw),
+    emailSyncMaxMessagesPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_MESSAGES_PER_RUN", emailSyncMaxMessagesPerRunRaw),
+    emailSyncMaxUsersPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_USERS_PER_RUN", emailSyncMaxUsersPerRunRaw),
+    emailPurchaseReconciliationWindowHours: requirePositiveInteger("EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS", emailPurchaseReconciliationWindowHoursRaw),
+    emailAttachmentMaxBytes: requirePositiveInteger("EMAIL_ATTACHMENT_MAX_BYTES", emailAttachmentMaxBytesRaw),
+    emailFiscalLinkFetchEnabled: parseStrictBoolean("EMAIL_FISCAL_LINK_FETCH_ENABLED", emailFiscalLinkFetchEnabledRaw),
+    emailFiscalLinkMaxBytes: requirePositiveInteger("EMAIL_FISCAL_LINK_MAX_BYTES", emailFiscalLinkMaxBytesRaw),
+    emailFiscalLinkTimeoutMs: requirePositiveInteger("EMAIL_FISCAL_LINK_TIMEOUT_MS", emailFiscalLinkTimeoutMsRaw),
+    emailFiscalLinkMaxRedirects: requireNonNegativeInteger("EMAIL_FISCAL_LINK_MAX_REDIRECTS", emailFiscalLinkMaxRedirectsRaw),
+    emailFiscalLinkMaxPerEmail: requirePositiveInteger("EMAIL_FISCAL_LINK_MAX_PER_EMAIL", emailFiscalLinkMaxPerEmailRaw),
+    cronSecret: process.env.CRON_SECRET ?? "",
+    requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
+    requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",
+    requestyTimeoutMs: requirePositiveInteger("REQUESTY_TIMEOUT_MS", requestyTimeoutMsRaw),
+    requestyRateLimitCooldownMs: requirePositiveInteger("REQUESTY_RATE_LIMIT_COOLDOWN_MS", requestyRateLimitCooldownMsRaw),
+    aiProvider,
+    codexLocalTimeoutMs: requirePositiveInteger("CODEX_LOCAL_TIMEOUT_MS", codexLocalTimeoutMsRaw),
+    smtp: {
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+        from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+    },
+};
