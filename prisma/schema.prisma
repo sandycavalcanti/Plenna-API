@@ -13,6 +13,7 @@ model tb_categoria {
   categoria_nome         String           @db.VarChar(45)
   categoria_data_criacao DateTime         @default(now()) @db.Timestamp(6)
   tb_compra_item         tb_compra_item[]
+  tb_notificacao         tb_notificacao[]
   tb_preferencia         tb_preferencia[]
   tb_propaganda          tb_propaganda[]
 
@@ -41,6 +42,7 @@ model tb_compra {
   tb_forma_pagamento       tb_forma_pagamento?       @relation(fields: [forma_pagamento_id], references: [forma_pagamento_id], onDelete: NoAction, onUpdate: NoAction)
   tb_usuario               tb_usuario                @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra_item           tb_compra_item[]
+  tb_notificacao           tb_notificacao[]
 
   @@unique([usuario_id, compra_email_mensagem_id])
   @@index([usuario_id, compra_ativo], map: "idx_compra_usuario_ativo")
@@ -131,10 +133,13 @@ model tb_usuario {
   tb_ai_anotacao            tb_ai_anotacao[]
   tb_compra                 tb_compra[]
   tb_consentimento          tb_consentimento[]
+  tb_dispositivo            tb_dispositivo[]
   tb_historico              tb_historico[]
   tb_integracao             tb_integracao[]
   tb_meta                   tb_meta[]
   tb_metricas               tb_metricas[]
+  tb_notificacao            tb_notificacao[]
+  tb_oauth_tentativa        tb_oauth_tentativa[]
   tb_preferencia            tb_preferencia[]
   tb_propaganda             tb_propaganda[]
   tb_redefinicao_senha      tb_redefinicao_senha[]
@@ -261,6 +266,7 @@ model tb_tempo_uso {
   tempo_uso_nome             String     @db.VarChar(100)
   tempo_uso_minutos          Decimal?   @db.Decimal(10, 2)
   tempo_uso_data             DateTime?  @db.Timestamp(6)
+  tempo_uso_data_criacao     DateTime   @default(now()) @db.Timestamp(6)
   tempo_uso_package_id       String?    @db.VarChar(255)
   tempo_uso_inicio           DateTime?  @db.Timestamptz(3)
   tempo_uso_fim              DateTime?  @db.Timestamptz(3)
@@ -268,12 +274,80 @@ model tb_tempo_uso {
   tempo_uso_data_local       DateTime?  @db.Date
   tempo_uso_timezone         String?    @db.VarChar(64)
   tempo_uso_origem           String     @default("LEGADO") @db.VarChar(30)
-  tempo_uso_data_criacao     DateTime   @default(now()) @db.Timestamp(6)
   tempo_uso_data_modificacao DateTime   @default(now()) @updatedAt @db.Timestamp(6)
   tb_usuario                 tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([usuario_id, tempo_uso_package_id, tempo_uso_inicio, tempo_uso_fim], name: "tempo_uso_usuario_package_periodo_unique", map: "tempo_uso_usuario_package_periodo_unique")
   @@index([usuario_id, tempo_uso_inicio], map: "tempo_uso_usuario_inicio_idx")
+  @@schema("public")
+}
+
+model tb_dispositivo {
+  dispositivo_id                   Int        @id @default(autoincrement())
+  usuario_id                       Int
+  dispositivo_push_token           String     @unique @db.VarChar(255)
+  dispositivo_plataforma           String     @db.VarChar(20)
+  dispositivo_ativo                Int        @default(1) @db.SmallInt
+  dispositivo_ultimo_erro          String?    @db.VarChar(255)
+  dispositivo_ultima_tentativa_em  DateTime?  @db.Timestamp(6)
+  dispositivo_ultima_utilizacao_em DateTime?  @db.Timestamp(6)
+  dispositivo_data_criacao         DateTime   @default(now()) @db.Timestamp(6)
+  dispositivo_data_modificacao     DateTime   @default(now()) @db.Timestamp(6)
+  tb_usuario                       tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([usuario_id, dispositivo_ativo], map: "idx_dispositivo_usuario_ativo")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model tb_limite_requisicao {
+  limite_chave         String   @id @db.VarChar(64)
+  limite_janela_inicio DateTime @db.Timestamptz(3)
+  limite_contagem      Int
+  limite_expira_em     DateTime @db.Timestamptz(3)
+
+  @@index([limite_expira_em])
+  @@schema("public")
+}
+
+model tb_notificacao {
+  notificacao_id                 Int                   @id @default(autoincrement())
+  usuario_id                     Int
+  notificacao_tipo               notificacao_tipo_enum
+  notificacao_titulo             String                @db.VarChar(100)
+  notificacao_mensagem           String
+  notificacao_chave_idempotencia String                @unique @db.VarChar(255)
+  compra_id                      Int?
+  categoria_id                   Int?
+  notificacao_evento             String?               @db.VarChar(100)
+  notificacao_lida               Int                   @default(0) @db.SmallInt
+  notificacao_lida_em            DateTime?             @db.Timestamp(6)
+  notificacao_data_criacao       DateTime              @default(now()) @db.Timestamp(6)
+  tb_categoria                   tb_categoria?         @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_compra                      tb_compra?            @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_usuario                     tb_usuario            @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([usuario_id], map: "idx_notificacao_usuario")
+  @@index([usuario_id, notificacao_data_criacao], map: "idx_notificacao_usuario_data")
+  @@index([usuario_id, notificacao_lida], map: "idx_notificacao_usuario_lida")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model tb_oauth_tentativa {
+  oauth_tentativa_id     String              @id @db.Uuid
+  usuario_id             Int
+  oauth_provedor         email_provedor_enum
+  oauth_state_hash       String              @unique @db.VarChar(64)
+  oauth_finalizacao_hash String              @db.VarChar(64)
+  oauth_status           oauth_status_enum   @default(PENDENTE)
+  oauth_criada_em        DateTime            @default(now()) @db.Timestamptz(3)
+  oauth_expira_em        DateTime            @db.Timestamptz(3)
+  oauth_finalizada_em    DateTime?           @db.Timestamptz(3)
+  tb_usuario             tb_usuario          @relation(fields: [usuario_id], references: [usuario_id], onDelete: Cascade)
+
+  @@index([oauth_expira_em])
+  @@index([usuario_id, oauth_provedor, oauth_status])
   @@schema("public")
 }
 
@@ -305,6 +379,25 @@ enum integracao_sincronizacao_status_enum {
   PROCESSANDO
   FINALIZADA
   ERRO
+
+  @@schema("public")
+}
+
+enum notificacao_tipo_enum {
+  LIMITE_COMPRA
+  LIMITE_CATEGORIA
+  LIMITE_MENSAL
+  SAZONAL
+
+  @@schema("public")
+}
+
+enum oauth_status_enum {
+  PENDENTE
+  PROCESSANDO
+  CONCLUIDA
+  CANCELADA
+  FALHOU
 
   @@schema("public")
 }
