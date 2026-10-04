@@ -7,6 +7,10 @@
     {
       "path": "/email/sync/cron",
       "schedule": "0 */3 * * *"
+    },
+    {
+      "path": "/notifications/seasonal/cron",
+      "schedule": "0 12 * * *"
     }
   ],
   "functions": {
