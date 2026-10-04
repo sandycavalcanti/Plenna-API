@@ -36,6 +36,11 @@ const requestyRateLimitCooldownMsRaw = process.env.REQUESTY_RATE_LIMIT_COOLDOWN_
 const aiProvider = process.env.AI_PROVIDER ?? "requesty";
 const codexLocalTimeoutMsRaw = process.env.CODEX_LOCAL_TIMEOUT_MS ?? "30000";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
+const expoPushEnabledRaw = process.env.EXPO_PUSH_ENABLED ?? "false";
+const expoPushTimeoutMsRaw = process.env.EXPO_PUSH_TIMEOUT_MS ?? "5000";
+const expoPushBatchSizeRaw = process.env.EXPO_PUSH_BATCH_SIZE ?? "100";
+const expoPushMaxRetriesRaw = process.env.EXPO_PUSH_MAX_RETRIES ?? "2";
+const expoPushRetryBaseDelayMsRaw = process.env.EXPO_PUSH_RETRY_BASE_DELAY_MS ?? "250";
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   throw new Error(`Invalid PORT value: ${portRaw}`);
@@ -99,6 +104,12 @@ export const env = {
   emailFiscalLinkTimeoutMs: requirePositiveInteger("EMAIL_FISCAL_LINK_TIMEOUT_MS", emailFiscalLinkTimeoutMsRaw),
   emailFiscalLinkMaxRedirects: requireNonNegativeInteger("EMAIL_FISCAL_LINK_MAX_REDIRECTS", emailFiscalLinkMaxRedirectsRaw),
   emailFiscalLinkMaxPerEmail: requirePositiveInteger("EMAIL_FISCAL_LINK_MAX_PER_EMAIL", emailFiscalLinkMaxPerEmailRaw),
+  expoPushEnabled: parseStrictBoolean("EXPO_PUSH_ENABLED", expoPushEnabledRaw),
+  expoPushAccessToken: process.env.EXPO_PUSH_ACCESS_TOKEN ?? "",
+  expoPushTimeoutMs: requirePositiveInteger("EXPO_PUSH_TIMEOUT_MS", expoPushTimeoutMsRaw),
+  expoPushBatchSize: Math.min(requirePositiveInteger("EXPO_PUSH_BATCH_SIZE", expoPushBatchSizeRaw), 100),
+  expoPushMaxRetries: requireNonNegativeInteger("EXPO_PUSH_MAX_RETRIES", expoPushMaxRetriesRaw),
+  expoPushRetryBaseDelayMs: requireNonNegativeInteger("EXPO_PUSH_RETRY_BASE_DELAY_MS", expoPushRetryBaseDelayMsRaw),
   cronSecret: process.env.CRON_SECRET ?? "",
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",

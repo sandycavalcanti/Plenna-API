@@ -4,6 +4,17 @@ import type { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
 import { MetricasService } from './metricas.service.js';
 import { evaluateConfirmedPurchaseLimits, itemTotalCents } from './limite.service.js';
 import { AppError } from '../../errors/AppError.js';
+import { dispatchPushAfterCommit, type PushNotificationCandidate } from '../notification/push.service.js';
+
+type LimitEvaluationWithAlerts = {
+  alerts?: Array<{ created: boolean; notificationId: number; type: string }>;
+};
+
+function createdPushNotifications(evaluation: LimitEvaluationWithAlerts | undefined): PushNotificationCandidate[] {
+  return (evaluation?.alerts ?? [])
+    .filter((alert) => alert.created)
+    .map((alert) => ({ notificationId: alert.notificationId, type: alert.type }));
+}
 /**
  * Converte valores monetários para centavos antes de realizar somas
  * e comparações, reduzindo problemas de precisão de ponto flutuante.
@@ -167,7 +178,7 @@ export class CompraService {
    * da mesma transação para evitar persistência parcial em caso de erro.
    */
   static async create(userId: number, data: CreateCompraDTO) {
-    return prisma.$transaction(async (tx) => {
+    const transactionResult = await prisma.$transaction(async (tx) => {
       const user = await tx.tb_usuario.findFirst({
         where: { usuario_id: userId, usuario_status: true },
         select: { usuario_id: true },
@@ -231,32 +242,44 @@ export class CompraService {
         : compra;
 
       return {
-        compra: compraFinal,
-        metricas: await MetricasService.recalculateMonthlyMetrics(userId, data.compraHorario, tx),
+        response: {
+          compra: compraFinal,
+          metricas: await MetricasService.recalculateMonthlyMetrics(userId, data.compraHorario, tx),
+        },
+        createdNotifications: createdPushNotifications(limitEvaluation),
       };
     });
+    await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+    return transactionResult.response;
   }
 
   static async update(userId: number, compraId: number, data: UpdateCompraDTO) {
-    return prisma.$transaction(async (tx) => {
+    const transactionResult = await prisma.$transaction(async (tx) => {
       const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
       const result = await applyCompraConfirmation(tx, userId, compraId, data, existing);
+      let createdNotifications: PushNotificationCandidate[] = [];
 
       if (existing.compra_status === 'CONFIRMADA' && result.compraValor === null) {
         throw new AppError('Compra confirmada deve possuir valor', 400);
       }
 
       if (existing.compra_status === 'CONFIRMADA') {
-        await evaluateConfirmedPurchaseLimits(compraId, tx);
+        const limitEvaluation = await evaluateConfirmedPurchaseLimits(compraId, tx);
+        createdNotifications = createdPushNotifications(limitEvaluation);
         const metricPeriods = resolveMetricPeriods(existing.compra_horario, result.compraHorario);
         for (const period of metricPeriods) {
           await MetricasService.recalculateMonthlyMetrics(userId, period, tx);
         }
       }
 
-      return { compra: await tx.tb_compra.findFirst({ where: { compra_id: compraId } }) };
+      return {
+        response: { compra: await tx.tb_compra.findFirst({ where: { compra_id: compraId } }) },
+        createdNotifications,
+      };
     });
+    await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+    return transactionResult.response;
   }
   /**
    * Confirma uma compra que aguardava validação do usuário.
@@ -268,10 +291,12 @@ export class CompraService {
    * ou corrigir as informações identificadas automaticamente.
    */
   static async confirm(userId: number, compraId: number, data?: UpdateCompraDTO) {
-    return prisma.$transaction(async (tx) => {
+    const transactionResult = await prisma.$transaction(async (tx) => {
       const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
-      if (existing.compra_status === 'CONFIRMADA') return { compra: existing };
+      if (existing.compra_status === 'CONFIRMADA') {
+        return { response: { compra: existing }, createdNotifications: [] as PushNotificationCandidate[] };
+      }
       if (existing.compra_status === 'IGNORADA') {
         // Ignorada representa uma detecção descartada definitivamente. A
         // consulta acima ainda valida ownership e compra ativa, mas o status
@@ -282,16 +307,21 @@ export class CompraService {
       if (result.compraValor === null) {
         throw new AppError('Compra sem valor não pode ser confirmada', 400);
       }
-      const compra = await tx.tb_compra.update({
+      await tx.tb_compra.update({
         where: { compra_id: compraId },
         data: { compra_status: 'CONFIRMADA' },
       });
 
-      await evaluateConfirmedPurchaseLimits(compraId, tx);
+      const limitEvaluation = await evaluateConfirmedPurchaseLimits(compraId, tx);
       await MetricasService.recalculateMonthlyMetrics(userId, result.compraHorario, tx);
       const compraFinal = await tx.tb_compra.findFirst({ where: { compra_id: compraId } });
-      return { compra: compraFinal };
+      return {
+        response: { compra: compraFinal },
+        createdNotifications: createdPushNotifications(limitEvaluation),
+      };
     });
+    await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+    return transactionResult.response;
   }
   /**
    * Marca como ignorada uma compra automática ainda pendente.
@@ -370,7 +400,7 @@ export class CompraService {
    * compra atualizada e métricas. Assim não existe estado parcial persistido.
    */
   static async deleteItem(userId: number, compraId: number, compraItemId: number) {
-    return prisma.$transaction(async (tx) => {
+    const transactionResult = await prisma.$transaction(async (tx) => {
       // Combinar compra_id e usuario_id faz com que compras de terceiros sejam
       // tratadas como inexistentes, sem revelar sua existência ao solicitante.
       const existing = await tx.tb_compra.findFirst({
@@ -398,7 +428,7 @@ export class CompraService {
         await softDeleteCompra(tx, userId, compraId);
 
         // Não existe compra atualizada para retornar depois da remoção total.
-        return null;
+        return { response: null, createdNotifications: [] as PushNotificationCandidate[] };
       }
 
       // O item é inativado, nunca removido fisicamente, para preservar o
@@ -430,17 +460,24 @@ export class CompraService {
       });
 
       // Somente compras confirmadas alteram as métricas financeiras mensais.
+      let createdNotifications: PushNotificationCandidate[] = [];
       if (existing.compra_status === 'CONFIRMADA') {
-        await evaluateConfirmedPurchaseLimits(compraId, tx);
+        const limitEvaluation = await evaluateConfirmedPurchaseLimits(compraId, tx);
+        createdNotifications = createdPushNotifications(limitEvaluation);
         await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
       }
 
       // Retornamos a compra completa já atualizada para o front não precisar
       // fazer um GET adicional após cada exclusão individual.
-      return tx.tb_compra.findFirst({
-        where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
-        include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
-      });
+      return {
+        response: await tx.tb_compra.findFirst({
+          where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
+          include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
+        }),
+        createdNotifications,
+      };
     });
+    await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+    return transactionResult.response;
   }
 }

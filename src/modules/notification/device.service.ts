@@ -1,5 +1,8 @@
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
+import type { Prisma } from '@prisma/client';
+
+export type DeviceDatabase = Pick<Prisma.TransactionClient, 'tb_dispositivo'>;
 
 const publicDeviceSelect = {
   dispositivo_id: true,
@@ -60,8 +63,8 @@ export class DeviceService {
     });
   }
 
-  static async listActiveByUserId(userId: number) {
-    return prisma.tb_dispositivo.findMany({
+  static async listActiveByUserId(userId: number, db: DeviceDatabase = prisma) {
+    return db.tb_dispositivo.findMany({
       where: {
         usuario_id: userId,
         dispositivo_ativo: 1,
@@ -78,6 +81,22 @@ export class DeviceService {
         dispositivo_ultima_utilizacao_em: true,
         dispositivo_data_criacao: true,
         dispositivo_data_modificacao: true,
+      },
+    });
+  }
+
+  static async recordPushAttempt(
+    deviceId: number,
+    result: { error: string | null; deactivate?: boolean },
+    db: DeviceDatabase = prisma,
+  ) {
+    return db.tb_dispositivo.updateMany({
+      where: { dispositivo_id: deviceId },
+      data: {
+        dispositivo_ultima_tentativa_em: new Date(),
+        dispositivo_ultimo_erro: result.error,
+        ...(result.deactivate ? { dispositivo_ativo: 0 } : {}),
+        dispositivo_data_modificacao: new Date(),
       },
     });
   }

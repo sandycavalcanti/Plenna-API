@@ -26,6 +26,7 @@ let state: {
   nextNotificationId: number;
   nextMetricId: number;
 } = createState();
+let transactionOpen = false;
 
 function createState() {
   return {
@@ -222,7 +223,14 @@ function makeClient() {
         return metric;
       },
     },
-    $transaction: async (callback: (db: any) => unknown) => callback(client),
+    $transaction: async (callback: (db: any) => unknown) => {
+      transactionOpen = true;
+      try {
+        return await callback(client);
+      } finally {
+        transactionOpen = false;
+      }
+    },
   };
   return client;
 }
@@ -236,9 +244,11 @@ const { MetricasService } = await import('../../src/modules/compra/metricas.serv
 const { createCompraFromMessage } = await import('../../src/modules/email/email-sync.service.ts');
 const { PaymentMethodResolver } = await import('../../src/modules/forma-pagamento/payment-method.resolver.ts');
 const { updateUserSchema } = await import('../../src/modules/user/user.schemas.ts');
+const { pushService } = await import('../../src/modules/notification/push.service.ts');
 
 function reset() {
   state = createState();
+  transactionOpen = false;
 }
 
 function configureLimits(purchase: number | null, monthly: number | null, categoryLimit: number | null = null) {
@@ -673,4 +683,186 @@ test('reprocessamento da avaliação central preserva a idempotência por compra
   await evaluateConfirmedPurchaseLimits(current.compra_id);
   assert.equal(state.notifications.length, 1);
   assert.equal(state.notifications[0].notificacao_chave_idempotencia, '1:1:LIMITE_COMPRA');
+});
+
+test('push manual é aguardado somente depois do commit da transação', async () => {
+  configureLimits(50, null, null);
+  const originalDispatch = pushService.dispatchForUser;
+  let observedInsideTransaction = true;
+  pushService.dispatchForUser = async (_userId, notifications) => {
+    observedInsideTransaction = transactionOpen;
+    return { attempted: notifications.length, succeeded: notifications.length, failed: 0, deactivated: 0, skipped: 0 };
+  };
+  try {
+    await CompraService.create(1, {
+      compraHorario: new Date('2026-08-15T12:00:00Z'),
+      compraClassificacao: 'PENDENTE',
+      compraValor: 80,
+    });
+  } finally {
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.equal(observedInsideTransaction, false);
+});
+
+test('retry de compra confirmada não dispara push quando a notificação já existe', async () => {
+  configureLimits(50, null, null);
+  const originalDispatch = pushService.dispatchForUser;
+  let dispatchCount = 0;
+  pushService.dispatchForUser = async (_userId, notifications) => {
+    dispatchCount += notifications.length;
+    return { attempted: notifications.length, succeeded: notifications.length, failed: 0, deactivated: 0, skipped: 0 };
+  };
+  try {
+    const created = await CompraService.create(1, {
+      compraHorario: new Date('2026-08-15T12:00:00Z'),
+      compraClassificacao: 'PENDENTE',
+      compraValor: 80,
+    });
+    await CompraService.update(1, created.compra.compra_id, {
+      compraHorario: new Date('2026-08-15T12:00:00Z'),
+      compraClassificacao: 'PENDENTE',
+      compraValor: 80,
+    });
+  } finally {
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.equal(dispatchCount, 1);
+});
+
+test('falha do push não desfaz compra nem notificação persistida', async () => {
+  configureLimits(50, null, null);
+  const originalDispatch = pushService.dispatchForUser;
+  pushService.dispatchForUser = async () => {
+    throw new Error('Expo unavailable');
+  };
+  try {
+    await CompraService.create(1, {
+      compraHorario: new Date('2026-08-15T12:00:00Z'),
+      compraClassificacao: 'PENDENTE',
+      compraValor: 80,
+    });
+  } finally {
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.equal(state.purchases.length, 1);
+  assert.equal(state.notifications.length, 1);
+});
+
+test('compra Gmail pendente não chama push', async () => {
+  configureLimits(50, null, null);
+  const originalResolve = PaymentMethodResolver.resolve;
+  const originalDispatch = pushService.dispatchForUser;
+  let dispatchCount = 0;
+  PaymentMethodResolver.resolve = async () => null;
+  pushService.dispatchForUser = async () => {
+    dispatchCount += 1;
+    return { attempted: 0, succeeded: 0, failed: 0, deactivated: 0, skipped: 0 };
+  };
+  try {
+    await createCompraFromMessage(1, {
+      id: 'gmail-pending-push',
+      from: 'Loja Teste <vendas@loja.test>',
+      subject: 'Pedido recebido',
+      bodyText: 'Produto: Produto Teste\nQuantidade: 1\nValor do produto: R$ 80,00\nTotal da compra: R$ 80,00',
+      snippet: 'Pedido recebido',
+      labelIds: [],
+      internalDate: String(Date.parse('2026-08-15T12:00:00Z')),
+    } as any);
+  } finally {
+    PaymentMethodResolver.resolve = originalResolve;
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.equal(dispatchCount, 0);
+});
+
+test('compra Gmail confirmada aguarda push depois da transação', async () => {
+  configureLimits(50, null, null);
+  const originalResolve = PaymentMethodResolver.resolve;
+  const originalDispatch = pushService.dispatchForUser;
+  let observedInsideTransaction = true;
+  PaymentMethodResolver.resolve = async () => ({ id: 1, name: 'Pix' });
+  pushService.dispatchForUser = async (_userId, notifications) => {
+    observedInsideTransaction = transactionOpen;
+    return { attempted: notifications.length, succeeded: notifications.length, failed: 0, deactivated: 0, skipped: 0 };
+  };
+  try {
+    await createCompraFromMessage(1, {
+      id: 'gmail-confirmed-push',
+      from: 'Loja Teste <vendas@loja.test>',
+      subject: 'Pedido confirmado',
+      bodyText: 'Produto: Produto Teste\nQuantidade: 1\nValor do produto: R$ 80,00\nTotal da compra: R$ 80,00\nPix',
+      snippet: 'Pedido confirmado',
+      labelIds: [],
+      internalDate: String(Date.parse('2026-08-15T12:00:00Z')),
+    } as any);
+  } finally {
+    PaymentMethodResolver.resolve = originalResolve;
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.equal(observedInsideTransaction, false);
+});
+
+test('falha do push não desfaz confirmação manual', async () => {
+  configureLimits(50, null, null);
+  const current = addPurchase({ compra_valor: 80, compra_status: 'AGUARDANDO_CONFIRMACAO' });
+  const originalDispatch = pushService.dispatchForUser;
+  pushService.dispatchForUser = async () => {
+    throw new Error('Expo unavailable');
+  };
+  try {
+    await CompraService.confirm(1, current.compra_id);
+  } finally {
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.equal(state.purchases[0].compra_status, 'CONFIRMADA');
+  assert.equal(state.notifications.length, 1);
+});
+
+test('falha do push não faz o sync Gmail confirmado falhar', async () => {
+  configureLimits(50, null, null);
+  const originalResolve = PaymentMethodResolver.resolve;
+  const originalDispatch = pushService.dispatchForUser;
+  PaymentMethodResolver.resolve = async () => ({ id: 1, name: 'Pix' });
+  pushService.dispatchForUser = async () => {
+    throw new Error('Expo unavailable');
+  };
+  try {
+    const result = await createCompraFromMessage(1, {
+      id: 'gmail-confirmed-push-failure',
+      from: 'Loja Teste <vendas@loja.test>',
+      subject: 'Pedido confirmado',
+      bodyText: 'Produto: Produto Teste\nQuantidade: 1\nValor do produto: R$ 80,00\nTotal da compra: R$ 80,00\nPix',
+      snippet: 'Pedido confirmado',
+      labelIds: [],
+      internalDate: String(Date.parse('2026-08-15T12:00:00Z')),
+    } as any);
+    assert.equal('created' in result, true);
+  } finally {
+    PaymentMethodResolver.resolve = originalResolve;
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.equal(state.purchases[0].compra_status, 'CONFIRMADA');
+  assert.equal(state.notifications.length, 1);
+});
+
+test('uma compra com alertas independentes envia somente candidatos novos ao push', async () => {
+  configureLimits(50, 50, null);
+  const originalDispatch = pushService.dispatchForUser;
+  let pushedTypes: string[] = [];
+  pushService.dispatchForUser = async (_userId, notifications) => {
+    pushedTypes = notifications.map((notification) => String(notification.type));
+    return { attempted: notifications.length, succeeded: notifications.length, failed: 0, deactivated: 0, skipped: 0 };
+  };
+  try {
+    await CompraService.create(1, {
+      compraHorario: new Date('2026-08-15T12:00:00Z'),
+      compraClassificacao: 'PENDENTE',
+      compraValor: 80,
+      items: [{ categoriaId: 1, nome: 'Produto', valor: 80 }],
+    });
+  } finally {
+    pushService.dispatchForUser = originalDispatch;
+  }
+  assert.deepEqual(pushedTypes.sort(), ['LIMITE_COMPRA', 'LIMITE_MENSAL']);
 });
