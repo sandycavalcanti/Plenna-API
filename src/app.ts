@@ -12,6 +12,7 @@ import { formaPagamentoRouter } from './modules/forma-pagamento/forma-pagamento.
 import { compraRouter } from './modules/compra/compra.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { consentimentoRouter } from './modules/consentimento/consentimento.routes.js';
+import { deviceRouter, notificationRouter } from './modules/notification/notification.routes.js';
 
 const app = express();
 
@@ -29,6 +30,8 @@ app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);
 app.use('/dashboard', dashboardRouter);
 app.use('/consentimento', consentimentoRouter);
+app.use('/notifications', notificationRouter);
+app.use('/devices', deviceRouter);
 
 app.get('/', (_req, res) => {
   res.json({
