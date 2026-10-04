@@ -24,6 +24,10 @@ function pick(row: Row, select?: Row) {
   return Object.fromEntries(Object.keys(select).filter((key) => select[key]).map((key) => [key, row[key]]));
 }
 
+function notificationMatches(row: Row, where: Row = {}) {
+  return Object.entries(where).every(([key, value]) => row[key] === value);
+}
+
 const db = {
   tb_usuario: {
     findMany: async ({ where, take, select }: any) => {
@@ -36,10 +40,27 @@ const db = {
     },
   },
   tb_notificacao: {
+    findMany: async ({ where, orderBy, select }: any) => notifications
+      .filter((notification) => notificationMatches(notification, where))
+      .sort((left, right) => {
+        const createdDifference = right.notificacao_data_criacao.getTime() - left.notificacao_data_criacao.getTime();
+        return createdDifference || right.notificacao_id - left.notificacao_id;
+      })
+      .map((notification) => pick(notification, select)),
+    count: async ({ where }: any) => notifications.filter((notification) => notificationMatches(notification, where)).length,
+    findFirst: async ({ where, select }: any) => {
+      const notification = notifications.find((candidate) => notificationMatches(candidate, where));
+      return notification ? pick(notification, select) : null;
+    },
     findUnique: async ({ where, select }: any) => {
       const row = notifications.find((notification) =>
         notification.notificacao_chave_idempotencia === where.notificacao_chave_idempotencia);
       return row ? pick(row, select) : null;
+    },
+    updateMany: async ({ where, data }: any) => {
+      const matching = notifications.filter((notification) => notificationMatches(notification, where));
+      matching.forEach((notification) => Object.assign(notification, data));
+      return { count: matching.length };
     },
   },
   $queryRaw: async (_query: unknown, ...values: any[]) => {
@@ -84,6 +105,7 @@ const {
 } = await import('../../src/modules/notification/seasonal-calendar.ts');
 const { processSeasonalNotifications, SeasonalNotificationService } =
   await import('../../src/modules/notification/seasonal-notification.service.ts');
+const { NotificationService } = await import('../../src/modules/notification/notification.service.ts');
 const { SeasonalController } = await import('../../src/modules/notification/seasonal.controller.ts');
 const { notificationRouter } = await import('../../src/modules/notification/notification.routes.ts');
 
@@ -268,6 +290,25 @@ test('evento elegível cria sazonal para usuário ativo', async () => {
   assert.equal(notifications[0].categoria_id, null);
 });
 
+test('sazonal percorre a mesma notificação pela Central, unread e leitura', async () => {
+  addUsers(1);
+  await runSeasonal(new Date('2026-12-22T15:00:00Z'));
+
+  const listed = await NotificationService.listByUserId(1);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].notificacao_tipo, 'SAZONAL');
+  assert.equal(listed[0].notificacao_evento, 'NATAL');
+  assert.equal(listed[0].compra_id, null);
+  assert.equal(listed[0].categoria_id, null);
+  assert.equal(listed[0].notificacao_lida, 0);
+  assert.equal(await NotificationService.countUnread(1), 1);
+
+  const read = await NotificationService.markAsRead(1, listed[0].notificacao_id);
+  assert.equal(read?.notificacao_lida, 1);
+  assert.ok(read?.notificacao_lida_em instanceof Date);
+  assert.equal(await NotificationService.countUnread(1), 0);
+});
+
 test('usuário inativo não recebe sazonal', async () => {
   addUsers(2, [2]);
   const result = await runSeasonal(new Date('2026-11-24T15:00:00Z'));
@@ -338,6 +379,7 @@ test('dois eventos elegíveis são processados independentemente', async () => {
   assert.equal(result.eventsMatched, 2);
   assert.equal(result.notificationsCreated, 2);
   assert.equal(new Set(notifications.map((notification) => notification.notificacao_chave_idempotencia)).size, 2);
+  assert.equal(await NotificationService.countUnread(1), 2);
 });
 
 test('falha de push mantém notificação sazonal', async () => {
