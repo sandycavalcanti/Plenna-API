@@ -148,6 +148,7 @@ function makeClient() {
         state.items.push(...data.map((item: Row) => ({
           compra_item_id: state.nextItemId++,
           compra_item_ativo: 1,
+          compra_item_quantidade: item.compra_item_quantidade ?? null,
           ...item,
         })));
         return { count: data.length };
@@ -168,9 +169,34 @@ function makeClient() {
       },
     },
     tb_notificacao: {
+      findMany: async ({ where, select }: Row) => {
+        const rows = state.notifications
+          .filter((notification) => matches(notification, where))
+          .sort((left, right) => {
+            const createdDifference = right.notificacao_data_criacao.getTime() - left.notificacao_data_criacao.getTime();
+            return createdDifference || right.notificacao_id - left.notificacao_id;
+          });
+        return rows.map((notification) => select
+          ? Object.fromEntries(Object.keys(select).filter((key) => select[key]).map((key) => [key, notification[key]]))
+          : { ...notification });
+      },
+      count: async ({ where }: Row) => state.notifications.filter((notification) => matches(notification, where)).length,
+      findFirst: async ({ where, select }: Row) => {
+        const notification = state.notifications.find((candidate) => matches(candidate, where));
+        return notification
+          ? (select
+            ? Object.fromEntries(Object.keys(select).filter((key) => select[key]).map((key) => [key, notification[key]]))
+            : { ...notification })
+          : null;
+      },
       findUnique: async ({ where }: Row) => state.notifications.find(
         (notification) => notification.notificacao_chave_idempotencia === where.notificacao_chave_idempotencia,
       ) ?? null,
+      updateMany: async ({ where, data }: Row) => {
+        const rows = state.notifications.filter((notification) => matches(notification, where));
+        rows.forEach((notification) => Object.assign(notification, data));
+        return { count: rows.length };
+      },
       create: async ({ data }: Row) => {
         const existing = state.notifications.find(
           (notification) => notification.notificacao_chave_idempotencia === data.notificacao_chave_idempotencia,
@@ -245,6 +271,7 @@ const { createCompraFromMessage } = await import('../../src/modules/email/email-
 const { PaymentMethodResolver } = await import('../../src/modules/forma-pagamento/payment-method.resolver.ts');
 const { updateUserSchema } = await import('../../src/modules/user/user.schemas.ts');
 const { pushService } = await import('../../src/modules/notification/push.service.ts');
+const { NotificationService } = await import('../../src/modules/notification/notification.service.ts');
 
 function reset() {
   state = createState();
@@ -588,7 +615,7 @@ test('fluxo manual persiste valor da linha sem quantidade', async () => {
     items: [{ categoriaId: 1, nome: 'Produto manual', valor: 25 }],
   });
   assert.equal(Number(state.items[0].compra_item_valor), 25);
-  assert.equal('compra_item_quantidade' in state.items[0], false);
+  assert.equal(state.items[0].compra_item_quantidade, null);
 });
 
 test('confirmação manual de compra pendente converge para avaliação', async () => {
@@ -865,4 +892,63 @@ test('uma compra com alertas independentes envia somente candidatos novos ao pus
     pushService.dispatchForUser = originalDispatch;
   }
   assert.deepEqual(pushedTypes.sort(), ['LIMITE_COMPRA', 'LIMITE_MENSAL']);
+});
+
+test('integra compra manual, Central, unread count e marcação de leitura na mesma notificação', async () => {
+  configureLimits(50, null, null);
+  const result = await CompraService.create(1, {
+    compraHorario: new Date('2026-08-15T12:00:00Z'),
+    compraClassificacao: 'PENDENTE',
+    compraValor: 80,
+  });
+
+  const listed = await NotificationService.listByUserId(1);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].notificacao_tipo, 'LIMITE_COMPRA');
+  assert.equal(listed[0].compra_id, result.compra.compra_id);
+  assert.equal(listed[0].notificacao_lida, 0);
+  assert.equal('notificacao_chave_idempotencia' in listed[0], false);
+  assert.equal('usuario_id' in listed[0], false);
+  assert.equal(await NotificationService.countUnread(1), 1);
+
+  const marked = await NotificationService.markAsRead(1, listed[0].notificacao_id);
+  assert.equal(marked?.notificacao_lida, 1);
+  assert.ok(marked?.notificacao_lida_em instanceof Date);
+  assert.equal(await NotificationService.countUnread(1), 0);
+});
+
+test('integra três alertas independentes, Central e retry sem novo push', async () => {
+  configureLimits(50, 100, 40);
+  addPurchase({ compra_valor: 60 });
+  const originalDispatch = pushService.dispatchForUser;
+  let pushedTypes: string[] = [];
+  try {
+    pushService.dispatchForUser = async (_userId, notifications) => {
+      pushedTypes = pushedTypes.concat(notifications.map((notification) => String(notification.type)));
+      return { attempted: notifications.length, succeeded: notifications.length, failed: 0, deactivated: 0, skipped: 0 };
+    };
+
+    const created = await CompraService.create(1, {
+      compraHorario: new Date('2026-08-15T12:00:00Z'),
+      compraClassificacao: 'PENDENTE',
+      compraValor: 60,
+      items: [{ categoriaId: 1, nome: 'Produto', valor: 60 }],
+    });
+
+    const firstList = await NotificationService.listByUserId(1);
+    assert.equal(firstList.length, 3);
+    assert.equal(await NotificationService.countUnread(1), 3);
+    assert.deepEqual(pushedTypes.sort(), ['LIMITE_CATEGORIA', 'LIMITE_COMPRA', 'LIMITE_MENSAL']);
+
+    await CompraService.update(1, created.compra.compra_id, {
+      compraHorario: new Date('2026-08-15T12:00:00Z'),
+      compraClassificacao: 'PENDENTE',
+      compraValor: 60,
+    } as any);
+
+    assert.equal((await NotificationService.listByUserId(1)).length, 3);
+    assert.deepEqual(pushedTypes.sort(), ['LIMITE_CATEGORIA', 'LIMITE_COMPRA', 'LIMITE_MENSAL']);
+  } finally {
+    pushService.dispatchForUser = originalDispatch;
+  }
 });
