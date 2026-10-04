@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
 import { MetricasService } from './metricas.service.js';
+import { evaluateConfirmedPurchaseLimits, itemTotalCents } from './limite.service.js';
 import { AppError } from '../../errors/AppError.js';
 /**
  * Converte valores monetários para centavos antes de realizar somas
@@ -14,36 +15,6 @@ function toCents(value: Prisma.Decimal | number | string) {
 function fromCents(cents: number) {
   return new Prisma.Decimal((cents / 100).toFixed(2));
 }
-
-function calculatePurchaseLimitMeta(value: Prisma.Decimal | number | string | null | undefined) {
-  if (value === null || value === undefined) return null;
-  const cents = toCents(value);
-  return Number.isFinite(cents) && cents > 0 ? cents : null;
-}
-
-type PurchasePayload = {
-  formaPagamentoId: number | null;
-  compraValor: Prisma.Decimal | null;
-  compraHorario: Date;
-  compraFonte: string | null;
-  compraEmail: boolean;
-  compraClassificacao: CreateCompraDTO['compraClassificacao'];
-  compraAcimaLimite: boolean | null;
-  compraUsuarioConcorda?: boolean | null;
-  compraUsuarioAnotacao?: string | null;
-};
-
-type PurchaseUpdatePayload = {
-  formaPagamentoId: number | null;
-  compraValor: Prisma.Decimal | null;
-  compraHorario: Date;
-  compraFonte: string | null;
-  compraEmail: boolean;
-  compraClassificacao: UpdateCompraDTO['compraClassificacao'];
-  compraAcimaLimite: boolean | null;
-  compraUsuarioConcorda?: boolean | null;
-  compraUsuarioAnotacao?: string | null;
-};
 
 type PurchaseItemInput = NonNullable<UpdateCompraDTO['items']>;
 
@@ -73,17 +44,6 @@ function resolveMetricPeriods(previousDate: Date, currentDate: Date) {
   const previousMonth = previousDate.getUTCFullYear() * 100 + previousDate.getUTCMonth();
   const currentMonth = currentDate.getUTCFullYear() * 100 + currentDate.getUTCMonth();
   return previousMonth === currentMonth ? [currentDate] : [previousDate, currentDate];
-}
-
-// O helper recebe somente o delegate usado na consulta, permitindo reutilizar
-// a mesma regra tanto no PrismaClient quanto no cliente transacional.
-async function recalculatePurchaseLimit(tx: Pick<Prisma.TransactionClient, 'tb_usuario'>, userId: number) {
-  const user = await tx.tb_usuario.findFirst({
-    where: { usuario_id: userId, usuario_status: true },
-    select: { usuario_meta_valor_compra: true },
-  });
-
-  return calculatePurchaseLimitMeta(user?.usuario_meta_valor_compra ?? null);
 }
 
 async function applyCompraConfirmation(
@@ -123,11 +83,6 @@ async function applyCompraConfirmation(
   const compraUsuarioConcorda = data.compraUsuarioConcorda ?? existing.compra_usuario_concorda;
   const compraUsuarioAnotacao = data.compraUsuarioAnotacao ?? existing.compra_usuario_anotacao;
   const compraValor = resolveCompraValor(data.compraValor, items, existing.compra_valor, existing.compra_desconto);
-  const purchaseLimitCents = await recalculatePurchaseLimit(tx, userId);
-  const compraAcimaLimite = purchaseLimitCents !== null
-    ? compraValor !== null && toCents(compraValor) > purchaseLimitCents
-    : null;
-
   if (items) {
     // Ao substituir os itens durante uma atualização, os registros antigos
     // também seguem soft delete para preservar o histórico da compra.
@@ -155,7 +110,8 @@ async function applyCompraConfirmation(
       compra_horario: compraHorario,
       compra_fonte: compraFonte,
       compra_classificacao: compraClassificacao,
-      compra_acima_limite: compraAcimaLimite,
+      // A avaliação central grava o estado final depois que a compra está persistida.
+      compra_acima_limite: null,
       compra_usuario_concorda: compraUsuarioConcorda,
       compra_usuario_anotacao: compraUsuarioAnotacao,
     },
@@ -214,7 +170,7 @@ export class CompraService {
     return prisma.$transaction(async (tx) => {
       const user = await tx.tb_usuario.findFirst({
         where: { usuario_id: userId, usuario_status: true },
-        select: { usuario_meta_valor_compra: true },
+        select: { usuario_id: true },
       });
       if (!user) throw new AppError('Usuário não encontrado', 404);
 
@@ -237,12 +193,6 @@ export class CompraService {
       if (compraValor === null) {
         throw new AppError('Compra manual sem valor não pode ser criada', 400);
       }
-      const purchaseLimitCents = calculatePurchaseLimitMeta(user.usuario_meta_valor_compra);
-      // `null` representa "não foi possível determinar". Isso é diferente de
-      // `false`, que significa que a compra foi efetivamente considerada dentro do limite.
-      const compraAcimaLimite = compraValor !== null && purchaseLimitCents !== null
-        ? toCents(compraValor) > purchaseLimitCents
-        : null;
       const compra = await tx.tb_compra.create({
         data: {
           usuario_id: userId,
@@ -255,7 +205,8 @@ export class CompraService {
           compra_fonte: data.compraFonte ?? null,
           compra_email: false,
           compra_classificacao: data.compraClassificacao,
-          compra_acima_limite: compraAcimaLimite,
+          // A avaliação central grava o estado final antes do commit.
+          compra_acima_limite: null,
           compra_usuario_concorda: data.compraUsuarioConcorda,
           compra_usuario_anotacao: data.compraUsuarioAnotacao,
           compra_status: 'CONFIRMADA',
@@ -274,8 +225,13 @@ export class CompraService {
         });
       }
 
+      const limitEvaluation = await evaluateConfirmedPurchaseLimits(compra.compra_id, tx);
+      const compraFinal = limitEvaluation.eligible
+        ? { ...compra, compra_acima_limite: limitEvaluation.purchaseAboveLimit }
+        : compra;
+
       return {
-        compra,
+        compra: compraFinal,
         metricas: await MetricasService.recalculateMonthlyMetrics(userId, data.compraHorario, tx),
       };
     });
@@ -292,6 +248,7 @@ export class CompraService {
       }
 
       if (existing.compra_status === 'CONFIRMADA') {
+        await evaluateConfirmedPurchaseLimits(compraId, tx);
         const metricPeriods = resolveMetricPeriods(existing.compra_horario, result.compraHorario);
         for (const period of metricPeriods) {
           await MetricasService.recalculateMonthlyMetrics(userId, period, tx);
@@ -330,6 +287,7 @@ export class CompraService {
         data: { compra_status: 'CONFIRMADA' },
       });
 
+      await evaluateConfirmedPurchaseLimits(compraId, tx);
       await MetricasService.recalculateMonthlyMetrics(userId, result.compraHorario, tx);
       const compraFinal = await tx.tb_compra.findFirst({ where: { compra_id: compraId } });
       return { compra: compraFinal };
@@ -454,28 +412,26 @@ export class CompraService {
       // para manter a mesma precisão monetária das demais operações do service.
       const remainingItems = await tx.tb_compra_item.findMany({
         where: { compra_id: compraId, compra_item_ativo: 1 },
-        select: { compra_item_valor: true },
+        select: { compra_item_valor: true, compra_item_quantidade: true },
       });
-      const totalCents = remainingItems.reduce((sum, remainingItem) => sum + toCents(remainingItem.compra_item_valor), 0);
+      const totalCents = remainingItems.reduce((sum, remainingItem) => {
+        const itemTotal = itemTotalCents(remainingItem.compra_item_valor, remainingItem.compra_item_quantidade);
+        return sum + (itemTotal ?? 0);
+      }, 0);
       // O valor armazenado e o total liquido: itens restantes menos o desconto
       // original, limitado a zero para impedir valores financeiros negativos.
       const descontoCents = Math.max(0, toCents(existing.compra_desconto ?? 0));
       const compraValor = fromCents(Math.max(0, totalCents - descontoCents));
 
-      // O limite é recalculado a partir da configuração atual do usuário para
-      // manter compra_acima_limite coerente com o novo valor total.
-      const purchaseLimitCents = await recalculatePurchaseLimit(tx, userId);
-      const compraAcimaLimite = purchaseLimitCents !== null
-        ? toCents(compraValor) > purchaseLimitCents
-        : null;
-
+      // A avaliação central recalcula compra_acima_limite depois do novo total.
       await tx.tb_compra.update({
         where: { compra_id: compraId },
-        data: { compra_valor: compraValor, compra_acima_limite: compraAcimaLimite },
+        data: { compra_valor: compraValor, compra_acima_limite: null },
       });
 
       // Somente compras confirmadas alteram as métricas financeiras mensais.
       if (existing.compra_status === 'CONFIRMADA') {
+        await evaluateConfirmedPurchaseLimits(compraId, tx);
         await MetricasService.recalculateMonthlyMetrics(userId, existing.compra_horario, tx);
       }
 

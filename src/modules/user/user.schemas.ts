@@ -12,7 +12,8 @@ export const updateUserSchema = z.object({
   dataNascimento: z.string().optional(),
   limiteCompra: z.number().optional(),
   metaValorMensal: z.number().positive().optional(),
-  metaValorCompra: z.number().optional(),
+  // Zero é um limite configurado: qualquer compra positiva o ultrapassa.
+  metaValorCompra: z.number().nonnegative().optional(),
   metaTempo: z.number().int().optional(),
   gatilhoConsumo: z.string().optional(),
   tempoTela: z.string().optional(),

@@ -12,6 +12,8 @@ export type ReconciliationPurchase = {
   compra_fonte: string | null;
   compra_pedido_externo_id: string | null;
   compra_valor: number | string | { toString(): string } | null;
+  compra_acima_limite?: boolean | null;
+  compra_status?: string;
   compra_desconto?: number | string | { toString(): string } | null;
   forma_pagamento_id: number | null;
   compra_email_mensagem_id: string | null;

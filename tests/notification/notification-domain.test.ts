@@ -13,8 +13,7 @@ let state: { notifications: NotificationRow[]; devices: DeviceRow[] } = {
   notifications: [],
   devices: [],
 };
-let hideFirstIdempotencyLookup = false;
-let forcedCreateError: unknown = null;
+let forcedQueryError: unknown = null;
 let nextNotificationId = 1;
 
 function pick(row: Record<string, any>, select?: Record<string, boolean>) {
@@ -67,38 +66,45 @@ function makeClient() {
         return row ? pick(row, select) : null;
       },
       findUnique: async ({ where, select }: any) => {
-        if (hideFirstIdempotencyLookup && where.notificacao_chave_idempotencia) {
-          hideFirstIdempotencyLookup = false;
-          return null;
-        }
         const key = where.notificacao_chave_idempotencia;
         const row = state.notifications.find((candidate) => candidate.notificacao_chave_idempotencia === key);
         return row ? pick(row, select) : null;
-      },
-      create: async ({ data, select }: any) => {
-        if (forcedCreateError) {
-          const error = forcedCreateError;
-          forcedCreateError = null;
-          throw error;
-        }
-        if (state.notifications.some((row) => row.notificacao_chave_idempotencia === data.notificacao_chave_idempotencia)) {
-          throw duplicateError('notificacao_chave_idempotencia');
-        }
-        const row = {
-          notificacao_id: state.notifications.length + 1,
-          notificacao_lida: 0,
-          notificacao_lida_em: null,
-          notificacao_data_criacao: new Date(),
-          ...data,
-        };
-        state.notifications.push(row);
-        return pick(row, select);
       },
       updateMany: async ({ where, data }: any) => {
         const rows = state.notifications.filter((row) => matches(row, where));
         rows.forEach((row) => Object.assign(row, data));
         return { count: rows.length };
       },
+    },
+    $queryRaw: async (_query: unknown, ...values: any[]) => {
+      if (forcedQueryError) {
+        const error = forcedQueryError;
+        forcedQueryError = null;
+        throw error;
+      }
+
+      const [usuario_id, notificacao_tipo, notificacao_titulo, notificacao_mensagem,
+        notificacao_chave_idempotencia, compra_id, categoria_id, notificacao_evento] = values;
+      if (state.notifications.some((row) => row.notificacao_chave_idempotencia === notificacao_chave_idempotencia)) {
+        return [];
+      }
+
+      const row = {
+        notificacao_id: state.notifications.length + 1,
+        usuario_id,
+        notificacao_tipo,
+        notificacao_titulo,
+        notificacao_mensagem,
+        notificacao_chave_idempotencia,
+        compra_id,
+        categoria_id,
+        notificacao_evento,
+        notificacao_lida: 0,
+        notificacao_lida_em: null,
+        notificacao_data_criacao: new Date(),
+      };
+      state.notifications.push(row);
+      return [{ notificacao_id: row.notificacao_id }];
     },
     tb_dispositivo: {
       upsert: async ({ where, update, create, select }: any) => {
@@ -157,8 +163,7 @@ function notification(overrides: Partial<NotificationRow> = {}) {
 
 function reset() {
   state = { notifications: [], devices: [] };
-  hideFirstIdempotencyLookup = false;
-  forcedCreateError = null;
+  forcedQueryError = null;
   nextNotificationId = 1;
 }
 
@@ -253,24 +258,24 @@ test('criação repetida com a mesma chave retorna existente sem duplicar', asyn
   assert.equal(state.notifications.length, 1);
 });
 
-test('P2002 esperado é tratado somente quando a chave de idempotência existe', async () => {
-  const row = notification({ notificacao_chave_idempotencia: 'race-1' });
-  state.notifications.push(row);
-  hideFirstIdempotencyLookup = true;
-  forcedCreateError = duplicateError('notificacao_chave_idempotencia');
-  const result = await NotificationService.createNotification({
+test('concorrência na mesma chave é resolvida sem abortar a transaction', async () => {
+  const input = {
     userId: 1,
     type: 'LIMITE_COMPRA',
     title: 'Alerta',
     message: 'Mensagem',
     idempotencyKey: 'race-1',
-  });
-  assert.equal(result.created, false);
-  assert.equal(result.notification.notificacao_id, row.notificacao_id);
+  } as const;
+  const results = await Promise.all([
+    NotificationService.createNotification(input, client),
+    NotificationService.createNotification(input, client),
+  ]);
+  assert.deepEqual(results.map((result) => result.created).sort(), [false, true]);
+  assert.equal(state.notifications.length, 1);
 });
 
-test('P2002 de outra constraint não é mascarado como idempotência', async () => {
-  forcedCreateError = duplicateError('outra_constraint');
+test('erro de integridade diferente da chave de idempotência não é mascarado', async () => {
+  forcedQueryError = duplicateError('outra_constraint');
   await assert.rejects(() => NotificationService.createNotification({
     userId: 1,
     type: 'LIMITE_COMPRA',
@@ -278,6 +283,22 @@ test('P2002 de outra constraint não é mascarado como idempotência', async () 
     message: 'Mensagem',
     idempotencyKey: 'other-constraint',
   }), (error: any) => error.code === 'P2002');
+});
+
+test('mesma chave para outro usuário retorna conflito de integridade', async () => {
+  const input = {
+    userId: 1,
+    type: 'LIMITE_COMPRA' as const,
+    title: 'Alerta',
+    message: 'Mensagem',
+    idempotencyKey: 'cross-user-key',
+  };
+  await NotificationService.createNotification(input);
+  await assert.rejects(
+    () => NotificationService.createNotification({ ...input, userId: 2 }),
+    (error: any) => error.statusCode === 409,
+  );
+  assert.equal(state.notifications[0].usuario_id, 1);
 });
 
 test('registra novo Expo Push Token e não retorna o token', async () => {

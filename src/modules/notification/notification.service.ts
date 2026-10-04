@@ -3,6 +3,8 @@ import type { notificacao_tipo_enum } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
 
+type NotificationDatabase = Pick<Prisma.TransactionClient, 'tb_notificacao' | '$queryRaw'>;
+
 const notificationSelect = {
   notificacao_id: true,
   notificacao_tipo: true,
@@ -16,6 +18,11 @@ const notificationSelect = {
   notificacao_data_criacao: true,
 } as const;
 
+const notificationSelectWithOwner = {
+  ...notificationSelect,
+  usuario_id: true,
+} as const;
+
 export type CreateNotificationInput = {
   userId: number;
   type: notificacao_tipo_enum;
@@ -27,14 +34,9 @@ export type CreateNotificationInput = {
   event?: string | null;
 };
 
-function isExpectedIdempotencyConflict(error: unknown): error is Prisma.PrismaClientKnownRequestError {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
-    return false;
-  }
-
-  const target = error.meta?.target;
-  const targetText = Array.isArray(target) ? target.join(',') : String(target ?? '');
-  return targetText.includes('notificacao_chave_idempotencia');
+function stripOwner<T extends { usuario_id: number }>(notification: T) {
+  const { usuario_id: _usuarioId, ...publicNotification } = notification;
+  return publicNotification;
 }
 
 export class NotificationService {
@@ -96,47 +98,51 @@ export class NotificationService {
     });
   }
 
-  static async createNotification(input: CreateNotificationInput) {
-    const existing = await prisma.tb_notificacao.findUnique({
+  static async createNotification(input: CreateNotificationInput, db: NotificationDatabase = prisma) {
+    // O alvo explícito da cláusula ON CONFLICT evita abortar a transaction
+    // quando dois fluxos tentam persistir a mesma chave simultaneamente.
+    // Assim, a consulta posterior continua segura no mesmo TransactionClient.
+    const inserted = await db.$queryRaw<Array<{ notificacao_id: number }>>`
+      INSERT INTO public.tb_notificacao (
+        usuario_id,
+        notificacao_tipo,
+        notificacao_titulo,
+        notificacao_mensagem,
+        notificacao_chave_idempotencia,
+        compra_id,
+        categoria_id,
+        notificacao_evento
+      )
+      VALUES (
+        ${input.userId},
+        ${input.type}::public.notificacao_tipo_enum,
+        ${input.title},
+        ${input.message},
+        ${input.idempotencyKey},
+        ${input.purchaseId ?? null},
+        ${input.categoryId ?? null},
+        ${input.event ?? null}
+      )
+      ON CONFLICT (notificacao_chave_idempotencia) DO NOTHING
+      RETURNING notificacao_id
+    `;
+
+    const stored = await db.tb_notificacao.findUnique({
       where: { notificacao_chave_idempotencia: input.idempotencyKey },
-      select: notificationSelect,
+      select: notificationSelectWithOwner,
     });
 
-    if (existing) {
-      return { notification: existing, created: false };
+    if (!stored) {
+      throw new AppError('Notificação não pôde ser persistida', 500);
     }
 
-    try {
-      const notification = await prisma.tb_notificacao.create({
-        data: {
-          usuario_id: input.userId,
-          notificacao_tipo: input.type,
-          notificacao_titulo: input.title,
-          notificacao_mensagem: input.message,
-          notificacao_chave_idempotencia: input.idempotencyKey,
-          compra_id: input.purchaseId ?? null,
-          categoria_id: input.categoryId ?? null,
-          notificacao_evento: input.event ?? null,
-        },
-        select: notificationSelect,
-      });
-
-      return { notification, created: true };
-    } catch (error) {
-      if (!isExpectedIdempotencyConflict(error)) {
-        throw error;
-      }
-
-      const concurrent = await prisma.tb_notificacao.findUnique({
-        where: { notificacao_chave_idempotencia: input.idempotencyKey },
-        select: notificationSelect,
-      });
-
-      if (!concurrent) {
-        throw error;
-      }
-
-      return { notification: concurrent, created: false };
+    if (stored.usuario_id !== input.userId) {
+      throw new AppError('Chave de idempotência já pertence a outro usuário', 409);
     }
+
+    return {
+      notification: stripOwner(stored),
+      created: inserted.length > 0,
+    };
   }
 }

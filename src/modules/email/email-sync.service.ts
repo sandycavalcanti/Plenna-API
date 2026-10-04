@@ -17,6 +17,7 @@ import { parseFiscalAttachments, mergePurchaseSources, type FiscalSourceResults 
 import { processFiscalLinks } from './fiscal-link.processor.js';
 import type { AIPurchaseExtractionProvider, AIExtractedPurchase, AICategoryOption } from './ai-provider.js';
 import { MetricasService } from '../compra/metricas.service.js';
+import { evaluateConfirmedPurchaseLimits } from '../compra/limite.service.js';
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -360,6 +361,8 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
       compra_fonte: true,
       compra_pedido_externo_id: true,
       compra_valor: true,
+      compra_acima_limite: true,
+      compra_status: true,
       compra_desconto: true,
       forma_pagamento_id: true,
       compra_email_mensagem_id: true,
@@ -383,7 +386,9 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
   const itemsToPersist = shouldPersistPurchaseItems(match.purchase.tb_compra_item.length, candidateItems)
     ? candidateItems
     : [];
-  if (Object.keys(update).length === 0 && itemsToPersist.length === 0) return { reconciled: match.purchase };
+  if (Object.keys(update).length === 0 && itemsToPersist.length === 0 && match.purchase.compra_status !== 'CONFIRMADA') {
+    return { reconciled: match.purchase };
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     const purchase = Object.keys(update).length > 0
@@ -392,12 +397,20 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
     if (itemsToPersist.length > 0) {
       await persistPurchaseItems(match.purchase.compra_id, itemsToPersist, tx);
     }
+    if (match.purchase.compra_status === 'CONFIRMADA') {
+      const limitEvaluation = await evaluateConfirmedPurchaseLimits(match.purchase.compra_id, tx);
+      await MetricasService.recalculateMonthlyMetrics(userId, match.purchase.compra_horario, tx);
+      return {
+        ...purchase,
+        compra_acima_limite: limitEvaluation.eligible ? limitEvaluation.purchaseAboveLimit : null,
+      };
+    }
     return purchase;
   });
   return { reconciled: updated };
 }
 
-async function createCompraFromMessage(
+export async function createCompraFromMessage(
   userId: number,
   message: GmailMessageDetail,
   supplemental: { amount?: number | null; establishment?: string | null; paymentMethodName?: string | null } | null = {},
@@ -577,11 +590,16 @@ async function createCompraFromMessage(
           ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
         },
       });
+      let compraFinal = compra;
       if (purchaseComplete) {
+        const limitEvaluation = await evaluateConfirmedPurchaseLimits(compra.compra_id, db);
         // A métrica usa a mesma transação para não confirmar sem atualizar os indicadores.
         await MetricasService.recalculateMonthlyMetrics(userId, horario, db);
+        if (limitEvaluation.eligible) {
+          compraFinal = { ...compra, compra_acima_limite: limitEvaluation.purchaseAboveLimit };
+        }
       }
-      return compra;
+      return compraFinal;
     };
     const compra = purchaseComplete
       ? await prisma.$transaction((tx) => createPurchase(tx))

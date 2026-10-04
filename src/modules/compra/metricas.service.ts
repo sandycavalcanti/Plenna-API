@@ -77,15 +77,10 @@ export class MetricasService {
     const totalCents = knownValues.reduce((sum, value) => sum + toCents(value), 0);
     const frequency = knownValues.length;
     const averagePurchaseCents = Math.round(totalCents / frequency);
-    const monthlyLimitCents = user.usuario_meta_valor_mensal ? toCents(user.usuario_meta_valor_mensal) : null;
-    const aboveLimitCountRaw =
-      monthlyLimitCents === null
-        ? 0
-        : knownValues.reduce((count, value) => {
-            return count + (toCents(value) > monthlyLimitCents ? 1 : 0);
-          }, 0);
-    const aboveLimitCountNum = Number(aboveLimitCountRaw);
-    const aboveLimitCount = Number.isFinite(aboveLimitCountNum) ? Math.max(0, Math.floor(aboveLimitCountNum)) : 0;
+    const monthlyLimitCents = user.usuario_meta_valor_mensal === null || user.usuario_meta_valor_mensal === undefined
+      ? null
+      : toCents(user.usuario_meta_valor_mensal);
+    const monthlyTotalAboveLimit = monthlyLimitCents !== null && totalCents > monthlyLimitCents;
 
     const frequencyNum = Number(frequency);
 
@@ -94,7 +89,7 @@ export class MetricasService {
       metricas_media_valor_compra: fromCents(averagePurchaseCents),
       metricas_frequencia_compra: Number.isFinite(frequencyNum) ? Math.max(0, Math.floor(frequencyNum)) : 0,
       metricas_media_tempo: existingMetric?.metricas_media_tempo ?? new Prisma.Decimal(0),
-      metricas_acima_limite: aboveLimitCount > 0,
+      metricas_acima_limite: monthlyTotalAboveLimit,
       metricas_periodo_referencia: start,
     };
 
