@@ -95,7 +95,6 @@ model tb_forma_pagamento {
 }
 
 model tb_usuario {
-  tb_oauth_tentativa        tb_oauth_tentativa[]
   usuario_id                Int                    @id @default(autoincrement())
   usuario_email             String                 @unique @db.VarChar(64)
   usuario_senha             String                 @db.VarChar(255)
@@ -121,8 +120,6 @@ model tb_usuario {
   tb_preferencia            tb_preferencia[]
   tb_propaganda             tb_propaganda[]
   tb_tempo_uso              tb_tempo_uso[]
-  tb_redefinicao_senha      tb_redefinicao_senha[]
-  tb_propaganda             tb_propaganda[]
 
   @@schema("public")
 }
