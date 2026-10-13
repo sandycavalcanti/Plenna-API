@@ -387,7 +387,9 @@ test('gera categoria e mensal geral simultaneamente', async () => {
   const current = addPurchase({ compra_valor: 60 });
   addItem(current.compra_id, 1, 60);
   const result = await evaluateCurrent();
-  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_CATEGORIA', 'LIMITE_MENSAL']);
+  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_MENSAL']);
+  assert.deepEqual(result.violations.map((violation: Row) => violation.type), ['LIMITE_CATEGORIA', 'LIMITE_MENSAL']);
+  assert.equal(state.notifications.length, 1);
 });
 
 test('gera compra e categoria sem mensal', async () => {
@@ -395,7 +397,9 @@ test('gera compra e categoria sem mensal', async () => {
   const current = addPurchase({ compra_valor: 60 });
   addItem(current.compra_id, 1, 60);
   const result = await evaluateCurrent();
-  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_COMPRA', 'LIMITE_CATEGORIA']);
+  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_CATEGORIA']);
+  assert.deepEqual(result.violations.map((violation: Row) => violation.type), ['LIMITE_COMPRA', 'LIMITE_CATEGORIA']);
+  assert.equal(state.notifications.length, 1);
 });
 
 test('gera compra e mensal sem categoria', async () => {
@@ -403,7 +407,9 @@ test('gera compra e mensal sem categoria', async () => {
   addPurchase({ compra_valor: 60 });
   addPurchase({ compra_valor: 60 });
   const result = await evaluateCurrent();
-  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_COMPRA', 'LIMITE_MENSAL']);
+  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_MENSAL']);
+  assert.deepEqual(result.violations.map((violation: Row) => violation.type), ['LIMITE_COMPRA', 'LIMITE_MENSAL']);
+  assert.equal(state.notifications.length, 1);
 });
 
 test('gera os três tipos independentes', async () => {
@@ -412,7 +418,13 @@ test('gera os três tipos independentes', async () => {
   addItem(current.compra_id, 1, 60);
   addPurchase({ compra_valor: 60 });
   const result = await evaluateConfirmedPurchaseLimits(current.compra_id);
-  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_COMPRA', 'LIMITE_CATEGORIA', 'LIMITE_MENSAL']);
+  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_MENSAL']);
+  assert.deepEqual(result.violations.map((violation: Row) => violation.type), [
+    'LIMITE_COMPRA',
+    'LIMITE_CATEGORIA',
+    'LIMITE_MENSAL',
+  ]);
+  assert.equal(state.notifications.length, 1);
 });
 
 test('não cria limite de compra, mensal ou categoria sem configuração correspondente', async () => {
@@ -451,15 +463,17 @@ test('uma compra com múltiplas categorias soma cada categoria separadamente', a
   assert.equal(state.notifications.some((notification) => notification.categoria_id === 2), false);
 });
 
-test('duas categorias excedidas geram duas notificações e duas chaves', async () => {
+test('duas categorias excedidas geram uma notificação agregada', async () => {
   configureLimits(1000, 1000, 40);
   state.preferences.push({ usuario_id: 1, categoria_id: 2, preferencia_meta: 20 });
   const current = addPurchase({ compra_valor: 70 });
   addItem(current.compra_id, 1, 45);
   addItem(current.compra_id, 2, 25);
   const result = await evaluateCurrent();
-  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_CATEGORIA', 'LIMITE_CATEGORIA']);
-  assert.equal(new Set(result.alerts.map((alert: Row) => alert.idempotencyKey)).size, 2);
+  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_CATEGORIA']);
+  assert.deepEqual(result.violations.map((violation: Row) => violation.categoryId), [1, 2]);
+  assert.equal(result.alerts[0].categoryId, null);
+  assert.equal(state.notifications.length, 1);
 });
 
 test('item soft-deleted não entra no total da categoria', async () => {
@@ -510,6 +524,23 @@ test('Gmail confirmada usa a mesma avaliação central', async () => {
   assert.equal(state.purchases[0].compra_acima_limite, true);
 });
 
+test('Gmail confirmada com múltiplas violações gera uma notificação agregada', async () => {
+  configureLimits(50, 100, 40);
+  const current = addPurchase({ compra_valor: 60, compra_email: true, compra_status: 'CONFIRMADA' });
+  addItem(current.compra_id, 1, 60);
+  addPurchase({ compra_valor: 60, compra_email: true, compra_status: 'CONFIRMADA' });
+
+  const result = await evaluateConfirmedPurchaseLimits(current.compra_id);
+
+  assert.deepEqual(result.violations.map((violation: Row) => violation.type), [
+    'LIMITE_COMPRA',
+    'LIMITE_CATEGORIA',
+    'LIMITE_MENSAL',
+  ]);
+  assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_MENSAL']);
+  assert.equal(state.notifications.length, 1);
+});
+
 test('nova compra acima de categoria já excedida gera novo alerta', async () => {
   configureLimits(1000, 1000, 50);
   const previous = addPurchase({ compra_valor: 60 });
@@ -518,7 +549,7 @@ test('nova compra acima de categoria já excedida gera novo alerta', async () =>
   addItem(current.compra_id, 1, 10);
   const result = await evaluateCurrent();
   assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_CATEGORIA']);
-  assert.equal(result.alerts[0].idempotencyKey, '1:2:LIMITE_CATEGORIA:1');
+  assert.equal(result.alerts[0].idempotencyKey, '1:2:LIMITE_FINANCEIRO');
 });
 
 test('nova compra depois de mensal já excedido gera novo alerta', async () => {
@@ -527,7 +558,7 @@ test('nova compra depois de mensal já excedido gera novo alerta', async () => {
   const current = addPurchase({ compra_valor: 10 });
   const result = await evaluateCurrent();
   assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_MENSAL']);
-  assert.equal(result.alerts[0].idempotencyKey, '1:2:LIMITE_MENSAL');
+  assert.equal(result.alerts[0].idempotencyKey, '1:2:LIMITE_FINANCEIRO');
 });
 
 test('retry da mesma compra não duplica alerta', async () => {
@@ -540,6 +571,32 @@ test('retry da mesma compra não duplica alerta', async () => {
   assert.equal(state.notifications.length, 1);
 });
 
+test('reprocessamento não cria alerta agregado quando a compra ja possui alerta financeiro legado', async () => {
+  configureLimits(50, null, null);
+  const current = addPurchase({ compra_valor: 80 });
+  state.notifications.push({
+    notificacao_id: 99,
+    usuario_id: 1,
+    notificacao_tipo: 'LIMITE_COMPRA',
+    notificacao_titulo: 'Limite de compra ultrapassado',
+    notificacao_mensagem: 'Alerta legado',
+    notificacao_chave_idempotencia: '1:1:LIMITE_COMPRA',
+    compra_id: current.compra_id,
+    categoria_id: null,
+    notificacao_evento: null,
+    notificacao_lida: 0,
+    notificacao_lida_em: null,
+    notificacao_data_criacao: new Date(),
+  });
+
+  const result = await evaluateConfirmedPurchaseLimits(current.compra_id);
+
+  assert.equal(result.alerts.length, 1);
+  assert.equal(result.alerts[0].created, false);
+  assert.equal(result.alerts[0].notificationId, 99);
+  assert.equal(state.notifications.length, 1);
+});
+
 test('retry não duplica alertas de categoria separados por categoria', async () => {
   configureLimits(1000, null, 10);
   state.preferences.push({ usuario_id: 1, categoria_id: 2, preferencia_meta: 10 });
@@ -548,8 +605,8 @@ test('retry não duplica alertas de categoria separados por categoria', async ()
   addItem(current.compra_id, 2, 20);
   await evaluateConfirmedPurchaseLimits(current.compra_id);
   await evaluateConfirmedPurchaseLimits(current.compra_id);
-  assert.equal(state.notifications.length, 2);
-  assert.equal(new Set(state.notifications.map((notification) => notification.notificacao_chave_idempotencia)).size, 2);
+  assert.equal(state.notifications.length, 1);
+  assert.equal(state.notifications[0].notificacao_chave_idempotencia, '1:1:LIMITE_FINANCEIRO');
 });
 
 test('compras diferentes possuem chaves de idempotência diferentes', async () => {
@@ -560,7 +617,7 @@ test('compras diferentes possuem chaves de idempotência diferentes', async () =
   await evaluateConfirmedPurchaseLimits(second.compra_id);
   assert.deepEqual(
     state.notifications.map((notification) => notification.notificacao_chave_idempotencia),
-    ['1:1:LIMITE_COMPRA', '1:1:LIMITE_MENSAL', '1:2:LIMITE_COMPRA', '1:2:LIMITE_MENSAL'],
+    ['1:1:LIMITE_FINANCEIRO', '1:2:LIMITE_FINANCEIRO'],
   );
 });
 
@@ -709,7 +766,7 @@ test('reprocessamento da avaliação central preserva a idempotência por compra
   await evaluateConfirmedPurchaseLimits(current.compra_id);
   await evaluateConfirmedPurchaseLimits(current.compra_id);
   assert.equal(state.notifications.length, 1);
-  assert.equal(state.notifications[0].notificacao_chave_idempotencia, '1:1:LIMITE_COMPRA');
+  assert.equal(state.notifications[0].notificacao_chave_idempotencia, '1:1:LIMITE_FINANCEIRO');
 });
 
 test('push manual é aguardado somente depois do commit da transação', async () => {
@@ -873,7 +930,7 @@ test('falha do push não faz o sync Gmail confirmado falhar', async () => {
   assert.equal(state.notifications.length, 1);
 });
 
-test('uma compra com alertas independentes envia somente candidatos novos ao push', async () => {
+test('uma compra com múltiplas violações envia um único candidato ao push', async () => {
   configureLimits(50, 50, null);
   const originalDispatch = pushService.dispatchForUser;
   let pushedTypes: string[] = [];
@@ -891,7 +948,7 @@ test('uma compra com alertas independentes envia somente candidatos novos ao pus
   } finally {
     pushService.dispatchForUser = originalDispatch;
   }
-  assert.deepEqual(pushedTypes.sort(), ['LIMITE_COMPRA', 'LIMITE_MENSAL']);
+  assert.deepEqual(pushedTypes, ['LIMITE_MENSAL']);
 });
 
 test('integra compra manual, Central, unread count e marcação de leitura na mesma notificação', async () => {
@@ -917,7 +974,7 @@ test('integra compra manual, Central, unread count e marcação de leitura na me
   assert.equal(await NotificationService.countUnread(1), 0);
 });
 
-test('integra três alertas independentes, Central e retry sem novo push', async () => {
+test('integra uma notificação agregada, Central e retry sem novo push', async () => {
   configureLimits(50, 100, 40);
   addPurchase({ compra_valor: 60 });
   const originalDispatch = pushService.dispatchForUser;
@@ -936,9 +993,9 @@ test('integra três alertas independentes, Central e retry sem novo push', async
     });
 
     const firstList = await NotificationService.listByUserId(1);
-    assert.equal(firstList.length, 3);
-    assert.equal(await NotificationService.countUnread(1), 3);
-    assert.deepEqual(pushedTypes.sort(), ['LIMITE_CATEGORIA', 'LIMITE_COMPRA', 'LIMITE_MENSAL']);
+    assert.equal(firstList.length, 1);
+    assert.equal(await NotificationService.countUnread(1), 1);
+    assert.deepEqual(pushedTypes, ['LIMITE_MENSAL']);
 
     await CompraService.update(1, created.compra.compra_id, {
       compraHorario: new Date('2026-08-15T12:00:00Z'),
@@ -946,8 +1003,8 @@ test('integra três alertas independentes, Central e retry sem novo push', async
       compraValor: 60,
     } as any);
 
-    assert.equal((await NotificationService.listByUserId(1)).length, 3);
-    assert.deepEqual(pushedTypes.sort(), ['LIMITE_CATEGORIA', 'LIMITE_COMPRA', 'LIMITE_MENSAL']);
+    assert.equal((await NotificationService.listByUserId(1)).length, 1);
+    assert.deepEqual(pushedTypes, ['LIMITE_MENSAL']);
   } finally {
     pushService.dispatchForUser = originalDispatch;
   }

@@ -10,6 +10,12 @@ type LimitDatabase = Pick<
 
 type LimitType = 'LIMITE_COMPRA' | 'LIMITE_CATEGORIA' | 'LIMITE_MENSAL';
 
+type LimitViolation = {
+  type: LimitType;
+  categoryId: number | null;
+  message: string;
+};
+
 type CategoryTotal = {
   categoriaId: number;
   categoriaNome: string;
@@ -82,11 +88,30 @@ async function persistAlert(
   purchaseId: number,
   type: LimitType,
   message: string,
-  categoryId?: number,
+  categoryId: number | null,
 ) {
-  const idempotencyKey = categoryId === undefined
-    ? `${userId}:${purchaseId}:${type}`
-    : `${userId}:${purchaseId}:${type}:${categoryId}`;
+  const idempotencyKey = `${userId}:${purchaseId}:LIMITE_FINANCEIRO`;
+  const existingFinancialNotification = await db.tb_notificacao.findFirst({
+    where: {
+      usuario_id: userId,
+      compra_id: purchaseId,
+      notificacao_tipo: {
+        in: ['LIMITE_COMPRA', 'LIMITE_CATEGORIA', 'LIMITE_MENSAL'],
+      },
+    },
+    orderBy: { notificacao_id: 'asc' },
+    select: { notificacao_id: true },
+  });
+
+  if (existingFinancialNotification) {
+    return {
+      type,
+      categoryId: categoryId ?? null,
+      idempotencyKey,
+      created: false,
+      notificationId: existingFinancialNotification.notificacao_id,
+    };
+  }
 
   const result = await NotificationService.createNotification({
     userId,
@@ -95,7 +120,7 @@ async function persistAlert(
     message,
     idempotencyKey,
     purchaseId,
-    categoryId: categoryId ?? null,
+    categoryId,
     event: null,
   }, db);
 
@@ -247,15 +272,13 @@ export async function evaluateConfirmedPurchaseLimits(
     ? monthlyTotalCents > monthlyLimitCents
     : false;
 
-  const alerts = [];
+  const violations: LimitViolation[] = [];
   if (purchaseAboveLimit === true && purchaseCents !== null && purchaseLimitCents !== null) {
-    alerts.push(await persistAlert(
-      db,
-      purchase.usuario_id,
-      purchase.compra_id,
-      'LIMITE_COMPRA',
-      purchaseMessage(purchaseCents, purchaseLimitCents),
-    ));
+    violations.push({
+      type: 'LIMITE_COMPRA',
+      categoryId: null,
+      message: purchaseMessage(purchaseCents, purchaseLimitCents),
+    });
   }
 
   for (const category of categoryTotals.values()) {
@@ -263,25 +286,41 @@ export async function evaluateConfirmedPurchaseLimits(
     const monthlyCategoryTotal = monthlyCategoryTotals.get(category.categoriaId) ?? 0;
     if (limitCents === undefined || monthlyCategoryTotal <= limitCents) continue;
 
-    alerts.push(await persistAlert(
-      db,
-      purchase.usuario_id,
-      purchase.compra_id,
-      'LIMITE_CATEGORIA',
-      categoryMessage({ ...category, totalCents: monthlyCategoryTotal }, limitCents, monthlyExceeded),
-      category.categoriaId,
-    ));
+    violations.push({
+      type: 'LIMITE_CATEGORIA',
+      categoryId: category.categoriaId,
+      message: categoryMessage(
+        { ...category, totalCents: monthlyCategoryTotal },
+        limitCents,
+        monthlyExceeded,
+      ),
+    });
   }
 
   if (monthlyExceeded && monthlyLimitCents !== null) {
-    alerts.push(await persistAlert(
+    violations.push({
+      type: 'LIMITE_MENSAL',
+      categoryId: null,
+      message: monthlyMessage(monthlyTotalCents, monthlyLimitCents),
+    });
+  }
+
+  const monthlyViolation = violations.find((violation) => violation.type === 'LIMITE_MENSAL');
+  const categoryViolation = violations.find((violation) => violation.type === 'LIMITE_CATEGORIA');
+  const purchaseViolation = violations.find((violation) => violation.type === 'LIMITE_COMPRA');
+  const primaryViolation = monthlyViolation ?? categoryViolation ?? purchaseViolation;
+  const alerts = primaryViolation
+    ? [await persistAlert(
       db,
       purchase.usuario_id,
       purchase.compra_id,
-      'LIMITE_MENSAL',
-      monthlyMessage(monthlyTotalCents, monthlyLimitCents),
-    ));
-  }
+      primaryViolation.type,
+      violations.length > 1
+        ? 'Esta compra ultrapassou mais de um dos limites de gastos que você definiu.'
+        : primaryViolation.message,
+      violations.length === 1 ? primaryViolation.categoryId : null,
+    )]
+    : [];
 
   return {
     eligible: true as const,
@@ -291,6 +330,7 @@ export async function evaluateConfirmedPurchaseLimits(
     monthlyTotalCents,
     monthlyLimitCents,
     monthlyExceeded,
+    violations: violations.map(({ type, categoryId }) => ({ type, categoryId })),
     categoryTotals: [...categoryTotals.values()].map((category) => ({
       ...category,
       monthlyTotalCents: monthlyCategoryTotals.get(category.categoriaId) ?? 0,
