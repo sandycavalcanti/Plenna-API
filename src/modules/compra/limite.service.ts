@@ -13,7 +13,11 @@ type LimitType = 'LIMITE_COMPRA' | 'LIMITE_CATEGORIA' | 'LIMITE_MENSAL';
 type LimitViolation = {
   type: LimitType;
   categoryId: number | null;
-  message: string;
+  categoryName: string | null;
+  currentCents: number;
+  limitCents: number;
+  excessCents: number;
+  excessPercent: number | null;
 };
 
 type CategoryTotal = {
@@ -43,7 +47,7 @@ function formatMoney(cents: number) {
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
     currency: 'BRL',
-  }).format(cents / 100);
+  }).format(cents / 100).replace(/[\u00a0\u202f]/g, ' ');
 }
 
 export function isConfiguredLimit(cents: number | null): cents is number {
@@ -67,19 +71,60 @@ function notificationTitle(type: LimitType) {
   return 'Alerta de limite mensal';
 }
 
-function purchaseMessage(purchaseCents: number, limitCents: number) {
-  return `Esta compra de ${formatMoney(purchaseCents)} ultrapassou o limite planejado de ${formatMoney(limitCents)} para uma única compra.`;
+function calculateExcess(currentCents: number, limitCents: number) {
+  const excessCents = currentCents - limitCents;
+  return {
+    currentCents,
+    limitCents,
+    excessCents,
+    excessPercent: limitCents > 0 ? (excessCents / limitCents) * 100 : null,
+  };
 }
 
-function categoryMessage(category: CategoryTotal, limitCents: number, monthlyExceeded: boolean) {
-  const context = monthlyExceeded
-    ? 'O limite mensal geral também foi ultrapassado.'
-    : 'O orçamento mensal geral ainda está dentro do planejado.';
-  return `Os gastos de ${category.categoriaNome} chegaram a ${formatMoney(category.totalCents)} e ultrapassaram o limite mensal de ${formatMoney(limitCents)} para a categoria. ${context}`;
+function formatPercent(percent: number) {
+  return new Intl.NumberFormat('pt-BR', {
+    maximumFractionDigits: 2,
+  }).format(percent);
 }
 
-function monthlyMessage(totalCents: number, limitCents: number) {
-  return `Os gastos confirmados do mês chegaram a ${formatMoney(totalCents)} e ultrapassaram o limite mensal geral de ${formatMoney(limitCents)}.`;
+function formatExcess(violation: Pick<LimitViolation, 'excessCents' | 'excessPercent'>) {
+  const percentage = violation.excessPercent === null
+    ? ''
+    : ` (${formatPercent(violation.excessPercent)}%)`;
+  return `${formatMoney(violation.excessCents)}${percentage}`;
+}
+
+function purchaseMessage(violation: LimitViolation) {
+  if (violation.excessPercent === null) {
+    return `Esta compra ultrapassou em ${formatMoney(violation.excessCents)} o limite que você definiu.`;
+  }
+  return `Esta compra ultrapassou seu limite em ${formatExcess(violation)}. Valor da compra: ${formatMoney(violation.currentCents)}.`;
+}
+
+function categoryMessage(violation: LimitViolation) {
+  const categoryName = violation.categoryName ?? 'esta categoria';
+  return `Você ultrapassou o limite de ${categoryName} em ${formatExcess(violation)}. Total da categoria: ${formatMoney(violation.currentCents)}.`;
+}
+
+function monthlyMessage(violation: LimitViolation) {
+  return `Você ultrapassou seu limite mensal em ${formatExcess(violation)}. Total no mês: ${formatMoney(violation.currentCents)}.`;
+}
+
+function singleViolationMessage(violation: LimitViolation) {
+  if (violation.type === 'LIMITE_COMPRA') return purchaseMessage(violation);
+  if (violation.type === 'LIMITE_CATEGORIA') return categoryMessage(violation);
+  return monthlyMessage(violation);
+}
+
+function aggregateViolationMessage(violation: LimitViolation) {
+  const excess = formatExcess(violation);
+  if (violation.type === 'LIMITE_MENSAL') {
+    return `Esta compra ultrapassou mais de um dos seus limites. Seu limite mensal foi excedido em ${excess}.`;
+  }
+  if (violation.type === 'LIMITE_CATEGORIA') {
+    return `Esta compra ultrapassou mais de um dos seus limites. O limite de ${violation.categoryName ?? 'esta categoria'} foi excedido em ${excess}.`;
+  }
+  return `Esta compra ultrapassou mais de um dos seus limites. Seu limite por compra foi excedido em ${excess}.`;
 }
 
 async function persistAlert(
@@ -274,10 +319,12 @@ export async function evaluateConfirmedPurchaseLimits(
 
   const violations: LimitViolation[] = [];
   if (purchaseAboveLimit === true && purchaseCents !== null && purchaseLimitCents !== null) {
+    const excess = calculateExcess(purchaseCents, purchaseLimitCents);
     violations.push({
       type: 'LIMITE_COMPRA',
       categoryId: null,
-      message: purchaseMessage(purchaseCents, purchaseLimitCents),
+      categoryName: null,
+      ...excess,
     });
   }
 
@@ -286,22 +333,22 @@ export async function evaluateConfirmedPurchaseLimits(
     const monthlyCategoryTotal = monthlyCategoryTotals.get(category.categoriaId) ?? 0;
     if (limitCents === undefined || monthlyCategoryTotal <= limitCents) continue;
 
+    const excess = calculateExcess(monthlyCategoryTotal, limitCents);
     violations.push({
       type: 'LIMITE_CATEGORIA',
       categoryId: category.categoriaId,
-      message: categoryMessage(
-        { ...category, totalCents: monthlyCategoryTotal },
-        limitCents,
-        monthlyExceeded,
-      ),
+      categoryName: category.categoriaNome,
+      ...excess,
     });
   }
 
   if (monthlyExceeded && monthlyLimitCents !== null) {
+    const excess = calculateExcess(monthlyTotalCents, monthlyLimitCents);
     violations.push({
       type: 'LIMITE_MENSAL',
       categoryId: null,
-      message: monthlyMessage(monthlyTotalCents, monthlyLimitCents),
+      categoryName: null,
+      ...excess,
     });
   }
 
@@ -316,8 +363,8 @@ export async function evaluateConfirmedPurchaseLimits(
       purchase.compra_id,
       primaryViolation.type,
       violations.length > 1
-        ? 'Esta compra ultrapassou mais de um dos limites de gastos que você definiu.'
-        : primaryViolation.message,
+        ? aggregateViolationMessage(primaryViolation)
+        : singleViolationMessage(primaryViolation),
       violations.length === 1 ? primaryViolation.categoryId : null,
     )]
     : [];

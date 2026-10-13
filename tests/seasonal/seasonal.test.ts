@@ -185,6 +185,10 @@ test('resolve Dia dos Namorados corretamente', () => {
   assert.deepEqual(eventByCode('DIA_DOS_NAMORADOS').resolveDate(2026), civilDate(2026, 6, 12));
 });
 
+test('resolve Semana do Consumidor como 15 de março', () => {
+  assert.deepEqual(eventByCode('SEMANA_CONSUMIDOR').resolveDate(2026), civilDate(2026, 3, 15));
+});
+
 test('resolve Dia das Crianças corretamente', () => {
   assert.deepEqual(eventByCode('DIA_DAS_CRIANCAS').resolveDate(2026), civilDate(2026, 10, 12));
 });
@@ -263,11 +267,71 @@ test('ano bissexto não altera as regras móveis', () => {
   assert.deepEqual(eventByCode('BLACK_FRIDAY').resolveDate(2024), civilDate(2024, 11, 29));
 });
 
-test('catálogo contém somente os sete eventos aprovados', () => {
+test('catálogo contém somente os oito eventos aprovados', () => {
   assert.deepEqual(SEASONAL_EVENTS.map((event: any) => event.code).sort(), [
     'ANO_NOVO', 'BLACK_FRIDAY', 'DIA_DAS_CRIANCAS', 'DIA_DAS_MAES',
-    'DIA_DOS_NAMORADOS', 'DIA_DOS_PAIS', 'NATAL',
+    'DIA_DOS_NAMORADOS', 'DIA_DOS_PAIS', 'NATAL', 'SEMANA_CONSUMIDOR',
   ]);
+});
+
+test('catálogo usa os títulos e mensagens sazonais aprovados', () => {
+  const expected = {
+    SEMANA_CONSUMIDOR: {
+      title: 'Compre com intenção',
+      message: 'Aproveite as ofertas sem sair das suas metas. Desconto só vale a pena quando a compra realmente faz sentido.',
+    },
+    DIA_DAS_MAES: {
+      title: 'Presenteie com consciência',
+      message: 'Carinho não se mede pelo preço. Escolha algo especial sem ultrapassar seus limites.',
+    },
+    DIA_DOS_NAMORADOS: {
+      title: 'Amor não precisa custar mais',
+      message: 'Respeite suas metas e escolha com intenção. O melhor presente nem sempre é o mais caro.',
+    },
+    DIA_DOS_PAIS: {
+      title: 'Planeje antes de presentear',
+      message: 'Defina um limite antes das compras e escolha algo especial sem comprometer seus objetivos.',
+    },
+    DIA_DAS_CRIANCAS: {
+      title: 'Presente também é escolha consciente',
+      message: 'Nem sempre mais ou mais caro é melhor. Respeite seu limite e escolha com significado.',
+    },
+    BLACK_FRIDAY: {
+      title: 'Cuidado com a urgência da Black Friday',
+      message: 'Revise suas metas antes de comprar. Uma oferta só é boa se fizer sentido e couber no seu planejamento.',
+    },
+    NATAL: {
+      title: 'Presenteie sem sair do plano',
+      message: 'Evite compras por pressão. Carinho e significado podem valer mais do que um presente caro.',
+    },
+    ANO_NOVO: {
+      title: 'Comece o ano com equilíbrio',
+      message: 'Antes das compras de fim de ano, confira suas metas e evite começar o próximo ciclo fora do planejamento.',
+    },
+  };
+
+  for (const event of SEASONAL_EVENTS) {
+    assert.deepEqual({ title: event.title, message: event.message }, expected[event.code]);
+  }
+});
+
+test('Semana do Consumidor só é elegível em 12 de março', async () => {
+  assert.ok(resolveEligibleSeasonalEvents(new Date('2026-03-12T15:00:00Z'))
+    .some((event: any) => event.definition.code === 'SEMANA_CONSUMIDOR'));
+  assert.equal(resolveEligibleSeasonalEvents(new Date('2026-03-11T15:00:00Z')).length, 0);
+  assert.equal(resolveEligibleSeasonalEvents(new Date('2026-03-13T15:00:00Z')).length, 0);
+
+  addUsers(1);
+  const first = await runSeasonal(new Date('2026-03-12T15:00:00Z'));
+  const second = await runSeasonal(new Date('2026-03-12T15:00:00Z'));
+
+  assert.equal(first.notificationsCreated, 1);
+  assert.equal(second.notificationsCreated, 0);
+  assert.equal(second.duplicatesSkipped, 1);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].notificacao_evento, 'SEMANA_CONSUMIDOR');
+  assert.equal(notifications[0].notificacao_chave_idempotencia, '1:SAZONAL:SEMANA_CONSUMIDOR:2026:3');
+  assert.equal(dispatchCalls.length, 1);
 });
 
 test('sem evento elegível não consulta usuários nem cria notificação', async () => {

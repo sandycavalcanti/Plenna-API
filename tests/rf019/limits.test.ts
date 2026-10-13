@@ -332,6 +332,10 @@ test('gera somente limite por compra', async () => {
   addPurchase({ compra_valor: 150 });
   const result = await evaluateCurrent();
   assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_COMPRA']);
+  assert.equal(
+    state.notifications[0].notificacao_mensagem,
+    'Esta compra ultrapassou seu limite em R$ 50,00 (50%). Valor da compra: R$ 150,00.',
+  );
 });
 
 test('limite de compra zero é configurado e qualquer compra positiva excede', async () => {
@@ -341,6 +345,11 @@ test('limite de compra zero é configurado e qualquer compra positiva excede', a
   assert.equal(result.purchaseAboveLimit, true);
   assert.equal(state.purchases[0].compra_acima_limite, true);
   assert.equal(state.notifications[0].notificacao_evento, null);
+  assert.equal(
+    state.notifications[0].notificacao_mensagem,
+    'Esta compra ultrapassou em R$ 0,01 o limite que você definiu.',
+  );
+  assert.equal(state.notifications[0].notificacao_mensagem.includes('%'), false);
 });
 
 test('helper único de limite trata nulo, zero, igualdade, abaixo e acima', () => {
@@ -362,6 +371,10 @@ test('gera somente limite de categoria', async () => {
   addItem(purchase.compra_id, 1, 50);
   const result = await evaluateCurrent();
   assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_CATEGORIA']);
+  assert.equal(
+    state.notifications[0].notificacao_mensagem,
+    'Você ultrapassou o limite de Moda em R$ 10,00 (25%). Total da categoria: R$ 50,00.',
+  );
 });
 
 test('limite de categoria usa valor unitário multiplicado pela quantidade', async () => {
@@ -379,6 +392,10 @@ test('gera somente limite mensal geral acumulado', async () => {
   addPurchase({ compra_valor: 60 });
   const result = await evaluateCurrent();
   assert.deepEqual(result.alerts.map((alert: Row) => alert.type), ['LIMITE_MENSAL']);
+  assert.equal(
+    state.notifications[0].notificacao_mensagem,
+    'Você ultrapassou seu limite mensal em R$ 20,00 (20%). Total no mês: R$ 120,00.',
+  );
 });
 
 test('gera categoria e mensal geral simultaneamente', async () => {
@@ -425,6 +442,10 @@ test('gera os três tipos independentes', async () => {
     'LIMITE_MENSAL',
   ]);
   assert.equal(state.notifications.length, 1);
+  assert.equal(
+    state.notifications[0].notificacao_mensagem,
+    'Esta compra ultrapassou mais de um dos seus limites. Seu limite mensal foi excedido em R$ 20,00 (20%).',
+  );
 });
 
 test('não cria limite de compra, mensal ou categoria sem configuração correspondente', async () => {

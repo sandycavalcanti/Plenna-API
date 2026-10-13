@@ -2,6 +2,7 @@ export const BUSINESS_TIME_ZONE = 'America/Sao_Paulo';
 export const SEASONAL_LEAD_DAYS = 3;
 
 export type SeasonalEventCode =
+  | 'SEMANA_CONSUMIDOR'
   | 'BLACK_FRIDAY'
   | 'NATAL'
   | 'ANO_NOVO'
@@ -93,46 +94,52 @@ export function lastWeekdayOfMonth(year: number, month: number, weekday: number)
 
 export const SEASONAL_EVENTS: readonly SeasonalEventDefinition[] = [
   {
+    code: 'SEMANA_CONSUMIDOR',
+    resolveDate: (year) => civilDate(year, 3, 15),
+    title: 'Compre com intenção',
+    message: 'Aproveite as ofertas sem sair das suas metas. Desconto só vale a pena quando a compra realmente faz sentido.',
+  },
+  {
     code: 'BLACK_FRIDAY',
     resolveDate: (year) => lastWeekdayOfMonth(year, 11, 5),
-    title: 'Planeje antes da Black Friday',
-    message: 'A Black Friday se aproxima. Compare ofertas, reflita sobre a necessidade e confira seu planejamento antes de comprar.',
+    title: 'Cuidado com a urgência da Black Friday',
+    message: 'Revise suas metas antes de comprar. Uma oferta só é boa se fizer sentido e couber no seu planejamento.',
   },
   {
     code: 'NATAL',
     resolveDate: (year) => civilDate(year, 12, 25),
-    title: 'Planeje seu Natal',
-    message: 'O Natal se aproxima. Organize suas prioridades e reflita sobre suas compras para celebrar com mais tranquilidade.',
+    title: 'Presenteie sem sair do plano',
+    message: 'Evite compras por pressão. Carinho e significado podem valer mais do que um presente caro.',
   },
   {
     code: 'ANO_NOVO',
     resolveDate: (year) => civilDate(year, 1, 1),
-    title: 'Comece o ano com planejamento',
-    message: 'O Ano Novo se aproxima. Aproveite para revisar prioridades e começar o próximo ciclo com escolhas conscientes.',
+    title: 'Comece o ano com equilíbrio',
+    message: 'Antes das compras de fim de ano, confira suas metas e evite começar o próximo ciclo fora do planejamento.',
   },
   {
     code: 'DIA_DAS_MAES',
     resolveDate: (year) => nthWeekdayOfMonth(year, 5, 0, 2),
-    title: 'Planeje o Dia das Mães',
-    message: 'O Dia das Mães se aproxima. Antecipe suas decisões e escolha uma forma de celebrar que faça sentido para você.',
+    title: 'Presenteie com consciência',
+    message: 'Carinho não se mede pelo preço. Escolha algo especial sem ultrapassar seus limites.',
   },
   {
     code: 'DIA_DOS_NAMORADOS',
     resolveDate: (year) => civilDate(year, 6, 12),
-    title: 'Planeje o Dia dos Namorados',
-    message: 'O Dia dos Namorados se aproxima. Reflita sobre seus planos e compare alternativas antes de comprar.',
+    title: 'Amor não precisa custar mais',
+    message: 'Respeite suas metas e escolha com intenção. O melhor presente nem sempre é o mais caro.',
   },
   {
     code: 'DIA_DOS_PAIS',
     resolveDate: (year) => nthWeekdayOfMonth(year, 8, 0, 2),
-    title: 'Planeje o Dia dos Pais',
-    message: 'O Dia dos Pais se aproxima. Organize suas prioridades e planeje sua celebração com consumo consciente.',
+    title: 'Planeje antes de presentear',
+    message: 'Defina um limite antes das compras e escolha algo especial sem comprometer seus objetivos.',
   },
   {
     code: 'DIA_DAS_CRIANCAS',
     resolveDate: (year) => civilDate(year, 10, 12),
-    title: 'Planeje o Dia das Crianças',
-    message: 'O Dia das Crianças se aproxima. Pense nas prioridades da família e compare opções antes de comprar.',
+    title: 'Presente também é escolha consciente',
+    message: 'Nem sempre mais ou mais caro é melhor. Respeite seu limite e escolha com significado.',
   },
 ];
 
