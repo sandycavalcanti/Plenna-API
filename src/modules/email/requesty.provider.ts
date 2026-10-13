@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { env } from '../../lib/env.js';
 import {
   AIRateLimitError,
+  AIProviderError,
+  type AIMessage,
   type AIEmailClassificationResult,
   type AICategorySuggestionResult,
   type AICategoryOption,
@@ -316,6 +318,47 @@ export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvide
       }
 
       throw error;
+    }
+  }
+
+  /**
+   * Responde uma conversa textual sem response_format JSON. Esta capacidade
+   * nao usa o retry do fluxo de e-mail: cada envio de chat gera no maximo uma
+   * chamada externa, evitando associar retry a uma persistencia parcial.
+   */
+  async chat(messages: AIMessage[]): Promise<string> {
+    if (!env.requestyApiKey) {
+      throw new AIProviderError('unavailable', 'Requesty nao esta configurado');
+    }
+
+    try {
+      const response = await axios.post(
+        'https://router.requesty.ai/v1/chat/completions',
+        {
+          model: env.requestyChatModel,
+          messages,
+          temperature: 0.2,
+        },
+        {
+          timeout: env.requestyTimeoutMs,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${env.requestyApiKey}`,
+          },
+        },
+      );
+
+      const text = extractAssistantContent(response.data);
+      if (!text) {
+        throw new AIProviderError('empty', 'Requesty retornou uma resposta vazia');
+      }
+      return text;
+    } catch (error: any) {
+      if (error instanceof AIProviderError) throw error;
+      if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'AbortError') {
+        throw new AIProviderError('timeout', 'Timeout ao consultar o Requesty');
+      }
+      throw new AIProviderError('failure', 'Falha ao consultar o Requesty');
     }
   }
 }

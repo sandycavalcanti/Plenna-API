@@ -48,6 +48,26 @@ export interface AIExtractedPurchase {
 export interface AIPurchaseExtractionProvider {
   extractPurchase(prompt: string): Promise<AIExtractedPurchase>;
 }
+
+export type AIMessageRole = 'system' | 'user' | 'assistant';
+
+export interface AIMessage {
+  role: AIMessageRole;
+  content: string;
+}
+
+export type AIProviderFailureCode = 'timeout' | 'empty' | 'unavailable' | 'failure';
+
+/** Falha sanitizada de uma capacidade conversacional, sem carregar prompt ou resposta. */
+export class AIProviderError extends Error {
+  constructor(
+    public readonly code: AIProviderFailureCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AIProviderError';
+  }
+}
 /**
  * Erro genérico de rate limit usado pelo fluxo de e-mail.
  *
@@ -72,4 +92,5 @@ export class AIRateLimitError extends Error {
 export interface AIProvider {
   classifyEmail(prompt: string): Promise<AIEmailClassificationResult>;
   suggestCategory(prompt: string, categories: AICategoryOption[]): Promise<AICategorySuggestionResult>;
+  chat(messages: AIMessage[]): Promise<string>;
 }

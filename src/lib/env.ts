@@ -35,6 +35,10 @@ const requestyTimeoutMsRaw = process.env.REQUESTY_TIMEOUT_MS ?? "8000";
 const requestyRateLimitCooldownMsRaw = process.env.REQUESTY_RATE_LIMIT_COOLDOWN_MS ?? "60000";
 const aiProvider = process.env.AI_PROVIDER ?? "requesty";
 const codexLocalTimeoutMsRaw = process.env.CODEX_LOCAL_TIMEOUT_MS ?? "30000";
+const requestyChatModel = process.env.REQUESTY_CHAT_MODEL ?? process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b";
+const chatMaxMessageCharsRaw = process.env.CHAT_MAX_MESSAGE_CHARS ?? "4000";
+const chatContextMaxMessagesRaw = process.env.CHAT_CONTEXT_MAX_MESSAGES ?? "30";
+const chatContextMaxCharsRaw = process.env.CHAT_CONTEXT_MAX_CHARS ?? "12000";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
 const expoPushEnabledRaw = process.env.EXPO_PUSH_ENABLED ?? "false";
 const expoPushTimeoutMsRaw = process.env.EXPO_PUSH_TIMEOUT_MS ?? "5000";
@@ -57,6 +61,14 @@ function requirePositiveInteger(name: string, raw: string): number {
     throw new Error(`Invalid ${name} value: ${raw}`);
   }
 
+  return value;
+}
+
+function requireBoundedPositiveInteger(name: string, raw: string, max: number): number {
+  const value = requirePositiveInteger(name, raw);
+  if (value > max) {
+    throw new Error(`Invalid ${name} value: ${raw}`);
+  }
   return value;
 }
 
@@ -118,10 +130,14 @@ export const env = {
   cronSecret: process.env.CRON_SECRET ?? "",
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",
+  requestyChatModel,
   requestyTimeoutMs: requirePositiveInteger("REQUESTY_TIMEOUT_MS", requestyTimeoutMsRaw),
   requestyRateLimitCooldownMs: requirePositiveInteger("REQUESTY_RATE_LIMIT_COOLDOWN_MS", requestyRateLimitCooldownMsRaw),
   aiProvider,
   codexLocalTimeoutMs: requirePositiveInteger("CODEX_LOCAL_TIMEOUT_MS", codexLocalTimeoutMsRaw),
+  chatMaxMessageChars: requireBoundedPositiveInteger("CHAT_MAX_MESSAGE_CHARS", chatMaxMessageCharsRaw, 4_000),
+  chatContextMaxMessages: requirePositiveInteger("CHAT_CONTEXT_MAX_MESSAGES", chatContextMaxMessagesRaw),
+  chatContextMaxChars: requirePositiveInteger("CHAT_CONTEXT_MAX_CHARS", chatContextMaxCharsRaw),
   smtp: {
     host: process.env.SMTP_HOST,
     port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,

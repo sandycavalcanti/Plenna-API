@@ -88,6 +88,11 @@ function makeClient() {
         const rows = messages.filter((row) => matches(row, where));
         return sortRows(rows, orderBy).map((row) => pick(row, select));
       },
+      findFirst: async ({ where, orderBy, select }: any) => {
+        const rows = messages.filter((row) => matches(row, where));
+        const sorted = orderBy ? sortRows(rows, orderBy) : rows;
+        return sorted[0] ? pick(sorted[0], select) : null;
+      },
     },
   };
 

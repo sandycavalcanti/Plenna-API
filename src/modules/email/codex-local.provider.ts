@@ -5,6 +5,7 @@ import type {
   AIEmailClassificationResult,
   AICategorySuggestionResult,
   AIExtractedPurchase,
+  AIMessage,
   AIProvider,
   AIPurchaseExtractionProvider,
 } from './ai-provider.js';
@@ -200,6 +201,53 @@ export class CodexLocalProvider implements AIProvider, AIPurchaseExtractionProvi
     this.createCodex = createCodex;
   }
 
+  private async runTextual(messages: AIMessage[]): Promise<string> {
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), env.codexLocalTimeoutMs);
+    timeout.unref?.();
+    console.info('[AI] provider=codex_local operation=chat started');
+
+    try {
+      const thread: Thread = this.createCodex().startThread({
+        sandboxMode: 'read-only',
+        approvalPolicy: 'never',
+        networkAccessEnabled: false,
+        workingDirectory: process.cwd(),
+      });
+      const prompt = messages
+        .map((message) => `${message.role.toUpperCase()}\n${message.content}`)
+        .join('\n\n');
+      const result = await thread.run(prompt, { signal: controller.signal });
+      const text = result.finalResponse.trim();
+      if (!text) {
+        throw new CodexLocalError('empty', 'Codex local retornou uma resposta vazia');
+      }
+
+      console.info(`[AI] provider=codex_local operation=chat completed durationMs=${Date.now() - startedAt}`);
+      return text;
+    } catch (error) {
+      const diagnostic = diagnosticFor(error);
+      console.error('[AI] provider=codex_local operation=chat failed', diagnostic);
+      if (error instanceof CodexLocalError) throw error;
+      if (controller.signal.aborted) {
+        throw new CodexLocalError('timeout', `Timeout do Codex local apos ${env.codexLocalTimeoutMs}ms`, diagnostic);
+      }
+      if (isAuthenticationError(error)) {
+        throw new CodexLocalError('unauthenticated', 'Codex local nao esta autenticado. Execute `codex login` e tente novamente.', diagnostic);
+      }
+      if (isRateLimitError(error)) {
+        throw new CodexLocalError('rate_limit', 'Codex local atingiu um limite de uso.', diagnostic);
+      }
+      if (isUnavailableError(error)) {
+        throw new CodexLocalError('unavailable', 'Codex local nao esta instalado ou nao esta disponivel para execucao.', diagnostic);
+      }
+      throw new CodexLocalError('execution', 'Falha ao executar Codex local.', diagnostic);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async runStructured<T>(operation: string, prompt: string, schema: z.ZodType<T>, instructions: string, outputSchema = schemaToJson(schema)): Promise<T> {
     const startedAt = Date.now();
     const controller = new AbortController();
@@ -279,5 +327,9 @@ export class CodexLocalProvider implements AIProvider, AIPurchaseExtractionProvi
 
   async extractPurchase(prompt: string): Promise<AIExtractedPurchase> {
     return this.runStructured('purchase_extraction', prompt, requestyPurchaseExtractionSchema, buildPurchaseExtractionInstructions());
+  }
+
+  async chat(messages: AIMessage[]): Promise<string> {
+    return this.runTextual(messages);
   }
 }
