@@ -13,6 +13,7 @@ import { compraRouter } from './modules/compra/compra.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { consentimentoRouter } from './modules/consentimento/consentimento.routes.js';
 import { deviceRouter, notificationRouter } from './modules/notification/notification.routes.js';
+import { chatRouter } from './modules/chat/chat.routes.js';
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use('/dashboard', dashboardRouter);
 app.use('/consentimento', consentimentoRouter);
 app.use('/notifications', notificationRouter);
 app.use('/devices', deviceRouter);
+app.use('/historicos', chatRouter);
 
 app.get('/', (_req, res) => {
   res.json({
