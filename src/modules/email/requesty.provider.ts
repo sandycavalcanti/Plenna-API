@@ -361,4 +361,14 @@ export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvide
       throw new AIProviderError('failure', 'Falha ao consultar o Requesty');
     }
   }
+
+  async generateTitle(firstMessage: string): Promise<string> {
+    return this.chat([
+      {
+        role: 'system',
+        content: 'Gere um titulo curto e natural para esta conversa do Plenna. Responda somente com o titulo, sem aspas, markdown ou prefixos. Use no maximo 45 caracteres.',
+      },
+      { role: 'user', content: firstMessage },
+    ]);
+  }
 }

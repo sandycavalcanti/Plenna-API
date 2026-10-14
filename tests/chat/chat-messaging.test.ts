@@ -76,6 +76,11 @@ function makeClient() {
         Object.assign(row, data);
         return pick(row, select);
       },
+      updateMany: async ({ where, data }: any) => {
+        const rows = histories.filter((candidate) => matches(candidate, where));
+        rows.forEach((row) => Object.assign(row, data));
+        return { count: rows.length };
+      },
     },
     tb_mensagem: {
       create: async ({ data, select }: any) => {
@@ -108,7 +113,7 @@ function makeClient() {
 const client = makeClient();
 (globalThis as any).prismaRuntime = { client, pool: { end: async () => {} } };
 
-const { ChatService } = await import('../../src/modules/chat/chat.service.js');
+const { ChatFirstMessageError, ChatService } = await import('../../src/modules/chat/chat.service.js');
 const { buildChatContext } = await import('../../src/modules/chat/chat.context.js');
 const { PLENNA_CHAT_SYSTEM_PROMPT } = await import('../../src/modules/chat/chat.prompt.js');
 const { AIProviderError } = await import('../../src/modules/email/ai-provider.js');
@@ -212,6 +217,41 @@ test('deriva titulo da primeira mensagem, normaliza espacos e respeita 45 caract
   assert.equal(histories[0].historico_nome, 'Uma conversa muito longa para caber no titulo');
 });
 
+test('gera titulo com o provider apenas na primeira mensagem e preserva fallback quando falha', async () => {
+  const history = await ChatService.createHistory(1, client);
+  let titleCalls = 0;
+  const provider = {
+    ...providerReturning('Resposta'),
+    generateTitle: async () => {
+      titleCalls += 1;
+      return '  **Dúvida sobre compra de roupas**  ';
+    },
+  };
+
+  await ChatService.sendMessage(1, history.historico_id, { texto: 'Quero comprar roupas sem estourar o orçamento' }, client, () => provider as any);
+  assert.equal(histories[0].historico_nome, 'Dúvida sobre compra de roupas');
+  await ChatService.sendMessage(1, history.historico_id, { texto: 'E como planejar essa compra?' }, client, () => provider as any);
+  assert.equal(titleCalls, 1);
+
+  const fallbackHistory = await ChatService.createHistory(1, client);
+  const failingTitleProvider = {
+    ...providerReturning('Resposta sem falha geral'),
+    generateTitle: async () => { throw new Error('title provider unavailable'); },
+  };
+  await ChatService.sendMessage(1, fallbackHistory.historico_id, { texto: '  Uma conversa com fallback  ' }, client, () => failingTitleProvider as any);
+  assert.equal(histories.find((row) => row.historico_id === fallbackHistory.historico_id)?.historico_nome, 'Uma conversa com fallback');
+  assert.equal(messages.filter((message) => message.historico_id === fallbackHistory.historico_id).length, 2);
+});
+
+test('primeira mensagem cria historico e mensagem na mesma transacao curta', async () => {
+  const result = await ChatService.sendFirstMessage(1, { texto: 'Começar uma conversa sem historico previo' }, client, () => providerReturning('Resposta inicial') as any);
+  assert.equal(result.historico.historico_id, 1);
+  assert.equal(result.mensagemUsuario.remetente, 'user');
+  assert.equal(result.mensagemIA.remetente, 'assistant');
+  assert.equal(histories.length, 1);
+  assert.equal(messages.length, 2);
+});
+
 test('ownership bloqueia outro usuario antes de persistir', async () => {
   const history = await ChatService.createHistory(2, client);
   await assert.rejects(
@@ -289,6 +329,7 @@ test('handleError preserva contratos 400, 404 e 500 e controller responde 401', 
   assert.equal(invalidBody.statusCode, 400);
 
   const originalSendMessage = (ChatService as any).sendMessage;
+  const originalSendFirstMessage = (ChatService as any).sendFirstMessage;
   try {
     (ChatService as any).sendMessage = async () => { throw new AppError('Historico nao encontrado', 404); };
     const notFound = response();
@@ -299,8 +340,17 @@ test('handleError preserva contratos 400, 404 e 500 e controller responde 401', 
     const internal = response();
     await ChatController.createMessage({ userId: 1, params: { historicoId: '1' }, body: { texto: 'x' } } as any, internal);
     assert.equal(internal.statusCode, 500);
+
+    (ChatService as any).sendFirstMessage = async () => {
+      throw new ChatFirstMessageError(9, new AppError('Falha ao consultar a IA', 502));
+    };
+    const partial = response();
+    await ChatController.createFirstMessage({ userId: 1, body: { texto: 'primeira' } } as any, partial);
+    assert.equal(partial.statusCode, 502);
+    assert.equal(partial.body.historico_id, 9);
   } finally {
     (ChatService as any).sendMessage = originalSendMessage;
+    (ChatService as any).sendFirstMessage = originalSendFirstMessage;
   }
 });
 

@@ -46,6 +46,19 @@ function deriveHistoryName(text: string) {
   return [...text.replace(/\s+/g, ' ').trim()].slice(0, 45).join('');
 }
 
+function sanitizeGeneratedHistoryName(value: unknown) {
+  if (typeof value !== 'string') return '';
+
+  const normalized = value
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/^\s*(?:titulo|título|title)\s*:\s*/i, '')
+    .replace(/["'“”‘’*_`#>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .trim();
+  return [...normalized].slice(0, 45).join('');
+}
+
 function providerFailure(error: unknown) {
   if (error instanceof AppError) return error;
 
@@ -71,6 +84,15 @@ function providerFailure(error: unknown) {
   return new AppError('Falha ao consultar a IA', 502);
 }
 
+export class ChatFirstMessageError extends AppError {
+  constructor(
+    public readonly historyId: number,
+    error: AppError,
+  ) {
+    super(error.message, error.statusCode);
+  }
+}
+
 async function findOwnedHistory(db: Pick<ChatDatabase, 'tb_historico'>, userId: number, historyId: number) {
   return db.tb_historico.findFirst({
     where: {
@@ -80,6 +102,8 @@ async function findOwnedHistory(db: Pick<ChatDatabase, 'tb_historico'>, userId: 
     select: historySelect,
   });
 }
+
+const titleGenerationInFlight = new Map<number, Promise<void>>();
 
 export class ChatService {
   static async createHistory(userId: number, db: ChatDatabase = prisma) {
@@ -97,6 +121,49 @@ export class ChatService {
     });
 
     return serializeHistory(history);
+  }
+
+  /** Cria historico e primeira mensagem na mesma transacao curta. */
+  static async createHistoryWithUserMessage(
+    userId: number,
+    input: CreateMessageDTO,
+    db: ChatDatabase = prisma,
+  ) {
+    assertUserId(userId);
+    const parsedInput = parseMessageInput(input);
+    const now = new Date();
+    const fallbackName = deriveHistoryName(parsedInput.texto);
+
+    return db.$transaction(async (tx) => {
+      const history = await tx.tb_historico.create({
+        data: {
+          usuario_id: userId,
+          historico_nome: fallbackName,
+          historico_data_criacao: now,
+          historico_data_modificacao: now,
+        },
+        select: historySelect,
+      });
+
+      const message = await tx.tb_mensagem.create({
+        data: {
+          historico_id: history.historico_id,
+          mensagem_remetente: MESSAGE_SENDER.USER,
+          mensagem_texto: parsedInput.texto,
+          mensagem_imagem: null,
+          mensagem_possui_imagem: false,
+          mensagem_texto_modificado: parsedInput.texto,
+          mensagem_data_criacao: now,
+          mensagem_data_modificacao: now,
+        },
+        select: messageSelect,
+      });
+
+      return {
+        historico: serializeHistory(history),
+        mensagemUsuario: serializeMessage(message),
+      };
+    });
   }
 
   static async listHistories(userId: number, db: ChatDatabase = prisma) {
@@ -243,31 +310,66 @@ export class ChatService {
     });
   }
 
-  static async sendMessage(
+  static async generateHistoryTitle(
     userId: number,
-    historyId: number | string,
-    input: CreateMessageDTO,
+    historyId: number,
+    firstMessage: string,
+    fallbackName: string,
+    provider: AIProvider,
     db: ChatDatabase = prisma,
-    providerFactory: () => AIProvider | null = createAIProvider,
   ) {
-    assertUserId(userId);
-    const parsedHistoryId = parseHistoryId(historyId);
-    const parsedInput = parseMessageInput(input);
+    if (typeof provider.generateTitle !== 'function') return;
 
-    // Verifica ownership antes da primeira escrita e valida o minimo de contexto.
-    const before = await this.getHistory(userId, parsedHistoryId, db);
-    const provisionalMessage = {
-      mensagem_id: -1,
-      historico_id: parsedHistoryId,
-      remetente: 'user' as const,
-      texto: parsedInput.texto,
-      mensagem_data_criacao: new Date(),
-    };
-    buildChatContext(before.mensagens, provisionalMessage);
+    const existingGeneration = titleGenerationInFlight.get(historyId);
+    if (existingGeneration) {
+      await existingGeneration;
+      return;
+    }
 
-    // A transacao termina antes da chamada externa ao provider.
-    const userMessage = await this.createUserMessage(userId, parsedHistoryId, parsedInput, db);
-    const after = await this.getHistory(userId, parsedHistoryId, db);
+    const generation = (async () => {
+      let generatedName = '';
+      try {
+        generatedName = sanitizeGeneratedHistoryName(await provider.generateTitle!(firstMessage));
+      } catch {
+        // O fallback deterministico ja foi persistido; o erro de titulo nao interrompe o chat.
+        return;
+      }
+
+      const nextName = generatedName || fallbackName;
+      if (nextName === fallbackName) return;
+
+      try {
+        await db.tb_historico.updateMany({
+          where: {
+            historico_id: historyId,
+            usuario_id: userId,
+            historico_nome: fallbackName,
+          },
+          data: { historico_nome: nextName },
+        });
+      } catch {
+        // Falha de titulo nao converte uma conversa ja respondida em erro geral.
+      }
+    })();
+
+    titleGenerationInFlight.set(historyId, generation);
+    try {
+      await generation;
+    } finally {
+      if (titleGenerationInFlight.get(historyId) === generation) titleGenerationInFlight.delete(historyId);
+    }
+  }
+
+  static async completeMessage(
+    userId: number,
+    historyId: number,
+    userMessage: ReturnType<typeof serializeMessage>,
+    firstMessage: string,
+    shouldGenerateTitle: boolean,
+    db: ChatDatabase,
+    providerFactory: () => AIProvider | null,
+  ) {
+    const after = await this.getHistory(userId, historyId, db);
     const persistedCurrent = after.mensagens.find((message) => message.mensagem_id === userMessage.mensagem_id);
     if (!persistedCurrent) {
       throw new AppError('Mensagem do usuario nao foi recuperada apos persistencia', 500);
@@ -297,14 +399,98 @@ export class ChatService {
 
     const assistantMessage = await this.createAssistantMessage(
       userId,
-      parsedHistoryId,
+      historyId,
       assistantText,
       db,
     );
 
+    if (shouldGenerateTitle) {
+      await this.generateHistoryTitle(
+        userId,
+        historyId,
+        firstMessage,
+        deriveHistoryName(firstMessage),
+        provider,
+        db,
+      );
+    }
+
+    const finalHistory = await this.getHistory(userId, historyId, db);
     return {
+      historico: finalHistory.historico,
       mensagemUsuario: userMessage,
       mensagemIA: assistantMessage,
     };
+  }
+
+  static async sendMessage(
+    userId: number,
+    historyId: number | string,
+    input: CreateMessageDTO,
+    db: ChatDatabase = prisma,
+    providerFactory: () => AIProvider | null = createAIProvider,
+  ) {
+    assertUserId(userId);
+    const parsedHistoryId = parseHistoryId(historyId);
+    const parsedInput = parseMessageInput(input);
+
+    // Verifica ownership antes da primeira escrita e valida o minimo de contexto.
+    const before = await this.getHistory(userId, parsedHistoryId, db);
+    const provisionalMessage = {
+      mensagem_id: -1,
+      historico_id: parsedHistoryId,
+      remetente: 'user' as const,
+      texto: parsedInput.texto,
+      mensagem_data_criacao: new Date(),
+    };
+    buildChatContext(before.mensagens, provisionalMessage);
+
+    // A transacao termina antes da chamada externa ao provider.
+    const userMessage = await this.createUserMessage(userId, parsedHistoryId, parsedInput, db);
+    return this.completeMessage(
+      userId,
+      parsedHistoryId,
+      userMessage,
+      parsedInput.texto,
+      before.historico.historico_nome === DEFAULT_HISTORY_NAME && !before.mensagens.some((message) => message.remetente === 'user'),
+      db,
+      providerFactory,
+    );
+  }
+
+  static async sendFirstMessage(
+    userId: number,
+    input: CreateMessageDTO,
+    db: ChatDatabase = prisma,
+    providerFactory: () => AIProvider | null = createAIProvider,
+  ) {
+    assertUserId(userId);
+    const parsedInput = parseMessageInput(input);
+    const provisionalMessage = {
+      mensagem_id: -1,
+      historico_id: -1,
+      remetente: 'user' as const,
+      texto: parsedInput.texto,
+      mensagem_data_criacao: new Date(),
+    };
+    buildChatContext([], provisionalMessage);
+
+    const created = await this.createHistoryWithUserMessage(userId, parsedInput, db);
+    try {
+      return await this.completeMessage(
+        userId,
+        created.historico.historico_id,
+        created.mensagemUsuario,
+        parsedInput.texto,
+        true,
+        db,
+        providerFactory,
+      );
+    } catch (error) {
+      const normalized = error instanceof AppError
+        ? error
+        : new AppError('Falha ao persistir a primeira mensagem', 500);
+      throw new ChatFirstMessageError(created.historico.historico_id, normalized);
+    }
   }
 }

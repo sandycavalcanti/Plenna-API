@@ -93,4 +93,6 @@ export interface AIProvider {
   classifyEmail(prompt: string): Promise<AIEmailClassificationResult>;
   suggestCategory(prompt: string, categories: AICategoryOption[]): Promise<AICategorySuggestionResult>;
   chat(messages: AIMessage[]): Promise<string>;
+  /** Capacidade opcional usada somente para nomear a primeira conversa. */
+  generateTitle?(firstMessage: string): Promise<string>;
 }

@@ -1,7 +1,7 @@
 import type { Response } from 'express';
 import type { AuthRequest } from '../auth/auth.middleware.js';
 import { handleError } from '../../utils/handleError.js';
-import { ChatService } from './chat.service.js';
+import { ChatFirstMessageError, ChatService } from './chat.service.js';
 import { createHistorySchema, createMessageSchema, historyIdSchema } from './chat.schemas.js';
 
 export class ChatController {
@@ -42,6 +42,23 @@ export class ChatController {
       const result = await ChatService.sendMessage(req.userId, historyId, input);
       return res.status(200).json(result);
     } catch (error: unknown) {
+      return handleError(res, 500, error);
+    }
+  }
+
+  static async createFirstMessage(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) return res.status(401).json({ error: 'Token invalido' });
+      const input = createMessageSchema.parse(req.body);
+      return res.status(200).json(await ChatService.sendFirstMessage(req.userId, input));
+    } catch (error: unknown) {
+      if (error instanceof ChatFirstMessageError) {
+        return res.status(error.statusCode).json({
+          message: error.message,
+          errors: [],
+          historico_id: error.historyId,
+        });
+      }
       return handleError(res, 500, error);
     }
   }

@@ -201,12 +201,12 @@ export class CodexLocalProvider implements AIProvider, AIPurchaseExtractionProvi
     this.createCodex = createCodex;
   }
 
-  private async runTextual(messages: AIMessage[]): Promise<string> {
+  private async runTextual(messages: AIMessage[], operation = 'chat'): Promise<string> {
     const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), env.codexLocalTimeoutMs);
     timeout.unref?.();
-    console.info('[AI] provider=codex_local operation=chat started');
+    console.info(`[AI] provider=codex_local operation=${operation} started`);
 
     try {
       const thread: Thread = this.createCodex().startThread({
@@ -224,11 +224,11 @@ export class CodexLocalProvider implements AIProvider, AIPurchaseExtractionProvi
         throw new CodexLocalError('empty', 'Codex local retornou uma resposta vazia');
       }
 
-      console.info(`[AI] provider=codex_local operation=chat completed durationMs=${Date.now() - startedAt}`);
+      console.info(`[AI] provider=codex_local operation=${operation} completed durationMs=${Date.now() - startedAt}`);
       return text;
     } catch (error) {
       const diagnostic = diagnosticFor(error);
-      console.error('[AI] provider=codex_local operation=chat failed', diagnostic);
+      console.error(`[AI] provider=codex_local operation=${operation} failed`, diagnostic);
       if (error instanceof CodexLocalError) throw error;
       if (controller.signal.aborted) {
         throw new CodexLocalError('timeout', `Timeout do Codex local apos ${env.codexLocalTimeoutMs}ms`, diagnostic);
@@ -330,6 +330,16 @@ export class CodexLocalProvider implements AIProvider, AIPurchaseExtractionProvi
   }
 
   async chat(messages: AIMessage[]): Promise<string> {
-    return this.runTextual(messages);
+    return this.runTextual(messages, 'chat');
+  }
+
+  async generateTitle(firstMessage: string): Promise<string> {
+    return this.runTextual([
+      {
+        role: 'system',
+        content: 'Gere um titulo curto e natural para esta conversa do Plenna. Responda somente com o titulo, sem aspas, markdown ou prefixos. Use no maximo 45 caracteres.',
+      },
+      { role: 'user', content: firstMessage },
+    ], 'chat_title');
   }
 }
