@@ -7,6 +7,7 @@ export const chatRouter = Router();
 chatRouter.use(authMiddleware);
 chatRouter.post('/', ChatController.createHistory);
 chatRouter.get('/', ChatController.listHistories);
+chatRouter.delete('/:historicoId', ChatController.deleteHistory);
 chatRouter.post('/mensagens', ChatController.createFirstMessage);
 chatRouter.post('/:historicoId/mensagens', ChatController.createMessage);
 chatRouter.get('/:historicoId', ChatController.getHistory);

@@ -181,6 +181,33 @@ export class ChatService {
     return histories.map(serializeHistory);
   }
 
+  /**
+   * Remove um historico e suas mensagens de forma atomica.
+   *
+   * A relacao Prisma usa NoAction, portanto os filhos precisam ser removidos
+   * antes do pai dentro da mesma transacao. A busca combina o ID do recurso
+   * com o usuario autenticado para tratar recursos de terceiros como 404.
+   */
+  static async deleteHistory(userId: number, historyId: number | string, db: ChatDatabase = prisma) {
+    assertUserId(userId);
+    const parsedHistoryId = parseHistoryId(historyId);
+
+    await db.$transaction(async (tx) => {
+      const history = await findOwnedHistory(tx, userId, parsedHistoryId);
+      if (!history) {
+        throw new AppError('Historico nao encontrado', 404);
+      }
+
+      await tx.tb_mensagem.deleteMany({
+        where: { historico_id: parsedHistoryId },
+      });
+
+      await tx.tb_historico.delete({
+        where: { historico_id: parsedHistoryId },
+      });
+    });
+  }
+
   static async getHistory(userId: number, historyId: number | string, db: ChatDatabase = prisma): Promise<PublicHistoryWithMessages> {
     assertUserId(userId);
     const parsedHistoryId = parseHistoryId(historyId);

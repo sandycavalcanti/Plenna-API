@@ -17,6 +17,8 @@ let histories: HistoryRow[] = [];
 let messages: MessageRow[] = [];
 let nextHistoryId = 1;
 let nextMessageId = 1;
+let failMessageDelete = false;
+let failHistoryDelete = false;
 
 function matches(row: HistoryRow | MessageRow, where: Record<string, any>) {
   return Object.entries(where).every(([key, expected]) => row[key] === expected);
@@ -74,6 +76,13 @@ function makeClient() {
         Object.assign(row, data);
         return pick(row, select);
       },
+      delete: async ({ where }: any) => {
+        if (failHistoryDelete) throw new Error('history delete failed');
+        const index = histories.findIndex((candidate) => matches(candidate, where));
+        if (index < 0) throw new Error('history not found');
+        const [deleted] = histories.splice(index, 1);
+        return deleted;
+      },
     },
     tb_mensagem: {
       create: async ({ data, select }: any) => {
@@ -93,10 +102,31 @@ function makeClient() {
         const sorted = orderBy ? sortRows(rows, orderBy) : rows;
         return sorted[0] ? pick(sorted[0], select) : null;
       },
+      deleteMany: async ({ where }: any) => {
+        if (failMessageDelete) throw new Error('message delete failed');
+        const initialLength = messages.length;
+        messages = messages.filter((row) => !matches(row, where));
+        return { count: initialLength - messages.length };
+      },
     },
   };
 
-  client.$transaction = async (callback: (transaction: any) => Promise<unknown>) => callback(client);
+  client.$transaction = async (callback: (transaction: any) => Promise<unknown>) => {
+    const historySnapshot = histories.map((row) => ({ ...row }));
+    const messageSnapshot = messages.map((row) => ({ ...row }));
+    const historyIdSnapshot = nextHistoryId;
+    const messageIdSnapshot = nextMessageId;
+
+    try {
+      return await callback(client);
+    } catch (error) {
+      histories = historySnapshot;
+      messages = messageSnapshot;
+      nextHistoryId = historyIdSnapshot;
+      nextMessageId = messageIdSnapshot;
+      throw error;
+    }
+  };
   return client;
 }
 
@@ -111,6 +141,8 @@ function reset() {
   messages = [];
   nextHistoryId = 1;
   nextMessageId = 1;
+  failMessageDelete = false;
+  failHistoryDelete = false;
 }
 
 beforeEach(reset);
@@ -140,6 +172,53 @@ test('lista somente historicos do usuario e ordena por modificacao e id', async 
 
 test('usuario sem historicos recebe lista vazia', async () => {
   assert.deepEqual(await ChatService.listHistories(1, client), []);
+});
+
+test('exclui historico proprio, vazio ou com varias mensagens, sem tocar em outro historico', async () => {
+  histories.push(
+    { historico_id: 1, usuario_id: 1, historico_nome: 'Com mensagens', historico_data_criacao: new Date(), historico_data_modificacao: new Date() },
+    { historico_id: 2, usuario_id: 1, historico_nome: 'Vazio', historico_data_criacao: new Date(), historico_data_modificacao: new Date() },
+    { historico_id: 3, usuario_id: 2, historico_nome: 'Outro usuario', historico_data_criacao: new Date(), historico_data_modificacao: new Date() },
+  );
+  messages.push(
+    { mensagem_id: 1, historico_id: 1, mensagem_remetente: false },
+    { mensagem_id: 2, historico_id: 1, mensagem_remetente: true },
+    { mensagem_id: 3, historico_id: 3, mensagem_remetente: false },
+  );
+
+  await ChatService.deleteHistory(1, 1, client);
+  await ChatService.deleteHistory(1, 2, client);
+
+  assert.deepEqual(histories.map((history) => history.historico_id), [3]);
+  assert.deepEqual(messages.map((message) => message.historico_id), [3]);
+});
+
+test('ownership e identificador impedem exclusao indevida', async () => {
+  histories.push({ historico_id: 1, usuario_id: 2, historico_nome: 'Privado', historico_data_criacao: new Date(), historico_data_modificacao: new Date() });
+
+  await assert.rejects(
+    () => ChatService.deleteHistory(1, 1, client),
+    (error: any) => error.statusCode === 404,
+  );
+  await assert.rejects(() => ChatService.deleteHistory(1, 99, client), (error: any) => error.statusCode === 404);
+  await assert.rejects(() => ChatService.deleteHistory(1, 'abc', client));
+  assert.equal(histories.length, 1);
+});
+
+test('falhas de exclusao fazem rollback de mensagens e historico', async () => {
+  histories.push({ historico_id: 1, usuario_id: 1, historico_nome: 'Conversa', historico_data_criacao: new Date(), historico_data_modificacao: new Date() });
+  messages.push({ mensagem_id: 1, historico_id: 1, mensagem_remetente: false });
+
+  failMessageDelete = true;
+  await assert.rejects(() => ChatService.deleteHistory(1, 1, client), /message delete failed/);
+  assert.equal(histories.length, 1);
+  assert.equal(messages.length, 1);
+
+  failMessageDelete = false;
+  failHistoryDelete = true;
+  await assert.rejects(() => ChatService.deleteHistory(1, 1, client), /history delete failed/);
+  assert.equal(histories.length, 1);
+  assert.equal(messages.length, 1);
 });
 
 test('abre somente historico proprio e serializa mensagens sem campos internos', async () => {

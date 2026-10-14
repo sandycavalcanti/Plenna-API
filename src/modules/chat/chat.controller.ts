@@ -24,6 +24,17 @@ export class ChatController {
     }
   }
 
+  static async deleteHistory(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) return res.status(401).json({ error: 'Token invalido' });
+      const historyId = historyIdSchema.parse(req.params.historicoId);
+      await ChatService.deleteHistory(req.userId, historyId);
+      return res.status(204).send();
+    } catch (error: unknown) {
+      return handleError(res, 500, error);
+    }
+  }
+
   static async getHistory(req: AuthRequest, res: Response) {
     try {
       if (!req.userId) return res.status(401).json({ error: 'Token inválido' });

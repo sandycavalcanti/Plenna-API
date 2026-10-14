@@ -330,6 +330,7 @@ test('handleError preserva contratos 400, 404 e 500 e controller responde 401', 
 
   const originalSendMessage = (ChatService as any).sendMessage;
   const originalSendFirstMessage = (ChatService as any).sendFirstMessage;
+  const originalDeleteHistory = (ChatService as any).deleteHistory;
   try {
     (ChatService as any).sendMessage = async () => { throw new AppError('Historico nao encontrado', 404); };
     const notFound = response();
@@ -348,9 +349,28 @@ test('handleError preserva contratos 400, 404 e 500 e controller responde 401', 
     await ChatController.createFirstMessage({ userId: 1, body: { texto: 'primeira' } } as any, partial);
     assert.equal(partial.statusCode, 502);
     assert.equal(partial.body.historico_id, 9);
+
+    const deleteUnauthorized = response();
+    await ChatController.deleteHistory({ params: { historicoId: '1' } } as any, deleteUnauthorized);
+    assert.equal(deleteUnauthorized.statusCode, 401);
+
+    (ChatService as any).deleteHistory = async () => undefined;
+    const deleteSuccess = response();
+    await ChatController.deleteHistory({ userId: 1, params: { historicoId: '1' } } as any, deleteSuccess);
+    assert.equal(deleteSuccess.statusCode, 204);
+
+    (ChatService as any).deleteHistory = async () => { throw new AppError('Historico nao encontrado', 404); };
+    const deleteNotFound = response();
+    await ChatController.deleteHistory({ userId: 1, params: { historicoId: '1' } } as any, deleteNotFound);
+    assert.equal(deleteNotFound.statusCode, 404);
+
+    const deleteInvalidId = response();
+    await ChatController.deleteHistory({ userId: 1, params: { historicoId: 'abc' } } as any, deleteInvalidId);
+    assert.equal(deleteInvalidId.statusCode, 400);
   } finally {
     (ChatService as any).sendMessage = originalSendMessage;
     (ChatService as any).sendFirstMessage = originalSendFirstMessage;
+    (ChatService as any).deleteHistory = originalDeleteHistory;
   }
 });
 
