@@ -6,6 +6,7 @@ export const dashboardRouter = Router();
 
 dashboardRouter.use(authMiddleware);
 
+dashboardRouter.get('/analytics', DashboardController.analytics);
 dashboardRouter.get('/gastos-categoria', DashboardController.findGastosPorCategoria);
 dashboardRouter.get('/gastos-forma-pagamento', DashboardController.findGastosPorFormaPagamento);
 dashboardRouter.get('/impulsividade', DashboardController.findImpulsividade);
