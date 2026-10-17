@@ -5,6 +5,7 @@ import { DashboardController } from './dashboard.controller.js';
 export const dashboardRouter = Router();
 
 dashboardRouter.use(authMiddleware);
+dashboardRouter.get('/resumo-mensal', DashboardController.resumoMensal);
 
 dashboardRouter.get('/gastos-categoria', DashboardController.findGastosPorCategoria);
 dashboardRouter.get('/gastos-forma-pagamento', DashboardController.findGastosPorFormaPagamento);
