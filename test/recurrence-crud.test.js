@@ -23,6 +23,7 @@ const client = Object.fromEntries(delegateNames.map((name) => [
   ])),
 ]));
 client.$transaction = async (callback) => callback(client);
+client.$queryRaw = async () => [{ compra_recorrencia_id: 10 }];
 client.$disconnect = async () => {};
 globalThis.prismaRuntime = { client, pool: { end: async () => {} } };
 
@@ -72,6 +73,7 @@ beforeEach(() => {
     }
   }
   mock.method(prisma, '$transaction', async (callback) => callback(prisma));
+  mock.method(prisma, '$queryRaw', async () => [{ compra_recorrencia_id: 10 }]);
 });
 
 afterEach(() => mock.restoreAll());
@@ -158,6 +160,7 @@ test('pausar limpa a próxima ocorrência e cancelar preserva a configuração',
 
   mock.restoreAll();
   mock.method(prisma, '$transaction', async (callback) => callback(prisma));
+  mock.method(prisma, '$queryRaw', async () => [{ compra_recorrencia_id: 10 }]);
   mock.method(prisma.tb_compra_recorrencia, 'findFirst', async () => ({ ...record, compra_recorrencia_status: 'PAUSADA' }));
   mock.method(prisma.tb_compra_recorrencia, 'update', async ({ data }) => ({
     ...record,

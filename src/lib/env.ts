@@ -46,6 +46,10 @@ const expoPushBatchSizeRaw = process.env.EXPO_PUSH_BATCH_SIZE ?? "100";
 const expoPushMaxRetriesRaw = process.env.EXPO_PUSH_MAX_RETRIES ?? "2";
 const expoPushRetryBaseDelayMsRaw = process.env.EXPO_PUSH_RETRY_BASE_DELAY_MS ?? "250";
 const seasonalNotificationUserBatchSizeRaw = process.env.SEASONAL_NOTIFICATION_USER_BATCH_SIZE ?? "100";
+const recurrenceCronEnabledRaw = process.env.RECURRENCE_CRON_ENABLED ?? "false";
+const recurrenceProcessingBatchSizeRaw = process.env.RECURRENCE_PROCESSING_BATCH_SIZE ?? "25";
+const recurrenceProcessingMaxOccurrencesPerRunRaw = process.env.RECURRENCE_PROCESSING_MAX_OCCURRENCES_PER_RUN ?? "25";
+const recurrenceProcessingTransactionTimeoutMsRaw = process.env.RECURRENCE_PROCESSING_TRANSACTION_TIMEOUT_MS ?? "10000";
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   throw new Error(`Invalid PORT value: ${portRaw}`);
@@ -126,6 +130,19 @@ export const env = {
   seasonalNotificationUserBatchSize: Math.min(
     requirePositiveInteger("SEASONAL_NOTIFICATION_USER_BATCH_SIZE", seasonalNotificationUserBatchSizeRaw),
     1000,
+  ),
+  recurrenceCronEnabled: parseStrictBoolean("RECURRENCE_CRON_ENABLED", recurrenceCronEnabledRaw),
+  recurrenceProcessingBatchSize: Math.min(
+    requirePositiveInteger("RECURRENCE_PROCESSING_BATCH_SIZE", recurrenceProcessingBatchSizeRaw),
+    1000,
+  ),
+  recurrenceProcessingMaxOccurrencesPerRun: Math.min(
+    requirePositiveInteger("RECURRENCE_PROCESSING_MAX_OCCURRENCES_PER_RUN", recurrenceProcessingMaxOccurrencesPerRunRaw),
+    1000,
+  ),
+  recurrenceProcessingTransactionTimeoutMs: requirePositiveInteger(
+    "RECURRENCE_PROCESSING_TRANSACTION_TIMEOUT_MS",
+    recurrenceProcessingTransactionTimeoutMsRaw,
   ),
   cronSecret: process.env.CRON_SECRET ?? "",
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",

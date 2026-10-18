@@ -18,6 +18,7 @@ import { chatRouter } from './modules/chat/chat.routes.js';
 import { analisesRouter } from './modules/rf018/rf018.routes.js';
 import { homeRouter } from './modules/home/home.routes.js';
 import { recorrenciaRouter } from './modules/recorrencia/recorrencia.routes.js';
+import { RecorrenciaCronController } from './modules/recorrencia/recorrencia.cron.controller.js';
 
 const app = express();
 
@@ -33,6 +34,8 @@ app.use('/tempo-uso', tempoUsoRouter);
 app.use('/email', emailRouter);
 app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);
+app.get('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
+app.post('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
 app.use('/recorrencias', recorrenciaRouter);
 app.use('/dashboard', dashboardRouter);
 app.use('/consentimento', consentimentoRouter);

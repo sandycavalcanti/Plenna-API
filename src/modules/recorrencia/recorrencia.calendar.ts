@@ -32,6 +32,63 @@ export function formatDateOnly(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function formatPartsInTimeZone(value: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(value);
+
+  return Object.fromEntries(parts
+    .filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]));
+}
+
+export function formatDateInTimeZone(value: Date, timeZone = RECURRENCE_TIMEZONE): string {
+  if (Number.isNaN(value.getTime())) throw new Error('Data inválida');
+  const parts = formatPartsInTimeZone(value, timeZone);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/**
+ * Converte uma data civil para o instante correspondente à meia-noite no
+ * timezone de negócio. O campo legado compra_horario não possui timezone,
+ * mas o dashboard interpreta seus limites usando America/Sao_Paulo.
+ */
+export function dateOnlyAtTimeZoneMidnight(value: string | Date, timeZone = RECURRENCE_TIMEZONE): Date {
+  const date = parseDateOnly(value, 'data');
+  const localTimestamp = date.getTime();
+  let candidate = localTimestamp;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const parts = formatPartsInTimeZone(new Date(candidate), timeZone);
+    const renderedAsUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second),
+    );
+    const offset = renderedAsUtc - candidate;
+    const nextCandidate = localTimestamp - offset;
+    if (nextCandidate === candidate) return new Date(candidate);
+    candidate = nextCandidate;
+  }
+
+  return new Date(candidate);
+}
+
+export function addCivilDays(value: string | Date, days: number): Date {
+  const date = parseDateOnly(value, 'data');
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
+}
+
 function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
 }

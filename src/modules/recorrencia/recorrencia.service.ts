@@ -104,6 +104,18 @@ async function findOwnedRecurrence(client: any, userId: number, recurrenceId: nu
   });
 }
 
+async function lockOwnedRecurrence(client: any, userId: number, recurrenceId: number) {
+  const locked = await client.$queryRaw<Array<{ compra_recorrencia_id: number }>>`
+    SELECT compra_recorrencia_id
+    FROM public.tb_compra_recorrencia
+    WHERE compra_recorrencia_id = ${recurrenceId}
+      AND usuario_id = ${userId}
+    FOR UPDATE
+  `;
+  if (locked.length === 0) return null;
+  return findOwnedRecurrence(client, userId, recurrenceId);
+}
+
 function itemCreateData(recurrenceId: number, items: RecurrenceItemDTO[]) {
   return items.map((item) => ({
     compra_id: null,
@@ -175,7 +187,7 @@ export class RecorrenciaService {
 
   static async update(userId: number, recurrenceId: number, data: UpdateRecurrenceDTO) {
     const result = await prisma.$transaction(async (tx) => {
-      const existing = await findOwnedRecurrence(tx, userId, recurrenceId);
+      const existing = await lockOwnedRecurrence(tx, userId, recurrenceId);
       if (!existing) throw new AppError('Recorrência não encontrada', 404);
 
       if (existing.compra_recorrencia_status === 'CANCELADA' || existing.compra_recorrencia_status === 'FINALIZADA') {
@@ -278,7 +290,7 @@ export class RecorrenciaService {
 
   static async pause(userId: number, recurrenceId: number) {
     const result = await prisma.$transaction(async (tx) => {
-      const existing = await findOwnedRecurrence(tx, userId, recurrenceId);
+      const existing = await lockOwnedRecurrence(tx, userId, recurrenceId);
       if (!existing) throw new AppError('Recorrência não encontrada', 404);
       if (existing.compra_recorrencia_status === 'PAUSADA') return existing;
       if (existing.compra_recorrencia_status !== 'ATIVA') {
@@ -301,7 +313,7 @@ export class RecorrenciaService {
 
   static async resume(userId: number, recurrenceId: number) {
     const result = await prisma.$transaction(async (tx) => {
-      const existing = await findOwnedRecurrence(tx, userId, recurrenceId);
+      const existing = await lockOwnedRecurrence(tx, userId, recurrenceId);
       if (!existing) throw new AppError('Recorrência não encontrada', 404);
       if (existing.compra_recorrencia_status === 'ATIVA') return existing;
       if (existing.compra_recorrencia_status !== 'PAUSADA') {
@@ -335,7 +347,7 @@ export class RecorrenciaService {
 
   static async cancel(userId: number, recurrenceId: number) {
     const result = await prisma.$transaction(async (tx) => {
-      const existing = await findOwnedRecurrence(tx, userId, recurrenceId);
+      const existing = await lockOwnedRecurrence(tx, userId, recurrenceId);
       if (!existing) throw new AppError('Recorrência não encontrada', 404);
       if (existing.compra_recorrencia_status === 'CANCELADA') return existing;
       if (existing.compra_recorrencia_status === 'FINALIZADA') {
