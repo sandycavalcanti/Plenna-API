@@ -239,6 +239,7 @@ test('baseline: cadastro manual com múltiplos itens soma linhas, confirma e nã
   const reference = new Date('2026-10-15T12:00:00.000Z');
   let createData;
   let itemData;
+  let metricData;
   const purchase = {
     compra_id: 50,
     usuario_id: 7,
@@ -257,6 +258,7 @@ test('baseline: cadastro manual com múltiplos itens soma linhas, confirma e nã
     usuario_meta_valor_mensal: null,
   }));
   mock.method(prisma.tb_categoria, 'count', async () => 2);
+  mock.method(prisma.tb_forma_pagamento, 'findUnique', async () => ({ forma_pagamento_id: 3 }));
   mock.method(prisma.tb_compra, 'create', async ({ data }) => {
     createData = data;
     return purchase;
@@ -277,10 +279,15 @@ test('baseline: cadastro manual com múltiplos itens soma linhas, confirma e nã
   }]);
   mock.method(prisma.tb_preferencia, 'findMany', async () => []);
   mock.method(prisma.tb_metricas, 'findFirst', async () => null);
-  mock.method(prisma.tb_metricas, 'create', async ({ data }) => data);
+  mock.method(prisma.tb_metricas, 'create', async ({ data }) => {
+    metricData = data;
+    return data;
+  });
 
   const result = await CompraService.create(7, {
+    formaPagamentoId: 3,
     compraHorario: reference,
+    compraFonte: 'Loja física',
     compraClassificacao: 'NAO_IMPULSIVA',
     items: [
       { categoriaId: 1, nome: 'Item 1', valor: 25 },
@@ -289,11 +296,57 @@ test('baseline: cadastro manual com múltiplos itens soma linhas, confirma e nã
   });
 
   assert.equal(Number(result.compra.compra_valor), 75);
+  assert.equal(createData.forma_pagamento_id, 3);
+  assert.equal(createData.compra_fonte, 'Loja física');
+  assert.equal(createData.compra_classificacao, 'NAO_IMPULSIVA');
+  assert.equal(createData.compra_email, false);
   assert.equal(createData.compra_status, 'CONFIRMADA');
   assert.equal(Number(createData.compra_desconto), 0);
   assert.equal(itemData.length, 2);
   assert.equal('compra_item_quantidade' in itemData[0], false);
   assert.equal('compra_item_unidade_medida' in itemData[0], false);
+  assert.equal(metricData.usuario_id, 7);
+  assert.equal(Number(metricData.metricas_frequencia_compra), 1);
+});
+
+test('baseline: falha na persistência dos itens propaga erro antes dos efeitos derivados', async () => {
+  let metricsCreateCalled = false;
+  const purchase = {
+    compra_id: 51,
+    usuario_id: 7,
+    compra_valor: 20,
+    compra_horario: new Date('2026-10-15T12:00:00.000Z'),
+    compra_status: 'CONFIRMADA',
+    compra_ativo: 1,
+    compra_acima_limite: null,
+    compra_desconto: 0,
+    tb_usuario: { usuario_meta_valor_compra: null, usuario_meta_valor_mensal: null },
+    tb_compra_item: [],
+  };
+
+  mock.method(prisma.tb_usuario, 'findFirst', async () => ({
+    usuario_id: 7,
+    usuario_meta_valor_mensal: null,
+  }));
+  mock.method(prisma.tb_categoria, 'count', async () => 1);
+  mock.method(prisma.tb_compra, 'create', async () => purchase);
+  mock.method(prisma.tb_compra_item, 'createMany', async () => {
+    throw new Error('falha caracterizada na escrita dos itens');
+  });
+  mock.method(prisma.tb_metricas, 'create', async () => {
+    metricsCreateCalled = true;
+    return null;
+  });
+
+  await assert.rejects(
+    () => CompraService.create(7, {
+      compraHorario: purchase.compra_horario,
+      compraClassificacao: 'PENDENTE',
+      items: [{ categoriaId: 1, nome: 'Item', valor: 20 }],
+    }),
+    /falha caracterizada na escrita dos itens/,
+  );
+  assert.equal(metricsCreateCalled, false);
 });
 
 test('baseline: exclusão usa ownership e inativa compra e itens sem apagar registros', async () => {
