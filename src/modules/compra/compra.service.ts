@@ -2,9 +2,34 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import type { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
 import { MetricasService } from './metricas.service.js';
+import { metricPeriods } from './financeiro.js';
 import { evaluateConfirmedPurchaseLimits, itemTotalCents } from './limite.service.js';
 import { AppError } from '../../errors/AppError.js';
 import { dispatchPushAfterCommit, type PushNotificationCandidate } from '../notification/push.service.js';
+
+const publicPurchaseSelect = {
+  compra_id: true,
+  usuario_id: true,
+  forma_pagamento_id: true,
+  compra_valor: true,
+  compra_horario: true,
+  compra_fonte: true,
+  compra_email: true,
+  compra_classificacao: true,
+  compra_acima_limite: true,
+  compra_usuario_concorda: true,
+  compra_usuario_anotacao: true,
+  compra_data_criacao: true,
+  compra_status: true,
+  compra_ativo: true,
+  compra_desconto: true,
+  tb_compra_item: { where: { compra_item_ativo: 1 }, select: {
+    compra_item_id: true, compra_id: true, categoria_id: true, compra_item_nome: true,
+    compra_item_valor: true, compra_item_quantidade: true, compra_item_unidade_medida: true,
+    compra_item_data_criacao: true,
+    tb_categoria: { select: { categoria_id: true, categoria_nome: true, categoria_data_criacao: true } },
+  } },
+} as const satisfies Prisma.tb_compraSelect;
 
 type LimitEvaluationWithAlerts = {
   alerts?: Array<{ created: boolean; notificationId: number; type: string }>;
@@ -51,11 +76,7 @@ function resolveCompraValor(
   return fallbackValue;
 }
 
-function resolveMetricPeriods(previousDate: Date, currentDate: Date) {
-  const previousMonth = previousDate.getUTCFullYear() * 100 + previousDate.getUTCMonth();
-  const currentMonth = currentDate.getUTCFullYear() * 100 + currentDate.getUTCMonth();
-  return previousMonth === currentMonth ? [currentDate] : [previousDate, currentDate];
-}
+function resolveMetricPeriods(previousDate: Date, currentDate: Date) { return metricPeriods(previousDate, currentDate); }
 
 async function applyCompraConfirmation(
   tx: any,
@@ -353,7 +374,7 @@ export class CompraService {
         compra_ativo: 1,
         compra_status: { in: ['AGUARDANDO_CONFIRMACAO', 'CONFIRMADA'] },
       },
-      include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
+      select: publicPurchaseSelect,
       orderBy: { compra_horario: 'desc' },
     });
   }
@@ -361,6 +382,7 @@ export class CompraService {
   static async findPendingByUserId(userId: number) {
     return prisma.tb_compra.findMany({
       where: { usuario_id: userId, compra_status: 'AGUARDANDO_CONFIRMACAO', compra_ativo: 1 },
+      select: publicPurchaseSelect,
       orderBy: { compra_horario: 'desc' },
     });
   }
@@ -368,7 +390,7 @@ export class CompraService {
   static async findById(userId: number, compraId: number) {
     const compra = await prisma.tb_compra.findFirst({
       where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
-      include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
+      select: publicPurchaseSelect,
     });
     if (!compra) throw new AppError('Compra não encontrada', 404);
     return compra;
@@ -444,10 +466,7 @@ export class CompraService {
         where: { compra_id: compraId, compra_item_ativo: 1 },
         select: { compra_item_valor: true, compra_item_quantidade: true },
       });
-      const totalCents = remainingItems.reduce((sum, remainingItem) => {
-        const itemTotal = itemTotalCents(remainingItem.compra_item_valor, remainingItem.compra_item_quantidade);
-        return sum + (itemTotal ?? 0);
-      }, 0);
+      const totalCents = remainingItems.reduce((sum, item) => sum + (itemTotalCents(item.compra_item_valor, item.compra_item_quantidade) ?? 0), 0);
       // O valor armazenado e o total liquido: itens restantes menos o desconto
       // original, limitado a zero para impedir valores financeiros negativos.
       const descontoCents = Math.max(0, toCents(existing.compra_desconto ?? 0));
@@ -472,7 +491,7 @@ export class CompraService {
       return {
         response: await tx.tb_compra.findFirst({
           where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
-          include: { tb_compra_item: { where: { compra_item_ativo: 1 }, include: { tb_categoria: true } } },
+          select: publicPurchaseSelect,
         }),
         createdNotifications,
       };

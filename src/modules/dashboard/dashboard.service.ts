@@ -1,6 +1,7 @@
 import { segundosDoRegistro } from '../tempo-uso/tempo-uso.duracao.js';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { getMonthBounds, financialWhere, parseMonth, summarizeValues, cents } from '../compra/financeiro.js';
 import { AppError } from '../../errors/AppError.js';
 import type {
   AnalyticsCategoryDTO,
@@ -295,13 +296,6 @@ function buildComparison(base: AnalyticsPeriodDTO, compared: AnalyticsPeriodDTO)
  * evitando problemas com diferentes quantidades de dias e milissegundos
  * no final do mês.
  */
-function getMonthBounds(referenceDate: Date = new Date()) {
-  const start = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1));
-  const end = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth() + 1, 1));
-
-  return { start, end };
-}
-
 function toNumber(value: Prisma.Decimal | number) {
   return Number(value);
 }
@@ -454,8 +448,22 @@ export class DashboardService {
     };
   }
 
-  static async findGastosPorCategoria(userId: number): Promise<GastoCategoriaDTO[]> {
-    const { start, end } = getMonthBounds();
+  static async resumoMensal(userId: number, periodo?: unknown) {
+    const { start, end } = parseMonth(periodo);
+    return prisma.$transaction(async tx => {
+      const user = await tx.tb_usuario.findFirst({ where: { usuario_id: userId, usuario_status: true },
+        select: { usuario_meta_valor_mensal: true, usuario_meta_valor_compra: true } });
+      if (!user) throw new AppError('Usuário não encontrado', 404);
+      const compras = await tx.tb_compra.findMany({ where: financialWhere(userId, start), select: { compra_valor: true } });
+      const summary = summarizeValues(compras.map(c => c.compra_valor), user.usuario_meta_valor_mensal ?? null);
+      const limite = user.usuario_meta_valor_compra == null || cents(user.usuario_meta_valor_compra) === 0 ? null : cents(user.usuario_meta_valor_compra);
+      return { periodo: start.toISOString().slice(0,7), timezone: 'UTC', inicio: start.toISOString(), fimExclusivo: end.toISOString(),
+        ...summary, limitePorCompra: limite === null ? null : limite / 100,
+        comprasAcimaLimiteIndividual: limite === null ? null : compras.filter(c => c.compra_valor !== null && cents(c.compra_valor) > limite).length };
+    }, { isolationLevel: 'RepeatableRead' });
+  }
+  static async findGastosPorCategoria(userId: number, periodo?: unknown): Promise<GastoCategoriaDTO[]> {
+    const { start, end } = parseMonth(periodo);
 
     const compras = await prisma.tb_compra.findMany({
       where: {
@@ -489,7 +497,11 @@ export class DashboardService {
     // A consulta traz as compras do usuário e, dentro de cada compra, seus
     // itens. O loop abaixo precisa trabalhar com os itens achatados; antes,
     // `items` não existia neste escopo e causava ReferenceError/erro 500.
-    const items = compras.flatMap((compra) => compra.tb_compra_item);
+    const eligible = compras.filter(compra => {
+      if (compra.compra_valor === null || compra.tb_compra_item.some(item => !item.tb_categoria)) { ignorados += 1; return false; }
+      return true;
+    });
+    const items = eligible.flatMap(compra => compra.tb_compra_item);
 
     for (const item of items) {
       // Itens sem categoria não entram nesta visão, pois o contrato do
@@ -510,8 +522,8 @@ export class DashboardService {
     return [...totalsByCategory.entries()].map(([categoria_nome, total]) => ({ categoria_nome, total })).sort((left, right) => right.total - left.total);
   }
 
-  static async findGastosPorFormaPagamento(userId: number): Promise<GastoFormaPagamentoDTO[]> {
-    const { start, end } = getMonthBounds();
+  static async findGastosPorFormaPagamento(userId: number, periodo?: unknown): Promise<GastoFormaPagamentoDTO[]> {
+    const { start, end } = parseMonth(periodo);
 
     const compras = await prisma.tb_compra.findMany({
       where: {
@@ -537,13 +549,13 @@ export class DashboardService {
     let ignorados = 0;
 
      for (const compra of compras) {
-      if (compra.compra_valor === null) {
+      if (compra.compra_valor === null || !compra.tb_forma_pagamento) {
         ignorados += 1;
         continue;
       }
 
       const formaPagamentoNome =
-        compra.tb_forma_pagamento?.forma_pagamento_nome ?? 'Sem forma de pagamento';
+        compra.tb_forma_pagamento!.forma_pagamento_nome;
 
       const totalAtual = totalsByFormaPagamento.get(formaPagamentoNome) ?? 0;
       totalsByFormaPagamento.set(
@@ -555,8 +567,8 @@ export class DashboardService {
     return [...totalsByFormaPagamento.entries()].map(([forma_pagamento_nome, total]) => ({ forma_pagamento_nome, total })).sort((left, right) => right.total - left.total);
   }
 
-  static async findImpulsividade(userId: number): Promise<ImpulsividadeDTO[]> {
-    const { start, end } = getMonthBounds();
+  static async findImpulsividade(userId: number, periodo?: unknown): Promise<ImpulsividadeDTO[]> {
+    const { start, end } = parseMonth(periodo);
 
     const grupos = await prisma.tb_compra.groupBy({
       where: {
@@ -579,15 +591,17 @@ export class DashboardService {
     });
 
     registrarIgnorados('impulsividade', grupos.reduce((total, grupo) => total + grupo._count._all - grupo._count.compra_valor, 0));
-    return grupos.flatMap((grupo) => grupo._sum.compra_valor === null ? [] : [{
+    return grupos.map((grupo) => ({
       compra_classificacao: grupo.compra_classificacao,
-      quantidade: grupo._count.compra_valor,
-      valor_total: toNumber(grupo._sum.compra_valor),
-    }]);
+      quantidade: grupo._count.compra_valor, // Compatibilidade: contagem com valor conhecido.
+      quantidade_total: grupo._count._all,
+      quantidade_sem_valor: grupo._count._all - grupo._count.compra_valor,
+      valor_total: grupo._sum.compra_valor === null ? null : toNumber(grupo._sum.compra_valor),
+    })).sort((a, b) => a.compra_classificacao.localeCompare(b.compra_classificacao));
   }
 
-  static async findComprasAcimaLimite(userId: number): Promise<LimiteComprasDTO> {
-    const { start, end } = getMonthBounds();
+  static async findComprasAcimaLimite(userId: number, periodo?: unknown): Promise<LimiteComprasDTO> {
+    const { start, end } = parseMonth(periodo);
 
     const grupos = await prisma.tb_compra.groupBy({
       where: {
@@ -624,8 +638,8 @@ export class DashboardService {
     return resultado;
   }
 
-  static async findTempoVsGasto(userId: number): Promise<TempoVsGastoDTO[]> {
-    const { start, end } = getMonthBounds();
+  static async findTempoVsGasto(userId: number, periodo?: unknown): Promise<TempoVsGastoDTO[]> {
+    const { start, end } = parseMonth(periodo);
 
     // As consultas são independentes e executadas em paralelo para reduzir
     // o tempo total necessário para montar o indicador.
