@@ -12,6 +12,13 @@ function timingSafeEqualString(left, right) {
     const rightBuffer = Buffer.from(right);
     return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
+function semCache(res) {
+    res.set({
+        'Cache-Control': 'no-store',
+        Pragma: 'no-cache',
+        Expires: '0',
+    });
+}
 /**
  * Controla as operações HTTP da integração de e-mail.
  *
@@ -36,6 +43,7 @@ export class EmailController {
         }
     }
     static async callback(req, res) {
+        semCache(res);
         try {
             const { code, state } = req.query;
             if (!code || !state)

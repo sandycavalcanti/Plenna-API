@@ -3,8 +3,11 @@ import { z } from 'zod';
 import { env } from '../../lib/env.js';
 import {
   AIRateLimitError,
+  AIProviderError,
+  type AIMessage,
   type AIEmailClassificationResult,
   type AICategorySuggestionResult,
+  type AICategoryOption,
   type AIProvider,
   type AIPurchaseExtractionProvider,
   type AIExtractedPurchase,
@@ -17,26 +20,26 @@ const requestyPurchaseSchema = z.object({
   paymentMethodName: z.string().nullable().optional(),
 });
 
-const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
+export const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
   z.object({
     classificacao: z.literal('COMPRA'),
-    categoryName: z.string().nullable().optional(),
+    categoryId: z.number().int().nullable().optional(),
     purchase: requestyPurchaseSchema,
   }),
   z.object({
     classificacao: z.literal('PROPAGANDA'),
-    categoryName: z.string().nullable().optional(),
+    categoryId: z.number().int().nullable().optional(),
     purchase: requestyPurchaseSchema.nullable().optional(),
   }),
   z.object({
     classificacao: z.literal('IGNORAR'),
-    categoryName: z.string().nullable().optional(),
+    categoryId: z.number().int().nullable().optional(),
     purchase: requestyPurchaseSchema.nullable().optional(),
   }),
 ]);
 
-const requestyCategorySchema = z.object({
-  categoryName: z.string().nullable().optional(),
+export const requestyCategorySchema = z.object({
+  categoryId: z.number().int().nullable(),
 });
 
 const MAX_RATE_LIMIT_RETRIES = 2;
@@ -54,6 +57,7 @@ export const requestyPurchaseExtractionSchema = z.object({
   establishment: z.string().max(120).nullable().default(null),
   orderNumber: z.string().max(80).nullable().default(null),
   totalAmount: z.number().finite().positive().nullable().default(null),
+  discountAmount: z.number().finite().nonnegative().nullable().optional(),
   paymentMethodName: z.string().max(80).nullable().default(null),
   items: z.array(requestyExtractedPurchaseItemSchema).max(100).default([]),
 }).strict();
@@ -138,8 +142,9 @@ function parseJsonPayload<T>(payload: string, schema: z.ZodType<T>) {
   return schema.parse(parsed);
 }
 
-function buildClassificationInstructions() {
+export function buildClassificationInstructions() {
   return [
+    'PROPAGANDA somente quando a finalidade principal for comercial. IGNORAR conteudo tecnico, academico, editorial, institucional, operacional, informativo, noticias e alertas de seguranca. Newsletter, marca no remetente, preco isolado ou mencao secundaria a produto nao bastam.',
     'Não invente dados que não estejam explicitamente suportados pelo e-mail.',
     'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
     'Emails de status de pedido, envio, entrega, nota fiscal ou pagamento aprovado são COMPRA.',
@@ -153,7 +158,7 @@ function buildClassificationInstructions() {
   ].join(' ');
 }
 
-function buildPurchaseExtractionInstructions() {
+export function buildPurchaseExtractionInstructions() {
   return [
     'Voce esta EXTRAINDO informacoes existentes no e-mail; o e-mail ja foi classificado como COMPRA.',
     'Nao classifique o e-mail e nao use conhecimento externo.',
@@ -163,8 +168,17 @@ function buildPurchaseExtractionInstructions() {
     'Extraia orderNumber somente com evidencia textual de pedido e nao confunda CNPJ, CPF, rastreio ou chave NF-e.',
     'Retorne somente paymentMethodName textual quando a forma estiver explicitamente presente, sem ID de banco.',
     'Extraia itens somente quando nome, quantidade ou precos estiverem explicitamente presentes.',
+    'Em e-mails originalmente estruturados como tabelas HTML, o nome, a quantidade e o preco podem aparecer em linhas consecutivas apos a normalizacao; associe um valor imediatamente adjacente ao bloco do produto somente quando a relacao estiver clara.',
+    'Quando o produto vier seguido por tamanho, cor ou outro atributo, depois quantidade e um valor monetario antes do proximo produto ou de subtotal, frete, desconto ou total, esse valor pertence ao produto quando a relacao textual for inequivoca.',
+    'Nao associe precos de blocos distantes, totais gerais, frete, desconto ou secoes como "voce tambem pode gostar" a um produto comprado.',
+    'Apos marcadores como "voce tambem pode gostar", "recomendados", "compre tambem" ou "talvez voce goste", nao extraia os produtos seguintes como itens comprados.',
+    'Extraia tambem frete e taxas positivas explicitamente cobradas como itens, usando o nome especifico e categoryName "Frete/Taxas".',
+    'Nao invente frete ou taxa por diferenca matematica; so extraia componentes com rotulo ou evidencia explicita.',
+    'Nao transforme desconto, juros, parcela, cashback, economia ou cupom em item positivo. Retorne descontoAmount somente quando o desconto estiver explicitamente informado.',
+    'Quando houver exatamente um produto ou servico explicitamente identificado e o total corresponder a ele, extraia esse item mesmo que nao exista uma tabela formal.',
+    'Nao crie item generico, nao use o estabelecimento como nome e nao use o total como valor do item quando houver frete, taxa, desconto, parcela ou mais de um produto.',
     'categoryName deve ser null quando nao houver categoria explicitamente indicada no e-mail.',
-    'Responda em JSON estrito com establishment, orderNumber, totalAmount, paymentMethodName e items.',
+    'Responda em JSON estrito com establishment, orderNumber, totalAmount, discountAmount, paymentMethodName e items.',
   ].join(' ');
 }
 
@@ -287,13 +301,14 @@ export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvide
   /**
    * Sugere uma categoria para propagandas já reconhecidas como tais.
    */
-  async suggestCategory(prompt: string): Promise<AICategorySuggestionResult> {
+  async suggestCategory(prompt: string, categories: AICategoryOption[]): Promise<AICategorySuggestionResult> {
     if (!env.requestyApiKey) {
       throw new Error('REQUESTY_API_KEY ausente');
     }
 
     try {
-      const text = await this.chatCompletion(prompt);
+      const categoryList = categories.map((category) => `${category.categoryId} - ${category.categoryName}`).join('\n');
+      const text = await this.chatCompletion(`${prompt}\nCategorias permitidas:\n${categoryList}\nRetorne somente {"categoryId": number|null}. Escolha exclusivamente um ID da lista ou null.`, 'Escolha somente um categoryId da lista fornecida. NÃ£o invente IDs.');
       return parseJsonPayload(text, requestyCategorySchema);
     } catch (error: any) {
       if (isRateLimited(error)) {
@@ -304,5 +319,56 @@ export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvide
 
       throw error;
     }
+  }
+
+  /**
+   * Responde uma conversa textual sem response_format JSON. Esta capacidade
+   * nao usa o retry do fluxo de e-mail: cada envio de chat gera no maximo uma
+   * chamada externa, evitando associar retry a uma persistencia parcial.
+   */
+  async chat(messages: AIMessage[]): Promise<string> {
+    if (!env.requestyApiKey) {
+      throw new AIProviderError('unavailable', 'Requesty nao esta configurado');
+    }
+
+    try {
+      const response = await axios.post(
+        'https://router.requesty.ai/v1/chat/completions',
+        {
+          model: env.requestyChatModel,
+          messages,
+          temperature: 0.2,
+        },
+        {
+          timeout: env.requestyTimeoutMs,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${env.requestyApiKey}`,
+          },
+        },
+      );
+
+      const text = extractAssistantContent(response.data);
+      if (!text) {
+        throw new AIProviderError('empty', 'Requesty retornou uma resposta vazia');
+      }
+      return text;
+    } catch (error: any) {
+      if (error instanceof AIProviderError) throw error;
+      if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'AbortError') {
+        throw new AIProviderError('timeout', 'Timeout ao consultar o Requesty');
+      }
+      throw new AIProviderError('failure', 'Falha ao consultar o Requesty');
+    }
+  }
+
+  async generateTitle(firstMessage: string): Promise<string> {
+    return this.chat([
+      {
+        role: 'system',
+        content: 'Gere um titulo curto e natural para esta conversa do Plenna. Responda somente com o titulo, sem aspas, markdown ou prefixos. Use no maximo 45 caracteres.',
+      },
+      { role: 'user', content: firstMessage },
+    ]);
   }
 }

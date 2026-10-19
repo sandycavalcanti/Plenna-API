@@ -14,15 +14,21 @@ async function setup() {
   const calls = [];
   const deny = () => { throw new Error('Unexpected database operation'); };
   const prisma = new Proxy({
-    tb_tempo_uso: new Proxy({
-      findFirst: async ({ where }) => {
-        calls.push(where);
-        assert.equal(where.tempo_uso_id, 123);
-        assert.equal(where.usuario_id, 7);
-        return { tempo_uso_id: 123 };
-      },
-    }, { get: (target, key) => key in target ? target[key] : deny }),
-  }, { get: (target, key) => key in target ? target[key] : deny });
+  tb_usuario: {
+    findFirst: async ({ where }) => {
+      assert.equal(where.usuario_id, 7);
+      return { usuario_id: 7 };
+    },
+  },
+  tb_tempo_uso: new Proxy({
+    findFirst: async ({ where }) => {
+      calls.push(where);
+      assert.equal(where.tempo_uso_id, 123);
+      assert.equal(where.usuario_id, 7);
+      return { tempo_uso_id: 123 };
+    },
+  }, { get: (target, key) => key in target ? target[key] : deny }),
+}, { get: (target, key) => key in target ? target[key] : deny });
   // No real environment, dotenv, Prisma client or database is loaded.
   const context = vm.createContext({ process: { env: { JWT_SECRET: testKey } } });
   const cache = new Map();
@@ -84,7 +90,7 @@ test('authenticated catalog returns exactly the official contract without Prisma
 
 test('catalog without JWT preserves Production authentication response', async () => {
   const { get, calls } = await setup();
-  assert.deepEqual(await get('/aplicativos'), { status: 401, body: { error: 'Token não informado' } });
+  assert.deepEqual(await get('/aplicativos'), { status: 401, body: { error: 'Token não fornecido' } });
   assert.equal(calls.length, 0);
 });
 
@@ -98,7 +104,14 @@ test('invalid JWT remains rejected without database access', async () => {
 
 test('numeric path still uses findById', async () => {
   const { get, calls, authorization } = await setup();
-  assert.deepEqual(await get('/123', authorization), { status: 200, body: { tempo_uso_id: 123 } });
+  assert.deepEqual(await get('/123', authorization), {
+    status: 200,
+    body: {
+      tempo_uso_id: 123,
+      tempo_uso_duracao_segundos: null,
+      tempo_uso_minutos: null,
+    },
+  });
   assert.equal(calls.length, 1);
 });
 

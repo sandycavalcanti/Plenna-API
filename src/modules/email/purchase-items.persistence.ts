@@ -18,6 +18,23 @@ export type PersistedPurchaseItem = {
   compra_item_unidade_medida: string | null;
 };
 
+type PersistablePurchaseItemInput = Pick<ExtractedPurchaseItem, 'name' | 'unitPrice'> & {
+  name: string;
+  unitPrice: number;
+};
+
+/**
+ * Mantém em um único lugar a regra mínima para um item chegar ao banco.
+ * Nome e preço unitário válido são obrigatórios; quantidade e total do item
+ * podem permanecer ausentes conforme a evidência disponível no e-mail.
+ */
+export function isPersistablePurchaseItem(
+  item: Pick<ExtractedPurchaseItem, 'name' | 'unitPrice'>,
+): item is PersistablePurchaseItemInput {
+  const name = item.name?.trim();
+  return Boolean(name && item.unitPrice !== null && Number.isFinite(item.unitPrice) && item.unitPrice > 0);
+}
+
 /**
  * Converte um item extraido em dados aceitos por tb_compra_item.
  * O valor persistido e sempre o unitPrice; totalPrice nao substitui o preco
@@ -30,9 +47,9 @@ export async function buildPersistedPurchaseItems(
   const persisted: PersistedPurchaseItem[] = [];
 
   for (const item of items) {
-    const name = item.name?.trim();
+    if (!isPersistablePurchaseItem(item)) continue;
+    const name = item.name.trim();
     const unitPrice = item.unitPrice;
-    if (!name || unitPrice === null || !Number.isFinite(unitPrice) || unitPrice <= 0) continue;
 
     let categoriaId: number | null = null;
     const categoryName = item.categoryName?.trim();

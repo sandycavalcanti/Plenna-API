@@ -30,6 +30,8 @@ const emailFiscalLinkMaxRedirectsRaw = process.env.EMAIL_FISCAL_LINK_MAX_REDIREC
 const emailFiscalLinkMaxPerEmailRaw = process.env.EMAIL_FISCAL_LINK_MAX_PER_EMAIL ?? "3";
 const requestyTimeoutMsRaw = process.env.REQUESTY_TIMEOUT_MS ?? "8000";
 const requestyRateLimitCooldownMsRaw = process.env.REQUESTY_RATE_LIMIT_COOLDOWN_MS ?? "60000";
+const aiProvider = process.env.AI_PROVIDER ?? "requesty";
+const codexLocalTimeoutMsRaw = process.env.CODEX_LOCAL_TIMEOUT_MS ?? "30000";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`Invalid PORT value: ${portRaw}`);
@@ -69,6 +71,8 @@ function parseStrictBoolean(name, raw) {
 export const env = {
     nodeEnv,
     isProduction: nodeEnv === "production",
+    // Segredo independente, com ao menos 32 bytes; nunca versionar seu valor.
+    rateLimitHmacKey: process.env.RATE_LIMIT_HMAC_KEY,
     port,
     dbUrl: process.env.DIRECT_URL ?? requireEnv("DATABASE_URL"),
     apiBaseUrl: process.env.API_BASE_URL ?? "https://plenna-api-orpin.vercel.app",
@@ -92,4 +96,13 @@ export const env = {
     requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",
     requestyTimeoutMs: requirePositiveInteger("REQUESTY_TIMEOUT_MS", requestyTimeoutMsRaw),
     requestyRateLimitCooldownMs: requirePositiveInteger("REQUESTY_RATE_LIMIT_COOLDOWN_MS", requestyRateLimitCooldownMsRaw),
+    aiProvider,
+    codexLocalTimeoutMs: requirePositiveInteger("CODEX_LOCAL_TIMEOUT_MS", codexLocalTimeoutMsRaw),
+    smtp: {
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+        from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+    },
 };

@@ -25,7 +25,7 @@ export class AuthService {
       where: { usuario_email: data.email },
     });
 
-    if (userExists) throw new AppError("Email já cadastrado", 400);
+    if (userExists) throw new AppError("Email já cadastrado", 409);
 
     const hash = await bcrypt.hash(data.senha, 10);
     
@@ -49,7 +49,8 @@ export class AuthService {
         },
       });
 
-      return user;
+      const { usuario_senha, ...usuarioSeguro } = user;
+      return usuarioSeguro;
     });
   }
 
@@ -63,7 +64,9 @@ export class AuthService {
       },
     });
 
-    if (!user) throw new AppError("Credenciais inválidas", 401);
+   if (!user || user.usuario_status !== true) {
+   throw new AppError("Credenciais inválidas", 401);
+}
 
     const match = await bcrypt.compare(password, user.usuario_senha);
     if (!match) throw new AppError("Credenciais inválidas", 401);

@@ -4,9 +4,11 @@ import assert from 'node:assert/strict';
 const {
   buildNestedPurchaseItems,
   buildPersistedPurchaseItems,
+  isPersistablePurchaseItem,
   persistPurchaseItems,
   shouldPersistPurchaseItems,
 } = await import('../dist/src/modules/email/purchase-items.persistence.js');
+const { normalizePurchaseItemPrices } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
 
 function item(overrides = {}) {
   return {
@@ -32,6 +34,41 @@ function repository(categories = []) {
     },
   };
 }
+
+test('regra compartilhada identifica item persistivel', () => {
+  assert.equal(isPersistablePurchaseItem({ name: 'Produto', unitPrice: 10 }), true);
+  assert.equal(isPersistablePurchaseItem({ name: 'Produto', unitPrice: null }), false);
+  assert.equal(isPersistablePurchaseItem({ name: 'Produto', unitPrice: 0 }), false);
+  assert.equal(isPersistablePurchaseItem({ name: ' ', unitPrice: 10 }), false);
+});
+
+test('item normalizado com totalPrice e quantidade chega a persistencia', async () => {
+  const normalized = normalizePurchaseItemPrices({
+    establishment: 'Loja',
+    orderNumber: 'ABC',
+    totalAmount: 99.90,
+    paymentMethod: { rawName: 'Pix' },
+    items: [{ name: 'Produto', quantity: 1, unit: null, unitPrice: null, totalPrice: 89.90, categoryName: null }],
+    invoice: null,
+    evidence: [],
+  });
+  const result = await buildPersistedPurchaseItems(normalized.items, repository());
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].compra_item_valor.toString(), '89.9');
+});
+
+test('componente Frete/Taxas resolve o ID real sem hardcode', async () => {
+  const result = await buildPersistedPurchaseItems([item({
+    name: 'Frete',
+    quantity: 1,
+    unitPrice: 10,
+    totalPrice: 10,
+    categoryName: 'Frete/Taxas',
+  })], repository([{ categoria_id: 42 }]));
+
+  assert.equal(result[0].categoria_id, 42);
+});
 
 test('persiste item valido usando unitPrice e quantidade', async () => {
   const result = await buildPersistedPurchaseItems([item()], repository());

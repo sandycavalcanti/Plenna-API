@@ -118,6 +118,23 @@ test('itens fiscais nao sao concatenados com itens do email', () => {
   assert.equal(result.items[0].name, 'Item fiscal');
 });
 
+test('frete fiscal e adicionado uma unica vez quando ja existe no email', () => {
+  const result = mergePurchaseSources(purchase({
+    totalAmount: 100,
+    items: [
+      { name: 'Produto', quantity: 1, unit: null, unitPrice: 90, totalPrice: 90, categoryName: null },
+      { name: 'Frete', quantity: 1, unit: null, unitPrice: 10, totalPrice: 10, categoryName: 'Frete/Taxas' },
+    ],
+  }), null, { nfe: [nfe({ freightAmount: 10 })], danfe: [] });
+
+  assert.equal(result.items.filter((item) => item.name === 'Frete').length, 1);
+});
+
+test('frete fiscal vira componente positivo quando nao veio do email', () => {
+  const result = mergePurchaseSources(purchase({ totalAmount: 100 }), null, { nfe: [nfe({ freightAmount: 10 })], danfe: [] });
+  assert.equal(result.items.some((item) => item.name === 'Frete' && item.unitPrice === 10 && item.categoryName === 'Frete/Taxas'), true);
+});
+
 test('multiplos XMLs com identidades diferentes nao formam Frankenstein fiscal', () => {
   const result = mergePurchaseSources(purchase(), null, { nfe: [nfe(), nfe({ number: '999' })], danfe: [] });
   assert.equal(result.totalAmount, 90);

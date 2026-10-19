@@ -7,7 +7,7 @@ process.env.REQUESTY_API_KEY = process.env.REQUESTY_API_KEY ?? 'requesty-key';
 
 const axios = (await import('axios')).default;
 const { RequestyProvider } = await import('../dist/src/modules/email/requesty.provider.js');
-const { mergeExtractedPurchase, needsAiEnrichment, buildPurchaseExtractionPrompt } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
+const { mergeExtractedPurchase, needsAiEnrichment, buildPurchaseExtractionPrompt, normalizePositiveComponentPrices, reconcilePurchaseTotal } = await import('../dist/src/modules/email/email-purchase.enrichment.js');
 
 const email = (textBody = '', overrides = {}) => ({
   id: 'enrichment-test',
@@ -162,6 +162,13 @@ test('needsAiEnrichment identifica lacunas e compra completa', () => {
     totalAmount: 47.99,
     paymentMethod: { rawName: 'Pix' },
     items: [{ name: 'Item', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  })), true);
+  assert.equal(needsAiEnrichment(purchase({
+    establishment: 'C&A',
+    orderNumber: 'ABC123',
+    totalAmount: 47.99,
+    paymentMethod: { rawName: 'Pix' },
+    items: [{ name: 'Item', quantity: 1, unitPrice: 47.99, totalPrice: null, categoryName: null }],
   })), false);
 });
 
@@ -210,4 +217,110 @@ test('merge preserva itens determinísticos e aceita itens AI quando lista está
   const ai = aiPurchase({ items: [{ name: 'Novo', quantity: 1, unitPrice: 10, totalPrice: null, categoryName: null }] });
   assert.equal(mergeExtractedPurchase(deterministicItems, ai).items[0].name, 'Existente');
   assert.equal(mergeExtractedPurchase(purchase(), ai).items[0].name, 'Novo');
+});
+
+test('merge completa item deterministico incompleto quando o nome corresponde', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Produto X', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [{ name: 'produto x', quantity: 1, unitPrice: 59.90, totalPrice: 59.90, categoryName: null }],
+  }));
+
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[0].unitPrice, 59.90);
+  assert.equal(result.items[0].totalPrice, 59.90);
+});
+
+test('merge nao substitui item deterministico por item AI diferente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Produto X', quantity: 1, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [{ name: 'Produto Y', quantity: 1, unitPrice: 59.90, totalPrice: 59.90, categoryName: null }],
+  }));
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[0].unitPrice, null);
+});
+
+test('reconcilia produto e frete positivos contra o total da compra', () => {
+  assert.equal(reconcilePurchaseTotal(89.80, [
+    { name: 'Camiseta', quantity: 2, unit: null, unitPrice: 39.90, totalPrice: 79.80, categoryName: null },
+    { name: 'Frete', quantity: 1, unit: null, unitPrice: 10, totalPrice: 10, categoryName: 'Frete/Taxas' },
+  ], null), true);
+});
+
+test('reconcilia taxa positiva com quantidade ausente como uma unidade', () => {
+  assert.equal(reconcilePurchaseTotal(262.80, [
+    { name: 'Jaqueta Jeans Oversized', quantity: 1, unit: null, unitPrice: 249.90, totalPrice: 249.90, categoryName: null },
+    { name: 'Taxa de entrega', quantity: null, unit: null, unitPrice: 12.90, totalPrice: 12.90, categoryName: 'Frete/Taxas' },
+  ], null), true);
+});
+
+test('desconto explicito participa da reconciliacao sem virar item', () => {
+  assert.equal(reconcilePurchaseTotal(90, [
+    { name: 'Produtos', quantity: 1, unit: null, unitPrice: 100, totalPrice: 100, categoryName: null },
+    { name: 'Frete', quantity: 1, unit: null, unitPrice: 10, totalPrice: 10, categoryName: 'Frete/Taxas' },
+  ], 20), true);
+});
+
+test('diferenca sem componente explicito nao e reconciliada', () => {
+  assert.equal(reconcilePurchaseTotal(89.80, [
+    { name: 'Produtos', quantity: 1, unit: null, unitPrice: 79.80, totalPrice: 79.80, categoryName: null },
+  ], null), false);
+});
+test('merge encontra produto correspondente entre varios itens da IA e anexa componente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Jaqueta Jeans Oversized', quantity: null, unitPrice: null, totalPrice: null, categoryName: null }],
+  }), aiPurchase({
+    items: [
+      { name: 'Jaqueta Jeans Oversized', quantity: 1, unitPrice: 249.9, totalPrice: 249.9, categoryName: null },
+      { name: 'Taxa de entrega', quantity: 1, unitPrice: 12.9, totalPrice: 12.9, categoryName: 'Frete/Taxas' },
+    ],
+  }));
+
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0].unitPrice, 249.9);
+  assert.equal(result.items[1].name, 'Taxa de entrega');
+});
+
+test('normaliza preco de taxa explicitamente associada no texto', () => {
+  const result = normalizePositiveComponentPrices(purchase({
+    items: [{ name: 'Taxa de entrega', quantity: 1, unitPrice: null, totalPrice: null, categoryName: 'Frete/Taxas' }],
+  }), 'Taxa de entrega\nR$ 12,90\nTotal\nR$ 262,80');
+
+  assert.equal(result.items[0].quantity, 1);
+  assert.equal(result.items[0].unitPrice, 12.9);
+  assert.equal(result.items[0].totalPrice, 12.9);
+});
+
+test('merge completa taxa deterministica sem duplicar componente', () => {
+  const result = mergeExtractedPurchase(purchase({
+    items: [{ name: 'Taxa de servico', quantity: 1, unitPrice: null, totalPrice: null, categoryName: 'Frete/Taxas' }],
+  }), aiPurchase({
+    items: [{ name: 'Taxa de servico', quantity: 1, unitPrice: 9.9, totalPrice: 9.9, categoryName: 'Frete/Taxas' }],
+  }));
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].unitPrice, 9.9);
+});
+
+test('total da IA pode substituir somente fallback quando sustentado pelo texto', () => {
+  const result = mergeExtractedPurchase(
+    purchase({ totalAmount: 189.9, totalAmountSource: 'CLASSIFICATION_FALLBACK' }),
+    aiPurchase({ totalAmount: 184.8 }),
+    'Produto R$ 189,90 Total final R$ 184,80',
+  );
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'AI');
+});
+
+test('total semantico deterministico permanece acima da IA', () => {
+  const result = mergeExtractedPurchase(
+    purchase({ totalAmount: 184.8, totalAmountSource: 'DETERMINISTIC_SEMANTIC' }),
+    aiPurchase({ totalAmount: 189.9 }),
+    'Total final R$ 184,80 Produto R$ 189,90',
+  );
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'DETERMINISTIC_SEMANTIC');
 });

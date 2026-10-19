@@ -94,6 +94,13 @@ export function buildPurchaseUpdate(existing, incoming, paymentMethodId) {
         data.compra_fonte = incoming.establishment;
     if (existing.compra_valor === null && incoming.totalAmount !== null)
         data.compra_valor = incoming.totalAmount;
+    const existingDiscount = amount(existing.compra_desconto ?? 0) ?? 0;
+    const incomingDiscount = incoming.discountAmount ?? 0;
+    if (existingDiscount <= 0 && Number.isFinite(incomingDiscount) && incomingDiscount > 0) {
+        // Reconciliacoes podem complementar compras antigas que ainda nao tinham
+        // o desconto transportado, sem apagar um desconto ja persistido.
+        data.compra_desconto = Number(incomingDiscount.toFixed(2));
+    }
     if (existing.forma_pagamento_id === null && paymentMethodId !== null)
         data.forma_pagamento_id = paymentMethodId;
     return data;

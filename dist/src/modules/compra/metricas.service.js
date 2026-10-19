@@ -28,6 +28,8 @@ export class MetricasService {
             db.tb_compra.findMany({
                 where: {
                     usuario_id: userId,
+                    // Compras excluídas logicamente não participam dos indicadores.
+                    compra_ativo: 1,
                     compra_status: 'CONFIRMADA',
                     compra_horario: {
                         gte: start,
@@ -48,16 +50,25 @@ export class MetricasService {
         if (!user) {
             throw new AppError('Usuário não encontrado', 404);
         }
-        const totalCents = purchases.reduce((sum, purchase) => {
-            return sum + toCents(purchase.compra_valor);
-        }, 0);
-        const frequency = purchases.length;
-        const averagePurchaseCents = frequency > 0 ? Math.round(totalCents / frequency) : 0;
+        const knownValues = purchases.flatMap((purchase) => purchase.compra_valor === null ? [] : [purchase.compra_valor]);
+        const ignoredCount = purchases.length - knownValues.length;
+        if (ignoredCount > 0) {
+            console.info('metricas_dados_insuficientes', { quantidade: ignoredCount });
+        }
+        if (knownValues.length === 0) {
+            // Não sobrescreve nem devolve uma métrica antiga como se fosse atual.
+            // A validade de métricas antigas precisa de uma evolução posterior do modelo.
+            console.info('metricas_nao_recalculadas', { motivo: 'nenhum_valor_conhecido' });
+            return null;
+        }
+        const totalCents = knownValues.reduce((sum, value) => sum + toCents(value), 0);
+        const frequency = knownValues.length;
+        const averagePurchaseCents = Math.round(totalCents / frequency);
         const monthlyLimitCents = user.usuario_meta_valor_mensal ? toCents(user.usuario_meta_valor_mensal) : null;
         const aboveLimitCountRaw = monthlyLimitCents === null
             ? 0
-            : purchases.reduce((count, purchase) => {
-                return count + (toCents(purchase.compra_valor) > monthlyLimitCents ? 1 : 0);
+            : knownValues.reduce((count, value) => {
+                return count + (toCents(value) > monthlyLimitCents ? 1 : 0);
             }, 0);
         const aboveLimitCountNum = Number(aboveLimitCountRaw);
         const aboveLimitCount = Number.isFinite(aboveLimitCountNum) ? Math.max(0, Math.floor(aboveLimitCountNum)) : 0;

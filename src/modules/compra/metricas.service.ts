@@ -1,16 +1,10 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
-
-function getMonthBounds(referenceDate: Date) {
-  const start = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1));
-  const end = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth() + 1, 1));
-
-  return { start, end };
-}
+import { getMonthBounds, financialWhere, summarizeValues, cents } from './financeiro.js';
 
 function toCents(value: Prisma.Decimal | number | string) {
-  return Math.round(Number(value) * 100);
+  return cents(value);
 }
 
 function fromCents(cents: number) {
@@ -36,14 +30,7 @@ export class MetricasService {
         },
       }),
       db.tb_compra.findMany({
-        where: {
-          usuario_id: userId,
-          compra_status: 'CONFIRMADA',
-          compra_horario: {
-            gte: start,
-            lt: end,
-          },
-        },
+        where: financialWhere(userId, referenceDate),
         select: {
           compra_valor: true,
         },
@@ -65,34 +52,23 @@ export class MetricasService {
     if (ignoredCount > 0) {
       console.info('metricas_dados_insuficientes', { quantidade: ignoredCount });
     }
-    if (knownValues.length === 0) {
+    if (knownValues.length === 0 && purchases.length > 0) {
       // Não sobrescreve nem devolve uma métrica antiga como se fosse atual.
       // A validade de métricas antigas precisa de uma evolução posterior do modelo.
       console.info('metricas_nao_recalculadas', { motivo: 'nenhum_valor_conhecido' });
       return null;
     }
 
-    const totalCents = knownValues.reduce((sum, value) => sum + toCents(value), 0);
-    const frequency = knownValues.length;
-    const averagePurchaseCents = Math.round(totalCents / frequency);
-    const monthlyLimitCents = user.usuario_meta_valor_mensal ? toCents(user.usuario_meta_valor_mensal) : null;
-    const aboveLimitCountRaw =
-      monthlyLimitCents === null
-        ? 0
-        : knownValues.reduce((count, value) => {
-            return count + (toCents(value) > monthlyLimitCents ? 1 : 0);
-          }, 0);
-    const aboveLimitCountNum = Number(aboveLimitCountRaw);
-    const aboveLimitCount = Number.isFinite(aboveLimitCountNum) ? Math.max(0, Math.floor(aboveLimitCountNum)) : 0;
-
-    const frequencyNum = Number(frequency);
+    const financial = summarizeValues(purchases.map(p => p.compra_valor), user.usuario_meta_valor_mensal ?? null);
+    const totalCents = toCents(financial.totalConhecido);
+    const averagePurchaseCents = toCents(financial.mediaConhecida ?? 0);
 
     const commonData = {
       metricas_media_gasto: fromCents(totalCents),
       metricas_media_valor_compra: fromCents(averagePurchaseCents),
-      metricas_frequencia_compra: Number.isFinite(frequencyNum) ? Math.max(0, Math.floor(frequencyNum)) : 0,
+      metricas_frequencia_compra: financial.comprasComValor,
       metricas_media_tempo: existingMetric?.metricas_media_tempo ?? new Prisma.Decimal(0),
-      metricas_acima_limite: aboveLimitCount > 0,
+      metricas_acima_limite: financial.estadoOrcamento === 'EXCEDIDO',
       metricas_periodo_referencia: start,
     };
 

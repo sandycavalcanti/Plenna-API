@@ -232,3 +232,19 @@ test('mesma mensagem Gmail e ignorada antes de nova classificacao', async () => 
     prisma.tb_propaganda.findFirst = originalPromotionFind;
   }
 });
+test('complementa desconto ausente na compra reconciliada sem apagar desconto existente', () => {
+  const incoming = extracted({ discountAmount: 20 });
+  const withMissingDiscount = buildPurchaseUpdate(
+    purchase({ compra_desconto: 0 }),
+    incoming,
+    null,
+  );
+  assert.equal(withMissingDiscount.compra_desconto, 20);
+
+  const withExistingDiscount = buildPurchaseUpdate(
+    purchase({ compra_desconto: 15 }),
+    extracted({ discountAmount: 20 }),
+    null,
+  );
+  assert.equal('compra_desconto' in withExistingDiscount, false);
+});

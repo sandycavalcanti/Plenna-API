@@ -8,25 +8,25 @@ const requestyPurchaseSchema = z.object({
     amount: z.number().nullable().optional(),
     paymentMethodName: z.string().nullable().optional(),
 });
-const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
+export const requestyClassificationSchema = z.discriminatedUnion('classificacao', [
     z.object({
         classificacao: z.literal('COMPRA'),
-        categoryName: z.string().nullable().optional(),
+        categoryId: z.number().int().nullable().optional(),
         purchase: requestyPurchaseSchema,
     }),
     z.object({
         classificacao: z.literal('PROPAGANDA'),
-        categoryName: z.string().nullable().optional(),
+        categoryId: z.number().int().nullable().optional(),
         purchase: requestyPurchaseSchema.nullable().optional(),
     }),
     z.object({
         classificacao: z.literal('IGNORAR'),
-        categoryName: z.string().nullable().optional(),
+        categoryId: z.number().int().nullable().optional(),
         purchase: requestyPurchaseSchema.nullable().optional(),
     }),
 ]);
-const requestyCategorySchema = z.object({
-    categoryName: z.string().nullable().optional(),
+export const requestyCategorySchema = z.object({
+    categoryId: z.number().int().nullable(),
 });
 const MAX_RATE_LIMIT_RETRIES = 2;
 const FALLBACK_RETRY_BACKOFF_BASE_MS = 250;
@@ -41,6 +41,7 @@ export const requestyPurchaseExtractionSchema = z.object({
     establishment: z.string().max(120).nullable().default(null),
     orderNumber: z.string().max(80).nullable().default(null),
     totalAmount: z.number().finite().positive().nullable().default(null),
+    discountAmount: z.number().finite().nonnegative().nullable().optional(),
     paymentMethodName: z.string().max(80).nullable().default(null),
     items: z.array(requestyExtractedPurchaseItemSchema).max(100).default([]),
 }).strict();
@@ -105,8 +106,9 @@ function parseJsonPayload(payload, schema) {
     const parsed = JSON.parse(trimmed);
     return schema.parse(parsed);
 }
-function buildClassificationInstructions() {
+export function buildClassificationInstructions() {
     return [
+        'PROPAGANDA somente quando a finalidade principal for comercial. IGNORAR conteudo tecnico, academico, editorial, institucional, operacional, informativo, noticias e alertas de seguranca. Newsletter, marca no remetente, preco isolado ou mencao secundaria a produto nao bastam.',
         'Não invente dados que não estejam explicitamente suportados pelo e-mail.',
         'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
         'Emails de status de pedido, envio, entrega, nota fiscal ou pagamento aprovado são COMPRA.',
@@ -119,7 +121,7 @@ function buildClassificationInstructions() {
         'Quando não houver evidência suficiente, prefira null.',
     ].join(' ');
 }
-function buildPurchaseExtractionInstructions() {
+export function buildPurchaseExtractionInstructions() {
     return [
         'Voce esta EXTRAINDO informacoes existentes no e-mail; o e-mail ja foi classificado como COMPRA.',
         'Nao classifique o e-mail e nao use conhecimento externo.',
@@ -129,8 +131,17 @@ function buildPurchaseExtractionInstructions() {
         'Extraia orderNumber somente com evidencia textual de pedido e nao confunda CNPJ, CPF, rastreio ou chave NF-e.',
         'Retorne somente paymentMethodName textual quando a forma estiver explicitamente presente, sem ID de banco.',
         'Extraia itens somente quando nome, quantidade ou precos estiverem explicitamente presentes.',
+        'Em e-mails originalmente estruturados como tabelas HTML, o nome, a quantidade e o preco podem aparecer em linhas consecutivas apos a normalizacao; associe um valor imediatamente adjacente ao bloco do produto somente quando a relacao estiver clara.',
+        'Quando o produto vier seguido por tamanho, cor ou outro atributo, depois quantidade e um valor monetario antes do proximo produto ou de subtotal, frete, desconto ou total, esse valor pertence ao produto quando a relacao textual for inequivoca.',
+        'Nao associe precos de blocos distantes, totais gerais, frete, desconto ou secoes como "voce tambem pode gostar" a um produto comprado.',
+        'Apos marcadores como "voce tambem pode gostar", "recomendados", "compre tambem" ou "talvez voce goste", nao extraia os produtos seguintes como itens comprados.',
+        'Extraia tambem frete e taxas positivas explicitamente cobradas como itens, usando o nome especifico e categoryName "Frete/Taxas".',
+        'Nao invente frete ou taxa por diferenca matematica; so extraia componentes com rotulo ou evidencia explicita.',
+        'Nao transforme desconto, juros, parcela, cashback, economia ou cupom em item positivo. Retorne descontoAmount somente quando o desconto estiver explicitamente informado.',
+        'Quando houver exatamente um produto ou servico explicitamente identificado e o total corresponder a ele, extraia esse item mesmo que nao exista uma tabela formal.',
+        'Nao crie item generico, nao use o estabelecimento como nome e nao use o total como valor do item quando houver frete, taxa, desconto, parcela ou mais de um produto.',
         'categoryName deve ser null quando nao houver categoria explicitamente indicada no e-mail.',
-        'Responda em JSON estrito com establishment, orderNumber, totalAmount, paymentMethodName e items.',
+        'Responda em JSON estrito com establishment, orderNumber, totalAmount, discountAmount, paymentMethodName e items.',
     ].join(' ');
 }
 /**
@@ -232,12 +243,13 @@ export class RequestyProvider {
     /**
      * Sugere uma categoria para propagandas já reconhecidas como tais.
      */
-    async suggestCategory(prompt) {
+    async suggestCategory(prompt, categories) {
         if (!env.requestyApiKey) {
             throw new Error('REQUESTY_API_KEY ausente');
         }
         try {
-            const text = await this.chatCompletion(prompt);
+            const categoryList = categories.map((category) => `${category.categoryId} - ${category.categoryName}`).join('\n');
+            const text = await this.chatCompletion(`${prompt}\nCategorias permitidas:\n${categoryList}\nRetorne somente {"categoryId": number|null}. Escolha exclusivamente um ID da lista ou null.`, 'Escolha somente um categoryId da lista fornecida. NÃ£o invente IDs.');
             return parseJsonPayload(text, requestyCategorySchema);
         }
         catch (error) {

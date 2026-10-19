@@ -5,17 +5,26 @@ import { AppError } from '../../errors/AppError.js';
 import { EmailClassificationEngine, buildClassificationHaystack, extractAmount, hasStrongPurchaseEvidence } from './classification.engine.js';
 import { EmailService } from './email.service.js';
 import type { GmailMessageDetail, GmailMessageQueryResult } from './gmail.types.js';
-import { RequestyProvider } from './requesty.provider.js';
 import { AIRateLimitError, type AIProvider } from './ai-provider.js';
-import type { ExtractedPurchase, NormalizedEmail } from './email-contracts.js';
+import { createAIProvider } from './ai-provider.factory.js';
+import type { ExtractedPurchase, ExtractedPurchaseItem, NormalizedEmail } from './email-contracts.js';
 import { EmailPurchaseExtractor } from './email-purchase.extractor.js';
 import { PaymentMethodResolver } from '../forma-pagamento/payment-method.resolver.js';
 import { buildPurchaseUpdate, findReconciliationMatch, type ReconciliationPurchase } from './purchase-reconciliation.service.js';
-import { buildNestedPurchaseItems, buildPersistedPurchaseItems, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
-import { buildPurchaseExtractionPrompt, needsAiEnrichment } from './email-purchase.enrichment.js';
-import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
+import { buildNestedPurchaseItems, buildPersistedPurchaseItems, isPersistablePurchaseItem, persistPurchaseItems, shouldPersistPurchaseItems } from './purchase-items.persistence.js';
+import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, isPositivePurchaseComponent, needsAiEnrichment, normalizePositiveComponentPrices, normalizePurchaseItemPrices, reconcilePurchaseTotal, resolveSafeSingleItemPrice } from './email-purchase.enrichment.js';
+import { parseFiscalAttachments, mergePurchaseSources, type FiscalSourceResults } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
-import type { AIPurchaseExtractionProvider, AIExtractedPurchase } from './ai-provider.js';
+import type { AIPurchaseExtractionProvider, AIExtractedPurchase, AICategoryOption } from './ai-provider.js';
+import { MetricasService } from '../compra/metricas.service.js';
+import { evaluateConfirmedPurchaseLimits } from '../compra/limite.service.js';
+import { dispatchPushAfterCommit, type PushNotificationCandidate } from '../notification/push.service.js';
+
+function createdPushNotifications(evaluation: { alerts?: Array<{ created: boolean; notificationId: number; type: string }> } | undefined): PushNotificationCandidate[] {
+  return (evaluation?.alerts ?? [])
+    .filter((alert) => alert.created)
+    .map((alert) => ({ notificationId: alert.notificationId, type: alert.type }));
+}
 /**
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
@@ -49,15 +58,23 @@ export function buildGmailQuery(previousCursor: Date | null, startedAt: Date) {
  * Nenhuma categoria é criada automaticamente. Quando não há correspondência
  * segura, a propaganda permanece sem categoria.
  */
-export async function resolveCategoryId(categoryName: string | null | undefined) {
-  if (!categoryName) return null;
-
-  const found = await prisma.tb_categoria.findFirst({
-    where: { categoria_nome: { equals: categoryName, mode: 'insensitive' } },
-    select: { categoria_id: true },
+/** Carrega IDs reais por execução; IDs não são hardcoded nem inferidos por nome. */
+async function loadPropagationCategories(): Promise<AICategoryOption[]> {
+  const categories = await prisma.tb_categoria.findMany({
+    select: { categoria_id: true, categoria_nome: true },
+    orderBy: { categoria_id: 'asc' },
   });
+  return categories.map((category) => ({ categoryId: category.categoria_id, categoryName: category.categoria_nome }));
+}
 
-  return found?.categoria_id ?? null;
+/** Validação defensiva: a IA só pode escolher um ID da lista carregada. */
+export function validatePropagationCategoryId(categoryId: number | null | undefined, categories: AICategoryOption[]) {
+  if (categoryId === null || categoryId === undefined) return null;
+  if (!categories.some((category) => category.categoryId === categoryId)) {
+    console.warn('[EmailSyncService] categoryId inválido normalizado para null');
+    return null;
+  }
+  return categoryId;
 }
 
 /**
@@ -86,6 +103,40 @@ function parseDateFromMessage(message: GmailMessageDetail) {
 function safeErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : 'Erro desconhecido';
   return message.slice(0, 255);
+}
+
+function logSyncErrorDiagnostic(error: unknown) {
+  const axiosError = error as {
+    name?: string;
+    message?: string;
+    code?: string;
+    response?: { status?: number; data?: unknown };
+    config?: { method?: string; url?: string; params?: Record<string, unknown> };
+  };
+  const responseData = axiosError.response?.data as {
+    error?: string | { code?: number; message?: string; status?: string };
+    error_description?: string;
+  } | undefined;
+  const nestedGoogleError = typeof responseData?.error === 'object' && responseData.error !== null
+    ? responseData.error
+    : undefined;
+
+  console.error('[EmailSyncService] sync error diagnostic', {
+    name: axiosError.name,
+    message: axiosError.message,
+    code: axiosError.code,
+    responseStatus: axiosError.response?.status,
+    responseData: {
+      oauthError: typeof responseData?.error === 'string' ? responseData.error : undefined,
+      oauthErrorDescription: responseData?.error_description,
+      googleCode: nestedGoogleError?.code,
+      googleStatus: nestedGoogleError?.status,
+      googleMessage: nestedGoogleError?.message,
+    },
+    method: axiosError.config?.method,
+    url: axiosError.config?.url,
+    params: axiosError.config?.params,
+  });
 }
 
 function truncatePromptText(value: string | null | undefined, limit = 1200) {
@@ -196,14 +247,85 @@ function toNormalizedEmail(message: GmailMessageDetail): NormalizedEmail {
 
 function buildExtractedPurchase(message: GmailMessageDetail, supplemental?: { amount?: number | null; establishment?: string | null; paymentMethodName?: string | null } | null): ExtractedPurchase {
   const deterministic = EmailPurchaseExtractor.extract(toNormalizedEmail(message));
+  const totalAmount = deterministic.totalAmount ?? supplemental?.amount ?? null;
+  const totalAmountSource = deterministic.totalAmount !== null
+    ? deterministic.totalAmountSource ?? 'DETERMINISTIC_SEMANTIC'
+    : supplemental?.amount !== null && supplemental?.amount !== undefined
+      ? 'CLASSIFICATION_FALLBACK'
+      : null;
   return {
     ...deterministic,
     establishment: deterministic.establishment ?? supplemental?.establishment ?? null,
-    totalAmount: deterministic.totalAmount ?? supplemental?.amount ?? null,
+    totalAmount,
+    totalAmountSource,
     paymentMethod: {
       rawName: deterministic.paymentMethod.rawName ?? supplemental?.paymentMethodName ?? null,
     },
   };
+}
+
+/** Normaliza o desconto para a coluna obrigatoria, sem persistir lixo numerico. */
+function normalizePurchaseDiscount(value: number | null | undefined) {
+  return value !== null && value !== undefined && Number.isFinite(value) && value > 0
+    ? new Prisma.Decimal(value.toFixed(2))
+    : new Prisma.Decimal(0);
+}
+
+export function testMarkerFromMessage(message: GmailMessageDetail) {
+  const subject = message.subject ?? '';
+  const match = subject.match(/^\[PLENNA TEST\s+(?:(HTML-\d+)|(\d{1,3}))\]/i);
+  if (!match) return null;
+
+  // O marcador serve somente para observabilidade dos fixtures, sem influenciar
+  // qualquer decisão de classificação, extração ou persistência.
+  if (match[1]) return match[1].toUpperCase();
+  return `HTML-${match[2].padStart(3, '0')}`;
+}
+
+function testItemDiagnostic(item: Pick<ExtractedPurchaseItem, 'name' | 'quantity' | 'unitPrice' | 'totalPrice' | 'categoryName'>, source: 'DETERMINISTIC' | 'AI' | 'MERGED') {
+  const role = isPositivePurchaseComponent({ ...item, unit: null }) ? 'COMPONENT' : 'MAIN';
+  return {
+    source,
+    role,
+    hasName: Boolean(item.name?.trim()),
+    hasQuantity: item.quantity !== null && item.quantity !== undefined,
+    hasUnitPrice: item.unitPrice !== null && item.unitPrice !== undefined,
+    hasTotalPrice: item.totalPrice !== null && item.totalPrice !== undefined,
+    persistable: Boolean(item.name?.trim()) && item.unitPrice !== null && Number.isFinite(item.unitPrice) && item.unitPrice > 0,
+  };
+}
+
+function logTestPurchaseDiagnostics(
+  message: GmailMessageDetail,
+  deterministic: ExtractedPurchase,
+  aiPurchase: AIExtractedPurchase | null,
+  extracted: ExtractedPurchase,
+  fiscal: FiscalSourceResults,
+) {
+  const testMarker = testMarkerFromMessage(message);
+  if (!testMarker) return;
+
+  console.info('[TestPurchaseTotals]', {
+    testMarker,
+    deterministicSemanticTotalFound: deterministic.totalAmountSource === 'DETERMINISTIC_SEMANTIC',
+    classificationFallbackTotalUsed: deterministic.totalAmountSource === 'CLASSIFICATION_FALLBACK',
+    aiTotalFound: aiPurchase?.totalAmount !== null && aiPurchase?.totalAmount !== undefined,
+    fiscalTotalFound: fiscal.nfe.some((source) => source.totalAmount !== null && source.totalAmount !== undefined)
+      || fiscal.danfe.some((source) => source.totalAmount !== null && source.totalAmount !== undefined),
+    finalTotalSource: extracted.totalAmountSource ?? 'NONE',
+  });
+  console.info('[TestPurchaseItems]', {
+    testMarker,
+    deterministicItems: deterministic.items.map((item) => testItemDiagnostic(item, 'DETERMINISTIC')),
+    aiItems: (aiPurchase?.items ?? []).map((item) => testItemDiagnostic(item, 'AI')),
+    mergedItems: extracted.items.map((item) => testItemDiagnostic(item, 'MERGED')),
+  });
+}
+
+function logTestEmailFlow(message: GmailMessageDetail, values: Record<string, unknown>) {
+  const testMarker = testMarkerFromMessage(message);
+  if (!testMarker) return;
+  console.info('[TestEmailFlow]', { testMarker, ...values });
 }
 
 /**
@@ -237,17 +359,23 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
   if (!messageDate || !extracted.establishment || (extracted.orderNumber === null && extracted.totalAmount === null)) return null;
 
   const candidates = await prisma.tb_compra.findMany({
-    where: { usuario_id: userId },
+    // Compras inativas não podem ser reativadas por reconciliação automática.
+    // A deduplicação por messageId continua sendo feita separadamente acima.
+    where: { usuario_id: userId, compra_ativo: 1 },
     select: {
       compra_id: true,
       usuario_id: true,
       compra_fonte: true,
       compra_pedido_externo_id: true,
       compra_valor: true,
+      compra_acima_limite: true,
+      compra_status: true,
+      compra_desconto: true,
       forma_pagamento_id: true,
       compra_email_mensagem_id: true,
       compra_horario: true,
       tb_compra_item: {
+        where: { compra_item_ativo: 1 },
         select: {
           compra_item_nome: true,
           compra_item_quantidade: true,
@@ -265,21 +393,35 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
   const itemsToPersist = shouldPersistPurchaseItems(match.purchase.tb_compra_item.length, candidateItems)
     ? candidateItems
     : [];
-  if (Object.keys(update).length === 0 && itemsToPersist.length === 0) return { reconciled: match.purchase };
+  if (Object.keys(update).length === 0 && itemsToPersist.length === 0 && match.purchase.compra_status !== 'CONFIRMADA') {
+    return { reconciled: match.purchase };
+  }
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const transactionResult = await prisma.$transaction(async (tx) => {
     const purchase = Object.keys(update).length > 0
       ? await tx.tb_compra.update({ where: { compra_id: match.purchase.compra_id }, data: update })
       : match.purchase;
     if (itemsToPersist.length > 0) {
       await persistPurchaseItems(match.purchase.compra_id, itemsToPersist, tx);
     }
-    return purchase;
+    if (match.purchase.compra_status === 'CONFIRMADA') {
+      const limitEvaluation = await evaluateConfirmedPurchaseLimits(match.purchase.compra_id, tx);
+      await MetricasService.recalculateMonthlyMetrics(userId, match.purchase.compra_horario, tx);
+      return {
+        purchase: {
+          ...purchase,
+          compra_acima_limite: limitEvaluation.eligible ? limitEvaluation.purchaseAboveLimit : null,
+        },
+        createdNotifications: createdPushNotifications(limitEvaluation),
+      };
+    }
+    return { purchase, createdNotifications: [] as PushNotificationCandidate[] };
   });
-  return { reconciled: updated };
+  await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+  return { reconciled: transactionResult.purchase };
 }
 
-async function createCompraFromMessage(
+export async function createCompraFromMessage(
   userId: number,
   message: GmailMessageDetail,
   supplemental: { amount?: number | null; establishment?: string | null; paymentMethodName?: string | null } | null = {},
@@ -287,6 +429,7 @@ async function createCompraFromMessage(
   aiProvider?: AIProvider | null,
   classificationPath: 'DETERMINISTIC_COMPRA' | 'AI_COMPRA' = 'DETERMINISTIC_COMPRA',
 ) {
+  const normalizedEmail = toNormalizedEmail(message);
   const deterministic = buildExtractedPurchase(message, supplemental);
   let aiPurchase: AIExtractedPurchase | null = null;
   let aiAttempted = false;
@@ -296,7 +439,7 @@ async function createCompraFromMessage(
   if (extractor && needsAiEnrichment(deterministic)) {
     aiAttempted = true;
     try {
-      aiPurchase = await extractor.extractPurchase(buildPurchaseExtractionPrompt(toNormalizedEmail(message)));
+      aiPurchase = await extractor.extractPurchase(buildPurchaseExtractionPrompt(normalizedEmail));
     } catch {
       aiPurchase = null;
     }
@@ -314,7 +457,29 @@ async function createCompraFromMessage(
     nfe: [...attachmentFiscal.nfe, ...linkFiscal.nfe],
     danfe: [...attachmentFiscal.danfe, ...linkFiscal.danfe],
   };
-  const extracted = mergePurchaseSources(deterministic, aiPurchase, fiscal);
+  const merged = mergePurchaseSources(deterministic, aiPurchase, fiscal, buildPurchaseEvidenceText(normalizedEmail));
+  const beforeSingleItemResolution = {
+    // Diagnostico sanitizado: registra somente presenca de campos, nunca dados do email.
+    itemHasName: Boolean(merged.items[0]?.name?.trim()),
+    itemHasQuantity: merged.items[0]?.quantity !== null && merged.items[0]?.quantity !== undefined,
+    itemHasUnitPrice: merged.items[0]?.unitPrice !== null && merged.items[0]?.unitPrice !== undefined,
+    itemHasTotalPrice: merged.items[0]?.totalPrice !== null && merged.items[0]?.totalPrice !== undefined,
+  };
+  // A decisão final usa todas as fontes; o item único só é completado quando
+  // o texto sustenta o nome e o total sem sinais de valores compostos.
+  const evidenceText = buildPurchaseEvidenceText(normalizedEmail);
+  const extracted = resolveSafeSingleItemPrice(
+    normalizePositiveComponentPrices(normalizePurchaseItemPrices(merged), evidenceText),
+    evidenceText,
+  );
+  const afterSingleItemResolution = {
+    // Permite comparar o item antes e depois da regra segura sem expor conteudo.
+    itemHasName: Boolean(extracted.items[0]?.name?.trim()),
+    itemHasQuantity: extracted.items[0]?.quantity !== null && extracted.items[0]?.quantity !== undefined,
+    itemHasUnitPrice: extracted.items[0]?.unitPrice !== null && extracted.items[0]?.unitPrice !== undefined,
+    itemHasTotalPrice: extracted.items[0]?.totalPrice !== null && extracted.items[0]?.totalPrice !== undefined,
+  };
+  logTestPurchaseDiagnostics(message, deterministic, aiPurchase, extracted, fiscal);
   const horario = parseDateFromMessage(message);
   if (!horario) {
     throw new Error('Data inválida no e-mail');
@@ -325,9 +490,47 @@ async function createCompraFromMessage(
     ? await PaymentMethodResolver.resolve(extracted.paymentMethod.rawName)
     : null;
   const existing = await resolveExistingPurchase(userId, message, extracted, paymentMethod?.id ?? null);
-  if (existing) return existing;
+  if (existing) {
+    // Observabilidade restrita aos fixtures permite distinguir reconciliação de
+    // falha sem registrar assunto, corpo, valores ou identificadores pessoais.
+    logTestEmailFlow(message, {
+      classification: 'COMPRA',
+      classificationPath,
+      purchaseExtractionAttempted: aiAttempted,
+      purchaseExtractionCompleted: aiPurchase !== null || !aiAttempted,
+      reconciliationMatched: true,
+      purchaseCreated: false,
+      purchaseReconciled: true,
+      promotionCreated: false,
+      ignored: false,
+      skippedDuplicate: false,
+    });
+    return existing;
+  }
 
   const persistedItems = await buildPersistedPurchaseItems(extracted.items, prisma);
+
+  const hasMainPurchaseItem = extracted.items.some((item) =>
+    isPersistablePurchaseItem(item) && !isPositivePurchaseComponent(item),
+  );
+  const financiallyReconciled = reconcilePurchaseTotal(
+    amount,
+    extracted.items,
+    extracted.discountAmount,
+  );
+
+  // Somente uma compra completa, com pagamento resolvido e item persistido,
+  // item principal e total reconciliado pode ser confirmada automaticamente.
+  const purchaseComplete = isCompleteAutomaticPurchase(
+    establishment,
+    amount,
+    paymentMethod?.id ?? null,
+    persistedItems.length,
+    horario,
+    financiallyReconciled,
+    hasMainPurchaseItem,
+  );
+  const purchaseStatus = purchaseComplete ? 'CONFIRMADA' : 'AGUARDANDO_CONFIRMACAO';
 
   const persistenceDropReasons = {
     missingName: 0,
@@ -361,29 +564,87 @@ async function createCompraFromMessage(
     mergedItemsCount: extracted.items.length,
     persistenceInputItemsCount: extracted.items.length,
     persistenceAcceptedItemsCount: persistedItems.length,
+    beforeSingleItemResolution,
+    afterSingleItemResolution,
     persistenceDropReasons,
+    freightDetected: extracted.items.some((item) => isPositivePurchaseComponent(item) && item.name?.trim().toLowerCase() === 'frete'),
+    feeDetected: extracted.items.some((item) => isPositivePurchaseComponent(item) && item.name?.trim().toLowerCase() !== 'frete'),
+    discountDetected: extracted.discountAmount !== null && extracted.discountAmount !== undefined,
+    financiallyReconciled,
+    unexplainedDifference: !financiallyReconciled,
+    hasMainPurchaseItem,
+    purchaseComplete,
+    autoConfirmed: purchaseComplete,
+    missingEstablishment: !Boolean(establishment),
+    missingTotalAmount: !(amount !== null && Number.isFinite(amount) && amount > 0),
+    missingPaymentMethod: paymentMethod?.id === null || paymentMethod?.id === undefined,
+    missingItems: persistedItems.length === 0,
   });
 
   try {
-    const compra = await prisma.tb_compra.create({
-      data: {
-        usuario_id: userId,
-        forma_pagamento_id: paymentMethod?.id ?? null,
-        compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
-        compra_horario: horario,
-        compra_fonte: establishment,
-        compra_email: true,
-        compra_classificacao: 'PENDENTE',
-        compra_acima_limite: null,
-        compra_email_mensagem_id: message.id,
-        compra_pedido_externo_id: extracted.orderNumber,
-        compra_status: 'AGUARDANDO_CONFIRMACAO',
-        ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
-      },
+    const createPurchase = async (db: Prisma.TransactionClient | typeof prisma) => {
+      const compra = await db.tb_compra.create({
+        data: {
+          usuario_id: userId,
+          forma_pagamento_id: paymentMethod?.id ?? null,
+          compra_valor: amount !== null ? new Prisma.Decimal(amount.toFixed(2)) : null,
+          // O desconto e atributo financeiro da compra; nao vira item negativo.
+          compra_desconto: normalizePurchaseDiscount(extracted.discountAmount),
+          compra_horario: horario,
+          compra_fonte: establishment,
+          compra_email: true,
+          compra_classificacao: 'PENDENTE',
+          compra_acima_limite: null,
+          compra_email_mensagem_id: message.id,
+          compra_pedido_externo_id: extracted.orderNumber,
+          compra_status: purchaseStatus,
+          ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
+        },
+      });
+      let compraFinal = compra;
+      let createdNotifications: PushNotificationCandidate[] = [];
+      if (purchaseComplete) {
+        const limitEvaluation = await evaluateConfirmedPurchaseLimits(compra.compra_id, db);
+        // A métrica usa a mesma transação para não confirmar sem atualizar os indicadores.
+        await MetricasService.recalculateMonthlyMetrics(userId, horario, db);
+        if (limitEvaluation.eligible) {
+          compraFinal = { ...compra, compra_acima_limite: limitEvaluation.purchaseAboveLimit };
+        }
+        createdNotifications = createdPushNotifications(limitEvaluation);
+      }
+      return { compra: compraFinal, createdNotifications };
+    };
+    const transactionResult = purchaseComplete
+      ? await prisma.$transaction((tx) => createPurchase(tx))
+      : await createPurchase(prisma);
+    await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+    logTestEmailFlow(message, {
+      classification: 'COMPRA',
+      classificationPath,
+      purchaseExtractionAttempted: aiAttempted,
+      purchaseExtractionCompleted: aiPurchase !== null || !aiAttempted,
+      reconciliationMatched: false,
+      purchaseCreated: true,
+      purchaseReconciled: purchaseComplete,
+      promotionCreated: false,
+      ignored: false,
+      skippedDuplicate: false,
     });
-    return { created: compra };
+    return { created: transactionResult.compra };
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      logTestEmailFlow(message, {
+        classification: 'COMPRA',
+        classificationPath,
+        purchaseExtractionAttempted: aiAttempted,
+        purchaseExtractionCompleted: aiPurchase !== null || !aiAttempted,
+        reconciliationMatched: false,
+        purchaseCreated: false,
+        purchaseReconciled: false,
+        promotionCreated: false,
+        ignored: false,
+        skippedDuplicate: true,
+      });
       return { skipped: true as const };
     }
     throw error;
@@ -419,11 +680,15 @@ async function createPropagandaFromMessage(userId: number, message: GmailMessage
 function buildEmailClassificationPrompt(message: GmailMessageDetail) {
   return [
     'Classifique a mensagem abaixo em JSON estrito.',
-    'Campos permitidos: classificacao, categoryName, purchase.',
+    'Campos permitidos: classificacao, categoryId, purchase.',
+    'categoryId deve ser null nesta etapa; a categoria de propaganda Ã© escolhida separadamente a partir da lista real do banco.',
+    'PROPAGANDA somente quando a finalidade principal for comercial; newsletter, conteudo tecnico, academico, editorial, institucional, operacional, informativo ou alerta de seguranca deve ser IGNORAR.',
+    'Empresa ou marca no remetente nao significa PROPAGANDA. Mencao secundaria a produto nao supera a intencao principal.',
     'classificacao aceita COMPRA, PROPAGANDA ou IGNORAR.',
     'Classifique como COMPRA somente quando houver evidência textual de transação já concluída.',
     'Preço, oferta, desconto ou linguagem promocional isolados não significam COMPRA.',
-    'Quando não houver evidência suficiente, prefira null.',
+    'Quando não houver evidência suficiente para COMPRA ou PROPAGANDA, classifique como IGNORAR.',
+    'Use null apenas nos campos opcionais de purchase.',
     'Se houver dados seguros de compra, inclua purchase.amount, purchase.establishment e purchase.paymentMethodName apenas quando estiverem sustentados pelo conteúdo.',
     `subject: ${message.subject ?? ''}`,
     `from: ${message.from ?? ''}`,
@@ -432,10 +697,11 @@ function buildEmailClassificationPrompt(message: GmailMessageDetail) {
   ].join('\n');
 }
 
-function buildCategoryPrompt(message: GmailMessageDetail) {
+function buildCategoryPrompt(message: GmailMessageDetail, categories: AICategoryOption[]) {
   return [
-    'Sugira apenas um nome de categoria existente ou null em JSON estrito.',
-    'Use a categoria mais provavel e conservadora.',
+    'Escolha exclusivamente um categoryId da lista fornecida e retorne JSON estrito.',
+    'Nao invente categoria, nome ou ID. Retorne null somente quando nenhuma categoria for razoavelmente adequada.',
+    `categorias: ${categories.map((category) => `${category.categoryId} - ${category.categoryName}`).join('; ')}`,
     `subject: ${message.subject ?? ''}`,
     `from: ${message.from ?? ''}`,
     `snippet: ${message.snippet ?? ''}`,
@@ -443,12 +709,12 @@ function buildCategoryPrompt(message: GmailMessageDetail) {
   ].join('\n');
 }
 
-async function resolvePropagationCategory(aiProvider: AIProvider | null, message: GmailMessageDetail) {
+async function resolvePropagationCategory(aiProvider: AIProvider | null, message: GmailMessageDetail, categories: AICategoryOption[]) {
   if (!aiProvider) return null;
 
   try {
-    const aiSuggestion = await aiProvider.suggestCategory(buildCategoryPrompt(message));
-    return resolveCategoryId(aiSuggestion.categoryName ?? null);
+    const aiSuggestion = await aiProvider.suggestCategory(buildCategoryPrompt(message, categories), categories);
+    return validatePropagationCategoryId(aiSuggestion.categoryId, categories);
   } catch {
     return null;
   }
@@ -467,6 +733,29 @@ function normalizeEstablishment(value: string | null | undefined) {
     .trim();
 
   return normalized ? normalized.slice(0, 45) : null;
+}
+
+/** Regra única de completude usada para auto-confirmar compras de e-mail. */
+export function isCompleteAutomaticPurchase(
+  establishment: string | null,
+  amount: number | null,
+  paymentMethodId: number | null,
+  persistedItemsCount: number,
+  messageDate: Date | null,
+  financiallyReconciled = false,
+  hasMainPurchaseItem = false,
+) {
+  return Boolean(
+    establishment
+    && amount !== null
+    && Number.isFinite(amount)
+    && amount > 0
+    && paymentMethodId !== null
+    && persistedItemsCount > 0
+    && hasMainPurchaseItem
+    && financiallyReconciled
+    && messageDate,
+  );
 }
 
 export class EmailSyncService {
@@ -515,6 +804,7 @@ export class EmailSyncService {
    * a janela, enquanto as constraints únicas impedem registros duplicados.
    */
   static async syncUser(userId: number): Promise<GmailMessageQueryResult | SyncUserResult> {
+    console.info('[EmailSyncService] sync started');
     const integration = await EmailService.findIntegrationByUserId(userId);
     if (!integration) {
       throw new AppError('Integração Gmail não encontrada', 404);
@@ -532,16 +822,28 @@ export class EmailSyncService {
     const executionLimit = isBootstrap ? env.emailSyncInitialMessages : env.emailSyncMaxMessagesPerRun;
 
     try {
+      console.info('[EmailSyncService] obtaining Gmail credentials');
       const accessToken = await EmailService.getValidAccessToken(integration);
+      console.info('[EmailSyncService] Gmail credentials resolved');
+      console.info('[EmailSyncService] listing Gmail messages');
       const messages = await EmailService.listMessages(
         accessToken,
         query,
         env.emailSyncBatchSize,
         isBootstrap ? env.emailSyncInitialMessages : undefined
       );
-      const aiProvider: AIProvider | null = env.requestyApiKey
-        ? new RequestyProvider()
-        : null;
+      console.info(`[EmailSyncService] Gmail messages fetched count=${messages.length} bootstrap=${isBootstrap}`);
+      console.info('[EmailSyncService] creating AI provider');
+      const aiProvider: AIProvider | null = createAIProvider();
+      // Uma única lista por sincronização evita query por propaganda e mantém os IDs do ambiente atual.
+      let propagationCategoriesPromise: Promise<AICategoryOption[]> | null = null;
+      const getPropagationCategories = () => {
+        propagationCategoriesPromise ??= loadPropagationCategories().catch(() => {
+          console.warn('[EmailSyncService] categorias de propaganda indisponíveis');
+          return [];
+        });
+        return propagationCategoriesPromise;
+      };
       const result: GmailMessageQueryResult = { processed: 0, created: 0, skipped: 0 };
       let shouldFailRun = false;
       let failureReason: string | null = null;
@@ -559,7 +861,9 @@ export class EmailSyncService {
         }
 
         result.processed += 1;
+        console.info(`[EmailSyncService] fetching Gmail message idPresent=${Boolean(summary.id)}`);
         const detail = await EmailService.getMessage(accessToken, summary.id);
+        console.info('[EmailSyncService] Gmail message fetched');
         const classification = EmailClassificationEngine.classify(detail);
 
         if (classification.outcome === 'COMPRA') {
@@ -570,11 +874,8 @@ export class EmailSyncService {
         }
 
         if (classification.outcome === 'PROPAGANDA') {
-          let categoryId: number | null = await resolveCategoryId(classification.categoryName ?? null);
-
-          if (categoryId === null && aiProvider) {
-            categoryId = await resolvePropagationCategory(aiProvider, detail);
-          }
+          const categories = await getPropagationCategories();
+          const categoryId = await resolvePropagationCategory(aiProvider, detail, categories);
 
           const promoResult = await createPropagandaFromMessage(userId, detail, categoryId);
           if ('created' in promoResult) result.created += 1;
@@ -605,9 +906,10 @@ export class EmailSyncService {
             }
 
             if (aiResult.classificacao === 'PROPAGANDA') {
-              let categoryId = await resolveCategoryId(aiResult.categoryName ?? null);
+              const categories = await getPropagationCategories();
+              let categoryId = validatePropagationCategoryId(aiResult.categoryId, categories);
               if (categoryId === null) {
-                categoryId = await resolvePropagationCategory(aiProvider, detail);
+                categoryId = await resolvePropagationCategory(aiProvider, detail, categories);
               }
               const promoResult = await createPropagandaFromMessage(userId, detail, categoryId);
               if ('created' in promoResult) result.created += 1;
@@ -645,6 +947,7 @@ export class EmailSyncService {
       return result;
     } catch (error) {
       console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', safeErrorMessage(error));
+      logSyncErrorDiagnostic(error);
       await prisma.tb_integracao.update({
         where: { integracao_id: integration.integracao_id },
         data: {

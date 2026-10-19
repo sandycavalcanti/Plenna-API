@@ -29,6 +29,53 @@ test('extrai total da compra depois de produtos e frete', () => {
   assert.equal(result.totalAmount, 89.8);
 });
 
+test('extrai frete explicito como componente positivo', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto\nCamiseta\nQuantidade: 2\nValor dos produtos: R$ 79,80\nFrete: R$ 10,00\nTotal da compra: R$ 89,80'));
+  assert.equal(result.items[0].totalPrice, 79.8);
+  assert.deepEqual(result.items[1], {
+    name: 'Frete',
+    quantity: 1,
+    unit: null,
+    unitPrice: 10,
+    totalPrice: 10,
+    categoryName: 'Frete/Taxas',
+  });
+});
+
+test('extrai taxa de entrega com preco explicitamente associado', () => {
+  const result = EmailPurchaseExtractor.extract(email('Taxa de entrega\nR$ 12,90'));
+  assert.deepEqual(result.items[0], {
+    name: 'Taxa de entrega',
+    quantity: 1,
+    unit: null,
+    unitPrice: 12.9,
+    totalPrice: 12.9,
+    categoryName: 'Frete/Taxas',
+  });
+});
+
+test('extrai taxa de servico com preco explicitamente associado', () => {
+  const result = EmailPurchaseExtractor.extract(email('Taxa de servico\nR$ 9,90'));
+  assert.equal(result.items[0].name, 'Taxa de servi\u00e7o');
+  assert.equal(result.items[0].quantity, 1);
+  assert.equal(result.items[0].unitPrice, 9.9);
+  assert.equal(result.items[0].totalPrice, 9.9);
+  assert.equal(result.items[0].categoryName, 'Frete/Taxas');
+});
+
+test('nao interpreta total como taxa positiva', () => {
+  const result = EmailPurchaseExtractor.extract(email('Total\nR$ 262,80'));
+  assert.equal(result.items.length, 0);
+});
+
+test('extrai taxa positiva especifica e desconto como ajuste', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto: Produto X\nValor do produto: R$ 50,00\nTaxa de serviço: R$ 5,00\nDesconto: R$ 2,00\nTotal: R$ 53,00'));
+  assert.equal(result.items[0].name, 'Produto X');
+  assert.equal(result.items[1].name, 'Taxa de serviço');
+  assert.equal(result.items[1].categoryName, 'Frete/Taxas');
+  assert.equal(result.discountAmount, 2);
+});
+
 test('extrai Total e ignora parcela anterior', () => {
   const result = EmailPurchaseExtractor.extract(email('Parcela: R$ 30,00\nTotal: R$ 90,00'));
   assert.equal(result.totalAmount, 90);
@@ -174,4 +221,64 @@ test('preserva a representação original do estabelecimento', () => {
   assert.equal(EmailPurchaseExtractor.extract(email('Estabelecimento: São João Comércio')).establishment, 'São João Comércio');
   assert.equal(EmailPurchaseExtractor.extract(email('Loja: C&A')).establishment, 'C&A');
   assert.equal(EmailPurchaseExtractor.extract(email('Vendido por: Loja São José')).establishment, 'Loja São José');
+});
+test('associa preco adjacente de tabela HTML linearizada ao item', () => {
+  const result = EmailPurchaseExtractor.extract(email('Jaqueta Jeans Oversized\nQuantidade: 1\nR$ 249,90'));
+  assert.equal(result.items[0].name, 'Jaqueta Jeans Oversized');
+  assert.equal(result.items[0].quantity, 1);
+  assert.equal(result.items[0].unitPrice, 249.9);
+});
+
+test('nao associa preco de recomendacao ao produto principal', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto A\nQuantidade: 1\nR$ 50,00\nVoce tambem pode gostar\nBolsa\nR$ 79,90'));
+  assert.equal(result.items[0].unitPrice, 50);
+  assert.equal(result.items.length, 1);
+});
+
+test('prioriza total semantico em linha consecutiva', () => {
+  const result = EmailPurchaseExtractor.extract(email('Produto A\nR$ 189,90\nFrete\nR$ 14,90\nDesconto\nR$ 20,00\nTotal final\nR$ 184,80'));
+  assert.equal(result.totalAmount, 184.8);
+  assert.equal(result.totalAmountSource, 'DETERMINISTIC_SEMANTIC');
+});
+test('extrai produto com atributos, preco e frete sem atravessar delimitadores', () => {
+  const result = EmailPurchaseExtractor.extract(email([
+    'Tenis Casual Branco',
+    'Tamanho: 37',
+    'Quantidade: 1',
+    'R$ 189,90',
+    'Frete',
+    'R$ 14,90',
+  ].join('\n')));
+  assert.equal(result.items[0].name, 'Tenis Casual Branco');
+  assert.equal(result.items[0].unitPrice, 189.9);
+  assert.equal(result.items[1].name, 'Frete');
+  assert.equal(result.items[1].unitPrice, 14.9);
+});
+
+test('extrai tres produtos de blocos consecutivos sem confundir subtotal', () => {
+  const result = EmailPurchaseExtractor.extract(email([
+    'Mouse Gamer RGB', 'Quantidade: 1', 'R$ 149,90',
+    'Teclado Mecânico', 'Quantidade: 1', 'R$ 229,90',
+    'Mousepad XL', 'Quantidade: 1', 'R$ 69,90',
+    'Subtotal dos produtos', 'R$ 449,70',
+    'Frete', 'R$ 18,50',
+  ].join('\n')));
+  assert.deepEqual(result.items.slice(0, 3).map((item) => [item.name, item.unitPrice]), [
+    ['Mouse Gamer RGB', 149.9],
+    ['Teclado Mecânico', 229.9],
+    ['Mousepad XL', 69.9],
+  ]);
+});
+
+test('extrai produto e taxa mas ignora recomendacoes sem quantidade', () => {
+  const result = EmailPurchaseExtractor.extract(email([
+    'Jaqueta Jeans Oversized', 'Cor: Azul', 'Tamanho: M', 'Quantidade: 1', 'R$ 249,90',
+    'Subtotal', 'R$ 249,90',
+    'Taxa de entrega', 'R$ 12,90',
+    'Você também pode gostar', 'Bolsa Transversal', 'R$ 79,90',
+  ].join('\n')));
+  assert.equal(result.items[0].name, 'Jaqueta Jeans Oversized');
+  assert.equal(result.items[0].unitPrice, 249.9);
+  assert.equal(result.items[1].name, 'Taxa de entrega');
+  assert.equal(result.items.length, 2);
 });

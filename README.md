@@ -190,6 +190,8 @@ Autenticação:
 - `EMAIL_SYNC_MAX_MESSAGES_PER_RUN` limita quantas mensagens novas são processadas por execução incremental;
 - `REQUESTY_RATE_LIMIT_COOLDOWN_MS` define o cooldown após rate limit do provider ativo;
 - `REQUESTY_TIMEOUT_MS` define o timeout do provider ativo de IA;
+- `AI_PROVIDER` seleciona `requesty` (default) ou `codex_local`;
+- `CODEX_LOCAL_TIMEOUT_MS` define o timeout do Codex local;
 - o provider ativo de IA para e-mail é o Requesty.
 
 ## Vercel Cron
@@ -219,6 +221,8 @@ Obrigatórias ou usadas pelo código atual:
 - `REQUESTY_EMAIL_MODEL`
 - `REQUESTY_TIMEOUT_MS`
 - `REQUESTY_RATE_LIMIT_COOLDOWN_MS`
+- `AI_PROVIDER`
+- `CODEX_LOCAL_TIMEOUT_MS`
 
 ## Setup local
 
@@ -226,6 +230,19 @@ Obrigatórias ou usadas pelo código atual:
 2. configurar `.env`;
 3. rodar Prisma;
 4. iniciar a API.
+
+## Codex local em desenvolvimento
+
+O provider `codex_local` usa o login local do Codex CLI e só funciona fora de produção. O SDK é usado exclusivamente no backend; o app mobile continua chamando a API normalmente.
+
+1. Confirme que `codex --version` funciona no terminal.
+2. Autentique manualmente com `codex login` e confirme com `codex login status`.
+3. Configure no `.env`: `AI_PROVIDER="codex_local"` e, opcionalmente, `CODEX_LOCAL_TIMEOUT_MS="30000"`. Não configure token ChatGPT ou `OPENAI_API_KEY` para este fluxo.
+4. Inicie o backend com `npm run dev`.
+5. Use o fluxo existente de sincronização Gmail (`POST /email/sync`) e confirme no log `[AI] provider=codex_local ...`. Cada chamada usa uma thread independente, em modo `read-only` e sem rede.
+6. Para voltar ao provider anterior, altere `AI_PROVIDER="requesty"`, mantenha `REQUESTY_API_KEY` configurada e reinicie o backend.
+
+Limitações: o Codex local depende do CLI instalado e autenticado na mesma máquina do backend, é destinado somente a desenvolvimento e não faz fallback silencioso para Requesty.
 
 ## Prisma
 

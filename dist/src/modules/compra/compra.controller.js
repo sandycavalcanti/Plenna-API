@@ -98,4 +98,49 @@ export class CompraController {
             return handleError(res, 404, error);
         }
     }
+    /**
+     * Exclui uma compra pertencente ao usuário autenticado.
+     *
+     * A autorização não usa nenhum identificador enviado no corpo ou na query:
+     * o service recebe exclusivamente o req.userId preenchido pelo JWT.
+     * O status 204 informa sucesso sem devolver dados desnecessários da compra.
+     */
+    static async delete(req, res) {
+        try {
+            // Sem userId não existe contexto seguro para validar ownership.
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            // A conversão mantém o mesmo padrão das demais operações por ID.
+            await CompraService.delete(req.userId, Number(req.params.compraId));
+            return res.status(204).send();
+        }
+        catch (error) {
+            // AppError preserva o 404 de compra inexistente ou de outro usuário.
+            return handleError(res, 500, error);
+        }
+    }
+    /**
+     * Remove um único item de uma compra do usuário autenticado.
+     * A regra de ownership e a regra do último item permanecem no service,
+     * mantendo o controller responsável apenas pelo contrato HTTP.
+     */
+    static async deleteItem(req, res) {
+        try {
+            // O usuário precisa vir do JWT para impedir autorização por ID enviado
+            // pelo cliente em corpo, query string ou parâmetro de rota.
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token inválido' });
+            // O service devolve a compra atualizada porque o total muda após a remoção.
+            const compra = await CompraService.deleteItem(req.userId, Number(req.params.compraId), Number(req.params.compraItemId));
+            // Ao remover o último item, o service remove a compra inteira e não há
+            // recurso atualizado para serializar; nesse caso respondemos 204.
+            if (!compra)
+                return res.status(204).send();
+            return res.json(compra);
+        }
+        catch (error) {
+            // AppError preserva respostas 404/409 sem expor detalhes internos.
+            return handleError(res, 500, error);
+        }
+    }
 }

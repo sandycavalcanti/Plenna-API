@@ -1,5 +1,14 @@
 import { Prisma } from '@prisma/client';
 /**
+ * Mantém em um único lugar a regra mínima para um item chegar ao banco.
+ * Nome e preço unitário válido são obrigatórios; quantidade e total do item
+ * podem permanecer ausentes conforme a evidência disponível no e-mail.
+ */
+export function isPersistablePurchaseItem(item) {
+    const name = item.name?.trim();
+    return Boolean(name && item.unitPrice !== null && Number.isFinite(item.unitPrice) && item.unitPrice > 0);
+}
+/**
  * Converte um item extraido em dados aceitos por tb_compra_item.
  * O valor persistido e sempre o unitPrice; totalPrice nao substitui o preco
  * unitario porque possui semantica diferente quando ha quantidade.
@@ -7,10 +16,10 @@ import { Prisma } from '@prisma/client';
 export async function buildPersistedPurchaseItems(items, repository) {
     const persisted = [];
     for (const item of items) {
-        const name = item.name?.trim();
-        const unitPrice = item.unitPrice;
-        if (!name || unitPrice === null || !Number.isFinite(unitPrice) || unitPrice <= 0)
+        if (!isPersistablePurchaseItem(item))
             continue;
+        const name = item.name.trim();
+        const unitPrice = item.unitPrice;
         let categoriaId = null;
         const categoryName = item.categoryName?.trim();
         if (categoryName) {

@@ -8,7 +8,7 @@ export type EmailClassificationLabel = 'COMPRA' | 'PROPAGANDA' | 'IGNORAR';
 
 export interface AIEmailClassificationResult {
   classificacao: EmailClassificationLabel;
-  categoryName?: string | null;
+  categoryId?: number | null;
   purchase?: {
     establishment?: string | null;
     amount?: number | null;
@@ -17,7 +17,12 @@ export interface AIEmailClassificationResult {
 }
 
 export interface AICategorySuggestionResult {
-  categoryName?: string | null;
+  categoryId: number | null;
+}
+
+export interface AICategoryOption {
+  categoryId: number;
+  categoryName: string;
 }
 
 export interface AIExtractedPurchaseItem {
@@ -33,6 +38,8 @@ export interface AIExtractedPurchase {
   establishment: string | null;
   orderNumber: string | null;
   totalAmount: number | null;
+  /** Ajuste negativo explicito; nao deve virar item positivo. */
+  discountAmount?: number | null;
   paymentMethodName: string | null;
   items: AIExtractedPurchaseItem[];
 }
@@ -40,6 +47,26 @@ export interface AIExtractedPurchase {
 /** Capacidade opcional de enriquecimento, separada da classificacao do email. */
 export interface AIPurchaseExtractionProvider {
   extractPurchase(prompt: string): Promise<AIExtractedPurchase>;
+}
+
+export type AIMessageRole = 'system' | 'user' | 'assistant';
+
+export interface AIMessage {
+  role: AIMessageRole;
+  content: string;
+}
+
+export type AIProviderFailureCode = 'timeout' | 'empty' | 'unavailable' | 'failure';
+
+/** Falha sanitizada de uma capacidade conversacional, sem carregar prompt ou resposta. */
+export class AIProviderError extends Error {
+  constructor(
+    public readonly code: AIProviderFailureCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AIProviderError';
+  }
 }
 /**
  * Erro genérico de rate limit usado pelo fluxo de e-mail.
@@ -64,5 +91,8 @@ export class AIRateLimitError extends Error {
  */
 export interface AIProvider {
   classifyEmail(prompt: string): Promise<AIEmailClassificationResult>;
-  suggestCategory(prompt: string): Promise<AICategorySuggestionResult>;
+  suggestCategory(prompt: string, categories: AICategoryOption[]): Promise<AICategorySuggestionResult>;
+  chat(messages: AIMessage[]): Promise<string>;
+  /** Capacidade opcional usada somente para nomear a primeira conversa. */
+  generateTitle?(firstMessage: string): Promise<string>;
 }
