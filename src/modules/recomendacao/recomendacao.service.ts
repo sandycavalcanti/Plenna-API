@@ -112,6 +112,11 @@ function nextMonth(periodo: string) {
   return new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1));
 }
 
+function validateGenerationInput(userId: number, periodo: string) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) throw new AppError('Usuário inválido', 400);
+  parseMonth(periodo);
+}
+
 async function defaultAnalysis(userId: number, periodo: string, now: Date) {
   return prisma.$transaction(async (tx) => {
     const snapshot = await RF018Service.consultarSnapshot(tx, userId, periodo, now);
@@ -189,12 +194,14 @@ export class RecommendationService {
     return { recomendacaoId: record.id, contexto: `Quero conversar sobre a recomendação "${record.titulo}". ${record.texto}`.slice(0, 800) };
   }
 
-  async generateForUser(userId: number, periodo: string, now = new Date(), provider?: RecommendationTextProvider) {
+  async generateForUser(userId: number, periodo: string, now = new Date(), provider?: RecommendationTextProvider, options: { persist?: boolean } = {}) {
+    validateGenerationInput(userId, periodo);
     await this.requireConsent(userId);
     const { analise, context } = await this.analysis(userId, periodo, now);
     const result = recomendar(analise, { ...context, maxCandidates: context.maxCandidates ?? env.recommendationMaxCandidates });
     const expiration = nextMonth(periodo);
     const persisted = [];
+    const preview = [];
     const textService = provider ? new RecommendationTextService(provider) : this.textService;
     for (const candidate of result.recomendacoes) {
       const text = await textService.generate(candidate);
@@ -205,17 +212,51 @@ export class RecommendationService {
         ai_recomendacao_chave: key, ai_recomendacao_status: 'NOVA', ai_recomendacao_historico_id: null,
         ai_recomendacao_data_expiracao: expiration, ai_recomendacao_data_criacao: now,
       } satisfies Omit<RecommendationRecord, 'ai_recomendacao_id'>;
+      if (options.persist === false) {
+        preview.push({
+          id: null,
+          tipo: data.ai_recomendacao_tipo,
+          titulo: data.ai_recomendacao_titulo,
+          texto: data.ai_recomendacao_texto,
+          evidencias: data.ai_recomendacao_evidencias,
+          status: 'PREVIA',
+          expiraEm: data.ai_recomendacao_data_expiracao,
+          criadaEm: data.ai_recomendacao_data_criacao,
+        });
+        continue;
+      }
+      await this.requireConsent(userId);
       try {
         persisted.push(await this.repository.create(data));
       } catch (error) {
         if (!isUniqueError(error)) throw new AppError('Não foi possível persistir a recomendação', 500);
         const existing = await this.repository.findByKey(userId, key);
         if (existing && existing.ai_recomendacao_status !== 'DESCARTADA' && (!existing.ai_recomendacao_data_expiracao || existing.ai_recomendacao_data_expiracao > now)) persisted.push(existing);
-        else throw new AppError('Não foi possível confirmar a recomendação', 409);
+        else continue;
       }
     }
-    return { estado: result.estado, itens: persisted.map(serialize) };
+    return { estado: result.estado, itens: options.persist === false ? preview : persisted.map(serialize) };
+  }
+
+  async previewForUser(userId: number, periodo: string, now = new Date(), provider?: RecommendationTextProvider) {
+    if (env.isProduction) throw new AppError('Pré-visualização indisponível neste ambiente', 403);
+    return this.generateForUser(userId, periodo, now, provider, { persist: false });
   }
 }
 
 export const recommendationService = new RecommendationService();
+
+export type ManualRecommendationOptions = {
+  preview?: boolean;
+  now?: Date;
+  provider?: RecommendationTextProvider;
+};
+
+/** Internal development/test entry point. It is deliberately not exposed as an HTTP route. */
+export async function runRecommendationManually(userId: number, periodo: string, options: ManualRecommendationOptions = {}) {
+  if (env.isProduction) throw new AppError('Execução manual indisponível neste ambiente', 403);
+  const now = options.now ?? new Date();
+  return options.preview === false
+    ? recommendationService.generateForUser(userId, periodo, now, options.provider)
+    : recommendationService.previewForUser(userId, periodo, now, options.provider);
+}

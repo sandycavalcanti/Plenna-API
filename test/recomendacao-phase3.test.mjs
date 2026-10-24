@@ -42,11 +42,11 @@ test('motor determinístico produz alertas, recomendações positivas e nenhuma 
   assert.equal(recomendar(analysis({ indicadores: { ...analysis().indicadores, financeiro: { ...analysis().indicadores.financeiro, estadoOrcamento: 'DENTRO' }, orcamento: { ...analysis().indicadores.orcamento, estadoNoUniversoObservado: 'DENTRO' }, categorias: { ...analysis().indicadores.categorias, disponibilidade: 'INDISPONIVEL' }, frequencia: { ...analysis().indicadores.frequencia, disponibilidade: 'INDISPONIVEL' }, comparacao: { ...analysis().indicadores.comparacao, disponibilidade: 'INDISPONIVEL' }, limiteIndividual: { ...analysis().indicadores.limiteIndividual, disponibilidade: 'INDISPONIVEL', desvios: [] } }, evidencias: [] }), { maxCandidates: 10 }).estado, 'SEM_RECOMENDACOES_ELEGIVEIS');
 });
 
-test('texto por provider mockado é validado e falha usa fallback determinístico identificado', async () => {
-  const provider = { chat: async (messages) => { assert.ok(messages[1].content.length < 1000); return JSON.stringify({ titulo: 'Título validado', texto: 'Texto validado.' }); } };
+test('texto por provider mockado só é aceito quando preserva a base e variações usam fallback determinístico', async () => {
+  const provider = { chat: async (messages) => { assert.ok(messages[1].content.length < 1000); return JSON.stringify({ titulo: 'Base', texto: 'Base factual' }); } };
   const generated = await new RecommendationTextService(provider, { enabled: true }).generate({ codigo: 'X', titulo: 'Base', mensagem: 'Base factual', referencias: ['periodo:2026-10'], limitacoes: [] });
   assert.equal(generated.fonte, 'IA');
-  const fallback = await new RecommendationTextService({ chat: async () => 'não é JSON' }, { enabled: true }).generate({ codigo: 'X', titulo: 'Base', mensagem: 'Base factual', referencias: ['x'], limitacoes: [] });
+  const fallback = await new RecommendationTextService({ chat: async () => JSON.stringify({ titulo: 'Base', texto: 'Base factual com R$ 9999 inventados' }) }, { enabled: true }).generate({ codigo: 'X', titulo: 'Base', mensagem: 'Base factual', referencias: ['x'], limitacoes: [] });
   assert.equal(fallback.fonte, 'DETERMINISTICA_FALLBACK');
 });
 
@@ -80,4 +80,82 @@ test('sem consentimento o serviço não calcula nem persiste recomendação', as
   const service = new RecommendationService({ list: async () => [], findById: async () => null, findByKey: async () => null, create: async () => { throw new Error('não esperado'); }, updateStatus: async () => false }, undefined, { temConsentimentoAtivo: async () => false }, async () => { called = true; return { analise: analysis(), context: {} }; });
   await assert.rejects(() => service.generateForUser(9, '2026-10'), /Consentimento/);
   assert.equal(called, false);
+});
+
+test('preview manual não persiste e uma recomendação descartada não interrompe os demais candidatos', async () => {
+  const candidates = recomendar(analysis(), { enableExpandedRules: true, maxCandidates: 10 }).recomendacoes;
+  const discardedKey = recommendationDedupeKey('2026-10', candidates[0].codigo, candidates[0].referencias);
+  const records = [{
+    ai_recomendacao_id: 41,
+    usuario_id: 7,
+    ai_recomendacao_tipo: candidates[0].codigo,
+    ai_recomendacao_titulo: 'Descartada',
+    ai_recomendacao_texto: 'Não deve ser reativada.',
+    ai_recomendacao_evidencias: {},
+    ai_recomendacao_chave: discardedKey,
+    ai_recomendacao_status: 'DESCARTADA',
+    ai_recomendacao_historico_id: null,
+    ai_recomendacao_data_expiracao: new Date('2026-11-01T00:00:00Z'),
+    ai_recomendacao_data_criacao: new Date('2026-10-24T12:00:00Z'),
+  }];
+  let writes = 0;
+  const repository = {
+    list: async (user, options) => records.filter((row) => row.usuario_id === user && row.ai_recomendacao_status !== 'DESCARTADA' && (!row.ai_recomendacao_data_expiracao || row.ai_recomendacao_data_expiracao > options.now)).slice(0, options.limit),
+    findById: async (user, id) => records.find((row) => row.usuario_id === user && row.ai_recomendacao_id === id) ?? null,
+    findByKey: async (user, key) => records.find((row) => row.usuario_id === user && row.ai_recomendacao_chave === key) ?? null,
+    create: async (data) => {
+      writes += 1;
+      if (records.some((row) => row.usuario_id === data.usuario_id && row.ai_recomendacao_chave === data.ai_recomendacao_chave)) {
+        throw new Prisma.PrismaClientKnownRequestError('unique', { code: 'P2002', clientVersion: '7' });
+      }
+      const row = { ai_recomendacao_id: 41 + records.length, ...data };
+      records.push(row);
+      return row;
+    },
+    updateStatus: async (user, id, status) => {
+      const row = records.find((item) => item.usuario_id === user && item.ai_recomendacao_id === id);
+      if (!row) return false;
+      row.ai_recomendacao_status = status;
+      return true;
+    },
+  };
+  let personalizationEnabled = true;
+  const consent = { temConsentimentoAtivo: async () => personalizationEnabled };
+  const service = new RecommendationService(repository, new RecommendationTextService(), consent, async () => ({ analise: analysis(), context: { maxCandidates: 10, enableExpandedRules: true } }));
+  const preview = await service.previewForUser(7, '2026-10', new Date('2026-10-24T12:00:00Z'));
+  assert.equal(writes, 0);
+  assert.ok(preview.itens.length > 0);
+  const generated = await service.generateForUser(7, '2026-10', new Date('2026-10-24T12:00:00Z'));
+  assert.ok(generated.itens.length > 0);
+  assert.ok(records.some((row) => row.ai_recomendacao_status === 'NOVA'));
+  assert.equal(records.filter((row) => row.ai_recomendacao_status === 'DESCARTADA').length, 1);
+  const firstActive = generated.itens.find((item) => item.status === 'NOVA');
+  await service.updateStatus(7, firstActive.id, 'DESCARTADA');
+  assert.equal((await service.list(7, { limite: 10 }, new Date('2026-10-24T12:00:00Z'))).itens.some((item) => item.id === firstActive.id), false);
+  const discardedCount = records.filter((row) => row.ai_recomendacao_chave === discardedKey).length;
+  await service.generateForUser(7, '2026-10', new Date('2026-10-24T12:00:00Z'));
+  assert.equal(records.filter((row) => row.ai_recomendacao_chave === discardedKey).length, discardedCount);
+  personalizationEnabled = false;
+  assert.deepEqual((await service.list(7, { limite: 10 }, new Date('2026-10-24T12:00:00Z'))).itens, []);
+  await assert.rejects(() => service.generateForUser(7, '2026-10'), (error) => error?.statusCode === 403);
+});
+
+test('revogação entre análise e persistência bloqueia a escrita com 403', async () => {
+  let checks = 0;
+  let writes = 0;
+  const repository = {
+    list: async () => [],
+    findById: async () => null,
+    findByKey: async () => null,
+    create: async () => { writes += 1; throw new Error('não esperado'); },
+    updateStatus: async () => false,
+  };
+  const service = new RecommendationService(repository, new RecommendationTextService(), {
+    temConsentimentoAtivo: async () => ++checks < 2,
+  }, async () => ({ analise: analysis(), context: { maxCandidates: 1, enableExpandedRules: true } }));
+  await assert.rejects(
+    () => service.generateForUser(7, '2026-10', new Date('2026-10-24T12:00:00Z')),
+    (error) => error?.statusCode === 403,
+  );
+  assert.equal(writes, 0);
 });

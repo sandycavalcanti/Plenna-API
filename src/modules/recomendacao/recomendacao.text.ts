@@ -33,8 +33,12 @@ function deterministic(draft: RecommendationDraft, fonte: RecommendationText['fo
 }
 
 function safeProviderText(raw: string, draft: RecommendationDraft): RecommendationText {
+  const grounded = deterministic(draft);
   try {
     const parsed = recommendationTextSchema.parse(JSON.parse(raw));
+    if (parsed.titulo !== grounded.titulo || parsed.texto !== grounded.texto) {
+      return deterministic(draft, 'DETERMINISTICA_FALLBACK');
+    }
     return { ...parsed, fonte: 'IA' };
   } catch {
     return deterministic(draft, 'DETERMINISTICA_FALLBACK');
