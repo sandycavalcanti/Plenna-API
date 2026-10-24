@@ -2,6 +2,7 @@ export const CONSENTIMENTO_CODIGOS = {
   TERMOS_USO: 'TERMOS_USO',
   EMAIL: 'EMAIL',
   MONITORAMENTO_TEMPO_USO: 'MONITORAMENTO_TEMPO_USO',
+  IA_MEMORIA: 'IA_MEMORIA',
 } as const;
 
 export type ConsentimentoCodigo =
