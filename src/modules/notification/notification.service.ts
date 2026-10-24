@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import type { notificacao_tipo_enum } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
+import { env } from '../../lib/env.js';
 
 type NotificationDatabase = Pick<Prisma.TransactionClient, 'tb_notificacao' | '$queryRaw'>;
 
@@ -18,10 +19,18 @@ const notificationSelect = {
   notificacao_data_criacao: true,
 } as const;
 
-const notificationSelectWithOwner = {
+const notificationSelectWithHistory = {
   ...notificationSelect,
-  usuario_id: true,
+  notificacao_historico_id: true,
 } as const;
+
+function runtimeNotificationSelect() {
+  return env.proactivityEnabled ? notificationSelectWithHistory : notificationSelect;
+}
+
+function runtimeNotificationSelectWithOwner() {
+  return { ...runtimeNotificationSelect(), usuario_id: true } as const;
+}
 
 export type CreateNotificationInput = {
   userId: number;
@@ -32,6 +41,7 @@ export type CreateNotificationInput = {
   purchaseId?: number | null;
   categoryId?: number | null;
   event?: string | null;
+  historyId?: number | null;
 };
 
 function stripOwner<T extends { usuario_id: number }>(notification: T) {
@@ -47,7 +57,7 @@ export class NotificationService {
         { notificacao_data_criacao: 'desc' },
         { notificacao_id: 'desc' },
       ],
-      select: notificationSelect,
+      select: runtimeNotificationSelect(),
     });
   }
 
@@ -66,7 +76,7 @@ export class NotificationService {
         notificacao_id: notificationId,
         usuario_id: userId,
       },
-      select: notificationSelect,
+      select: runtimeNotificationSelect(),
     });
 
     if (!existing) {
@@ -94,7 +104,7 @@ export class NotificationService {
         notificacao_id: notificationId,
         usuario_id: userId,
       },
-      select: notificationSelect,
+      select: runtimeNotificationSelect(),
     });
   }
 
@@ -102,7 +112,34 @@ export class NotificationService {
     // O alvo explícito da cláusula ON CONFLICT evita abortar a transaction
     // quando dois fluxos tentam persistir a mesma chave simultaneamente.
     // Assim, a consulta posterior continua segura no mesmo TransactionClient.
-    const inserted = await db.$queryRaw<Array<{ notificacao_id: number }>>`
+    const inserted = env.proactivityEnabled
+      ? await db.$queryRaw<Array<{ notificacao_id: number }>>`
+      INSERT INTO public.tb_notificacao (
+        usuario_id,
+        notificacao_tipo,
+        notificacao_titulo,
+        notificacao_mensagem,
+        notificacao_chave_idempotencia,
+        compra_id,
+        categoria_id,
+        notificacao_evento,
+        notificacao_historico_id
+      )
+      VALUES (
+        ${input.userId},
+        ${input.type}::public.notificacao_tipo_enum,
+        ${input.title},
+        ${input.message},
+        ${input.idempotencyKey},
+        ${input.purchaseId ?? null},
+        ${input.categoryId ?? null},
+        ${input.event ?? null},
+        ${input.historyId ?? null}
+      )
+      ON CONFLICT (notificacao_chave_idempotencia) DO NOTHING
+      RETURNING notificacao_id
+    `
+      : await db.$queryRaw<Array<{ notificacao_id: number }>>`
       INSERT INTO public.tb_notificacao (
         usuario_id,
         notificacao_tipo,
@@ -129,7 +166,7 @@ export class NotificationService {
 
     const stored = await db.tb_notificacao.findUnique({
       where: { notificacao_chave_idempotencia: input.idempotencyKey },
-      select: notificationSelectWithOwner,
+      select: runtimeNotificationSelectWithOwner(),
     });
 
     if (!stored) {

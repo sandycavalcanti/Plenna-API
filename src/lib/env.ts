@@ -48,6 +48,16 @@ const recommendationAiEnabledRaw = process.env.AI_RECOMMENDATIONS_AI_ENABLED ?? 
 const recommendationMaxCandidatesRaw = process.env.AI_RECOMMENDATIONS_MAX_CANDIDATES ?? "3";
 const recommendationMaxContextCharsRaw = process.env.AI_RECOMMENDATIONS_MAX_CONTEXT_CHARS ?? "6000";
 const recommendationTimeoutMsRaw = process.env.AI_RECOMMENDATIONS_TIMEOUT_MS ?? "5000";
+const proactivityAiEnabledRaw = process.env.AI_PROACTIVITY_AI_ENABLED ?? "false";
+const proactivityEnabledRaw = process.env.AI_PROACTIVITY_ENABLED ?? "false";
+const proactivityCooldownDaysRaw = process.env.AI_PROACTIVITY_COOLDOWN_DAYS ?? "7";
+const proactivityMaxCandidatesRaw = process.env.AI_PROACTIVITY_MAX_CANDIDATES ?? "3";
+const proactivityMaxAttemptsRaw = process.env.AI_PROACTIVITY_MAX_ATTEMPTS ?? "1";
+const proactivityMaxContextCharsRaw = process.env.AI_PROACTIVITY_MAX_CONTEXT_CHARS ?? "4000";
+const proactivityTimeoutMsRaw = process.env.AI_PROACTIVITY_TIMEOUT_MS ?? "5000";
+const proactivityQuietStartRaw = process.env.AI_PROACTIVITY_QUIET_START ?? "21:00";
+const proactivityQuietEndRaw = process.env.AI_PROACTIVITY_QUIET_END ?? "08:00";
+const proactivityTimezoneRaw = process.env.AI_PROACTIVITY_TIMEZONE ?? "America/Sao_Paulo";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
 const expoPushEnabledRaw = process.env.EXPO_PUSH_ENABLED ?? "false";
 const expoPushTimeoutMsRaw = process.env.EXPO_PUSH_TIMEOUT_MS ?? "5000";
@@ -100,6 +110,20 @@ function parseStrictBoolean(name: string, raw: string): boolean {
   if (normalized === 'true') return true;
   if (normalized === 'false') return false;
   throw new Error(`Invalid ${name} value: ${raw}`);
+}
+
+function parseClock(name: string, raw: string): string {
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(raw)) throw new Error(`Invalid ${name} value: ${raw}`);
+  return raw;
+}
+
+function parseTimezone(name: string, raw: string): string {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: raw }).format();
+  } catch {
+    throw new Error(`Invalid ${name} value: ${raw}`);
+  }
+  return raw;
 }
 /**
  * Centraliza as configurações da aplicação.
@@ -173,6 +197,16 @@ export const env = {
   recommendationMaxCandidates: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_MAX_CANDIDATES", recommendationMaxCandidatesRaw, 10),
   recommendationMaxContextChars: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_MAX_CONTEXT_CHARS", recommendationMaxContextCharsRaw, 20_000),
   recommendationTimeoutMs: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_TIMEOUT_MS", recommendationTimeoutMsRaw, 30_000),
+  proactivityEnabled: parseStrictBoolean("AI_PROACTIVITY_ENABLED", proactivityEnabledRaw),
+  proactivityAiEnabled: parseStrictBoolean("AI_PROACTIVITY_AI_ENABLED", proactivityAiEnabledRaw),
+  proactivityCooldownDays: requireBoundedPositiveInteger("AI_PROACTIVITY_COOLDOWN_DAYS", proactivityCooldownDaysRaw, 365),
+  proactivityMaxCandidates: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_CANDIDATES", proactivityMaxCandidatesRaw, 10),
+  proactivityMaxAttempts: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_ATTEMPTS", proactivityMaxAttemptsRaw, 3),
+  proactivityMaxContextChars: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_CONTEXT_CHARS", proactivityMaxContextCharsRaw, 20_000),
+  proactivityTimeoutMs: requireBoundedPositiveInteger("AI_PROACTIVITY_TIMEOUT_MS", proactivityTimeoutMsRaw, 30_000),
+  proactivityQuietStart: parseClock("AI_PROACTIVITY_QUIET_START", proactivityQuietStartRaw),
+  proactivityQuietEnd: parseClock("AI_PROACTIVITY_QUIET_END", proactivityQuietEndRaw),
+  proactivityTimezone: parseTimezone("AI_PROACTIVITY_TIMEZONE", proactivityTimezoneRaw),
   smtp: {
     host: process.env.SMTP_HOST,
     port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,

@@ -10,6 +10,7 @@ import { parseMonth } from '../compra/financeiro.js';
 import { RF018Service } from '../rf018/rf018.service.js';
 import { recomendar, type RecommendationContext } from './recomendacao.engine.js';
 import { RecommendationTextService, type RecommendationTextProvider } from './recomendacao.text.js';
+import { proactiveCandidateSchema, type ProactiveCandidate } from '../proatividade/proatividade.contracts.js';
 
 export const recommendationStatusSchema = z.enum(['NOVA', 'VISUALIZADA', 'DESCARTADA']);
 export const recommendationQuerySchema = z.object({
@@ -170,6 +171,28 @@ export class RecommendationService {
     if (!active) return { itens: [], proximoCursor: null, consentimentoAtivo: false };
     const records = await this.repository.list(userId, { limit: query.limite, cursor: query.cursor, now });
     return { itens: records.map(serialize), proximoCursor: records.length === query.limite ? records[records.length - 1]!.ai_recomendacao_id : null, consentimentoAtivo: true };
+  }
+
+  /** Fonte única de candidatos persistidos para a futura execução proativa. */
+  async listEligibleForProactivity(userId: number, limit: number, now = new Date()): Promise<ProactiveCandidate[]> {
+    await this.requireConsent(userId);
+    const records = await this.repository.list(userId, { limit, now });
+    const candidates: ProactiveCandidate[] = [];
+    for (const record of records) {
+      if (record.ai_recomendacao_historico_id !== null) continue;
+      const parsed = proactiveCandidateSchema.safeParse({
+        id: record.ai_recomendacao_id,
+        chave: record.ai_recomendacao_chave,
+        tipo: record.ai_recomendacao_tipo,
+        titulo: record.ai_recomendacao_titulo,
+        texto: record.ai_recomendacao_texto,
+        evidencias: record.ai_recomendacao_evidencias,
+        recomendacaoHistoricoId: record.ai_recomendacao_historico_id,
+        expiraEm: record.ai_recomendacao_data_expiracao,
+      });
+      if (parsed.success) candidates.push(parsed.data);
+    }
+    return candidates;
   }
 
   async get(userId: number, id: number) {

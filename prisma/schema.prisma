@@ -163,6 +163,7 @@ model tb_usuario {
   usuario_data_criacao      DateTime                @default(now()) @db.Timestamp(6)
   tb_ai_anotacao            tb_ai_anotacao[]
   tb_ai_recomendacao        tb_ai_recomendacao[]
+  tb_ai_proatividade        tb_ai_proatividade[]
   tb_compra                 tb_compra[]
   tb_compra_recorrencia     tb_compra_recorrencia[]
   tb_consentimento          tb_consentimento[]
@@ -232,6 +233,8 @@ model tb_historico {
   historico_origem           String               @default("MANUAL") @db.VarChar(20)
   tb_ai_anotacao             tb_ai_anotacao[]
   tb_ai_recomendacao         tb_ai_recomendacao[]
+  tb_ai_proatividade         tb_ai_proatividade[]
+  tb_notificacao             tb_notificacao[]
   tb_usuario                 tb_usuario           @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
   tb_mensagem                tb_mensagem[]
 
@@ -371,16 +374,20 @@ model tb_notificacao {
   compra_id                      Int?
   categoria_id                   Int?
   notificacao_evento             String?               @db.VarChar(100)
+  notificacao_historico_id       Int?
   notificacao_lida               Int                   @default(0) @db.SmallInt
   notificacao_lida_em            DateTime?             @db.Timestamp(6)
   notificacao_data_criacao       DateTime              @default(now()) @db.Timestamp(6)
   tb_categoria                   tb_categoria?         @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra                      tb_compra?            @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
   tb_usuario                     tb_usuario            @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_historico                   tb_historico?         @relation(fields: [notificacao_historico_id], references: [historico_id], onDelete: SetNull, onUpdate: NoAction)
+  tb_ai_proatividade             tb_ai_proatividade?
 
   @@index([usuario_id], map: "idx_notificacao_usuario")
   @@index([usuario_id, notificacao_data_criacao], map: "idx_notificacao_usuario_data")
   @@index([usuario_id, notificacao_lida], map: "idx_notificacao_usuario_lida")
+  @@index([usuario_id, notificacao_historico_id], map: "idx_notificacao_usuario_historico")
   @@schema("public")
 }
 
@@ -418,10 +425,32 @@ model tb_ai_recomendacao {
   ai_recomendacao_data_criacao   DateTime      @default(now()) @db.Timestamp(6)
   tb_historico                   tb_historico? @relation(fields: [ai_recomendacao_historico_id], references: [historico_id], onUpdate: NoAction)
   tb_usuario                     tb_usuario    @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_ai_proatividade             tb_ai_proatividade[]
 
   @@unique([usuario_id, ai_recomendacao_chave], map: "uq_ai_recomendacao_usuario_chave")
   @@index([ai_recomendacao_data_expiracao], map: "idx_ai_recomendacao_expiracao")
   @@index([usuario_id, ai_recomendacao_status, ai_recomendacao_data_criacao(sort: Desc)], map: "idx_ai_recomendacao_usuario_status")
+  @@schema("public")
+}
+
+model tb_ai_proatividade {
+  ai_proatividade_id              Int          @id @default(autoincrement())
+  usuario_id                      Int
+  ai_proatividade_chave           String       @db.VarChar(160)
+  ai_proatividade_recomendacao_id Int
+  ai_proatividade_historico_id    Int?         @unique
+  ai_proatividade_notificacao_id  Int?         @unique
+  ai_proatividade_status           String       @default("PROCESSANDO") @db.VarChar(20)
+  ai_proatividade_motivo           String?      @db.VarChar(80)
+  ai_proatividade_data_criacao     DateTime     @default(now()) @db.Timestamp(6)
+  ai_proatividade_data_atualizacao DateTime     @default(now()) @db.Timestamp(6)
+  tb_usuario                       tb_usuario   @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_historico                     tb_historico? @relation(fields: [ai_proatividade_historico_id], references: [historico_id], onDelete: SetNull, onUpdate: NoAction)
+  tb_ai_recomendacao               tb_ai_recomendacao @relation(fields: [ai_proatividade_recomendacao_id], references: [ai_recomendacao_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_notificacao                   tb_notificacao? @relation(fields: [ai_proatividade_notificacao_id], references: [notificacao_id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([usuario_id, ai_proatividade_chave], name: "usuario_chave_unique", map: "uq_ai_proatividade_usuario_chave")
+  @@index([usuario_id, ai_proatividade_status, ai_proatividade_data_criacao(sort: Desc)], map: "idx_ai_proatividade_usuario_status")
   @@schema("public")
 }
 
@@ -462,6 +491,7 @@ enum notificacao_tipo_enum {
   LIMITE_CATEGORIA
   LIMITE_MENSAL
   SAZONAL
+  PROATIVA
 
   @@schema("public")
 }

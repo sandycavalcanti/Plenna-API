@@ -18,6 +18,7 @@ const historySelect = {
   historico_nome: true,
   historico_data_criacao: true,
   historico_data_modificacao: true,
+  historico_origem: true,
 } as const;
 
 const messageSelect = {
