@@ -6,6 +6,7 @@ export const consentimentoCodigoSchema = z.enum([
   CONSENTIMENTO_CODIGOS.EMAIL,
   CONSENTIMENTO_CODIGOS.MONITORAMENTO_TEMPO_USO,
   CONSENTIMENTO_CODIGOS.IA_MEMORIA,
+  CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO,
 ]);
 
 export const registrarConsentimentoSchema = z.object({

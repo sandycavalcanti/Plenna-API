@@ -44,6 +44,10 @@ const aiToolMaxRoundsRaw = process.env.AI_TOOL_MAX_ROUNDS ?? "4";
 const aiToolTimeoutMsRaw = process.env.AI_TOOL_TIMEOUT_MS ?? "20000";
 const aiToolExecutionTimeoutMsRaw = process.env.AI_TOOL_EXECUTION_TIMEOUT_MS ?? "5000";
 const aiToolResultMaxCharsRaw = process.env.AI_TOOL_RESULT_MAX_CHARS ?? "12000";
+const recommendationAiEnabledRaw = process.env.AI_RECOMMENDATIONS_AI_ENABLED ?? "false";
+const recommendationMaxCandidatesRaw = process.env.AI_RECOMMENDATIONS_MAX_CANDIDATES ?? "3";
+const recommendationMaxContextCharsRaw = process.env.AI_RECOMMENDATIONS_MAX_CONTEXT_CHARS ?? "6000";
+const recommendationTimeoutMsRaw = process.env.AI_RECOMMENDATIONS_TIMEOUT_MS ?? "5000";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
 const expoPushEnabledRaw = process.env.EXPO_PUSH_ENABLED ?? "false";
 const expoPushTimeoutMsRaw = process.env.EXPO_PUSH_TIMEOUT_MS ?? "5000";
@@ -165,6 +169,10 @@ export const env = {
   aiToolTimeoutMs: requirePositiveInteger("AI_TOOL_TIMEOUT_MS", aiToolTimeoutMsRaw),
   aiToolExecutionTimeoutMs: requirePositiveInteger("AI_TOOL_EXECUTION_TIMEOUT_MS", aiToolExecutionTimeoutMsRaw),
   aiToolResultMaxChars: requireBoundedPositiveInteger("AI_TOOL_RESULT_MAX_CHARS", aiToolResultMaxCharsRaw, 50_000),
+  recommendationAiEnabled: parseStrictBoolean("AI_RECOMMENDATIONS_AI_ENABLED", recommendationAiEnabledRaw),
+  recommendationMaxCandidates: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_MAX_CANDIDATES", recommendationMaxCandidatesRaw, 10),
+  recommendationMaxContextChars: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_MAX_CONTEXT_CHARS", recommendationMaxContextCharsRaw, 20_000),
+  recommendationTimeoutMs: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_TIMEOUT_MS", recommendationTimeoutMsRaw, 30_000),
   smtp: {
     host: process.env.SMTP_HOST,
     port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,

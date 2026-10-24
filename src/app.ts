@@ -21,6 +21,7 @@ import { recorrenciaRouter } from './modules/recorrencia/recorrencia.routes.js';
 import { RecorrenciaCronController } from './modules/recorrencia/recorrencia.cron.controller.js';
 import './modules/ai/memory.runtime.js';
 import { memoryRouter } from './modules/ai/memory.routes.js';
+import { recomendacaoRouter } from './modules/recomendacao/recomendacao.routes.js';
 
 const app = express();
 
@@ -47,6 +48,7 @@ app.use('/historicos', chatRouter);
 app.use('/analises', analisesRouter);
 app.use('/home', homeRouter);
 app.use('/memorias', memoryRouter);
+app.use('/recomendacoes', recomendacaoRouter);
 
 app.get('/', (_req, res) => {
   res.json({
