@@ -77,6 +77,7 @@ const aiAutomationTimeoutMsRaw = process.env.AI_AUTOMATION_TIMEOUT_MS ?? "50000"
 const aiAutomationMaxErrorsRaw = process.env.AI_AUTOMATION_MAX_ERRORS ?? "5";
 const aiAutomationMaxRecommendationCallsRaw = process.env.AI_AUTOMATION_MAX_RECOMMENDATION_CALLS ?? "25";
 const aiAutomationMaxProactivityCallsRaw = process.env.AI_AUTOMATION_MAX_PROACTIVITY_CALLS ?? "25";
+const aiAutomationMaxUserRetriesRaw = process.env.AI_AUTOMATION_MAX_USER_RETRIES ?? "2";
 const aiAutomationLeaseMsRaw = process.env.AI_AUTOMATION_LEASE_MS ?? "120000";
 const aiAutomationTimezoneRaw = process.env.AI_AUTOMATION_TIMEZONE ?? "America/Sao_Paulo";
 
@@ -194,6 +195,7 @@ export const env = {
   aiAutomationMaxErrors: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_ERRORS", aiAutomationMaxErrorsRaw, 100),
   aiAutomationMaxRecommendationCalls: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_RECOMMENDATION_CALLS", aiAutomationMaxRecommendationCallsRaw, 1000),
   aiAutomationMaxProactivityCalls: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_PROACTIVITY_CALLS", aiAutomationMaxProactivityCallsRaw, 1000),
+  aiAutomationMaxUserRetries: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_USER_RETRIES", aiAutomationMaxUserRetriesRaw, 5),
   aiAutomationLeaseMs: requireBoundedPositiveInteger("AI_AUTOMATION_LEASE_MS", aiAutomationLeaseMsRaw, 900_000),
   aiAutomationTimezone: parseTimezone("AI_AUTOMATION_TIMEZONE", aiAutomationTimezoneRaw),
   cronSecret: process.env.CRON_SECRET ?? "",

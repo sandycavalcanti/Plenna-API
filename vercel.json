@@ -18,7 +18,7 @@
     },
     {
       "path": "/ai/automation/cron",
-      "schedule": "0 3 * * *"
+      "schedule": "0 12 * * *"
     }
   ],
   "functions": {

@@ -20,12 +20,13 @@ export type AutomationSettings = {
   maxErrors: number;
   maxRecommendationCalls: number;
   maxProactivityCalls: number;
+  maxUserRetries: number;
   leaseMs: number;
   timezone: string;
 };
 
 type ActiveUserSelector = {
-  listActive(afterUserId: number | null, limit: number): Promise<number[]>;
+  listActive(afterUserId: number | null, limit: number, retryUserId?: number | null): Promise<number[]>;
 };
 
 type ConsentReader = (userId: number, code: ConsentimentoCodigo) => Promise<boolean>;
@@ -64,9 +65,14 @@ export class PrismaActiveUserSelector implements ActiveUserSelector {
     this.db = db;
   }
 
-  async listActive(afterUserId: number | null, limit: number) {
+  async listActive(afterUserId: number | null, limit: number, retryUserId: number | null = null) {
+    const userIdFilter = retryUserId !== null
+      ? { usuario_id: { gte: retryUserId } }
+      : afterUserId === null
+        ? {}
+        : { usuario_id: { gt: afterUserId } };
     const rows = await this.db.tb_usuario.findMany({
-      where: { usuario_status: true, ...(afterUserId === null ? {} : { usuario_id: { gt: afterUserId } }) },
+      where: { usuario_status: true, ...userIdFilter },
       orderBy: { usuario_id: 'asc' },
       take: limit,
       select: { usuario_id: true },
@@ -84,6 +90,7 @@ function defaultSettings(): AutomationSettings {
     maxErrors: env.aiAutomationMaxErrors,
     maxRecommendationCalls: env.aiAutomationMaxRecommendationCalls,
     maxProactivityCalls: env.aiAutomationMaxProactivityCalls,
+    maxUserRetries: env.aiAutomationMaxUserRetries,
     leaseMs: env.aiAutomationLeaseMs,
     timezone: env.aiAutomationTimezone,
   };
@@ -120,8 +127,19 @@ class AutomationTimeout extends Error {
   }
 }
 
+class AutomationBudgetStop extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'AutomationBudgetStop';
+  }
+}
+
 function isAutomationTimeout(error: unknown): error is AutomationTimeout {
   return error instanceof AutomationTimeout;
+}
+
+function isAutomationBudgetStop(error: unknown): error is AutomationBudgetStop {
+  return error instanceof AutomationBudgetStop;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -131,6 +149,9 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     timer.unref?.();
   });
   try {
+    // This timeout does not cancel the underlying operation. The caller never
+    // retries the ambiguous operation in the same run; persistent dedupe is
+    // responsible for resolving a late completion on a later run.
     return await Promise.race([promise, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
@@ -145,9 +166,9 @@ function resultFromRecord(
   status: AutomationJobResult['status'],
   reason: string,
   executionId: number | null,
-  record: Pick<AutomationExecution, 'usersEvaluated' | 'recommendationsGenerated' | 'conversationsCreated' | 'actionsSuppressed' | 'errors' | 'timeouts'>,
-  recommendationCalls = 0,
-  proactivityCalls = 0,
+  record: Pick<AutomationExecution,
+    'usersEvaluated' | 'recommendationsGenerated' | 'conversationsCreated' | 'actionsSuppressed'
+    | 'errors' | 'timeouts' | 'recommendationCalls' | 'proactivityCalls'>,
 ): AutomationJobResult {
   return {
     status,
@@ -159,8 +180,8 @@ function resultFromRecord(
     actionsSuppressed: record.actionsSuppressed,
     errors: record.errors,
     timeouts: record.timeouts,
-    recommendationCalls,
-    proactivityCalls,
+    recommendationCalls: record.recommendationCalls,
+    proactivityCalls: record.proactivityCalls,
   };
 }
 
@@ -187,7 +208,7 @@ export class AutomationJobService {
     if (!this.settings.enabled) {
       return resultFromRecord('DESABILITADA', 'FLAG_DESABILITADA', null, {
         usersEvaluated: 0, recommendationsGenerated: 0, conversationsCreated: 0,
-        actionsSuppressed: 0, errors: 0, timeouts: 0,
+        actionsSuppressed: 0, errors: 0, timeouts: 0, recommendationCalls: 0, proactivityCalls: 0,
       });
     }
 
@@ -201,14 +222,25 @@ export class AutomationJobService {
     }
 
     const state = { ...acquired.record };
-    let recommendationCalls = 0;
-    let proactivityCalls = 0;
     let errorsThisRun = 0;
     let finalStatus: 'CONCLUIDA' | 'INTERROMPIDA' = 'CONCLUIDA';
     let finalReason = 'SEM_USUARIOS_PENDENTES';
     const startedAt = Date.now();
     const deadline = startedAt + this.settings.timeoutMs;
     let usersThisRun = 0;
+
+    const persistProgress = () => this.repository.progress(state.id, state.leaseToken, {
+      cursorUserId: state.cursorUserId,
+      cursorAttempts: state.cursorAttempts,
+      usersEvaluated: state.usersEvaluated,
+      recommendationsGenerated: state.recommendationsGenerated,
+      conversationsCreated: state.conversationsCreated,
+      actionsSuppressed: state.actionsSuppressed,
+      errors: state.errors,
+      timeouts: state.timeouts,
+      recommendationCalls: state.recommendationCalls,
+      proactivityCalls: state.proactivityCalls,
+    }, new Date());
 
     console.info('ai_automation_inicio', { executionId: state.id });
 
@@ -229,7 +261,8 @@ export class AutomationJobService {
         }
 
         const take = Math.min(this.settings.batchSize, remainingUsers);
-        const userIds = await withTimeout(this.users.listActive(state.cursorUserId, take), remainingTime);
+        const retryUserId = state.cursorAttempts > 0 ? state.cursorUserId : null;
+        const userIds = await withTimeout(this.users.listActive(state.cursorUserId, take, retryUserId), remainingTime);
         if (userIds.length === 0) break;
 
         for (const userId of userIds) {
@@ -240,7 +273,8 @@ export class AutomationJobService {
             break;
           }
 
-          let timedOut = false;
+          let completed = false;
+          let budgetStopped = false;
           try {
             if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error('invalid selected user');
             const userTimeout = Math.max(1, deadline - Date.now());
@@ -248,82 +282,94 @@ export class AutomationJobService {
               this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO),
               userTimeout,
             );
-            if (personalized) {
-              if (recommendationCalls >= this.settings.maxRecommendationCalls) {
-                finalStatus = 'INTERROMPIDA';
-                finalReason = 'LIMITE_CHAMADAS_RECOMENDACAO';
-                stopAfterUser = true;
+            if (!personalized) {
+              state.actionsSuppressed += 1;
+              completed = true;
+            } else if (state.recommendationCalls >= this.settings.maxRecommendationCalls) {
+              throw new AutomationBudgetStop('LIMITE_CHAMADAS_RECOMENDACAO');
+            } else {
+              state.recommendationCalls += 1;
+              await persistProgress();
+              const generated = await withTimeout(
+                this.recommendations(userId, periodo, now),
+                Math.max(1, deadline - Date.now()),
+              );
+              const items = Array.isArray(generated.itens) ? generated.itens : [];
+              state.recommendationsGenerated += items.length;
+              if (items.length === 0) {
+                completed = true;
               } else {
-                recommendationCalls += 1;
-                const generated = await withTimeout(
-                  this.recommendations(userId, periodo, now),
+                const proactivityAllowed = await withTimeout(
+                  this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE),
                   Math.max(1, deadline - Date.now()),
                 );
-                state.recommendationsGenerated += Array.isArray(generated.itens) ? generated.itens.length : 0;
-
-                if (Array.isArray(generated.itens) && generated.itens.length > 0) {
-                  const proactivityAllowed = await withTimeout(
-                    this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE),
+                if (!proactivityAllowed) {
+                  state.actionsSuppressed += 1;
+                  completed = true;
+                } else if (state.proactivityCalls >= this.settings.maxProactivityCalls) {
+                  await persistProgress();
+                  throw new AutomationBudgetStop('LIMITE_CHAMADAS_PROATIVIDADE');
+                } else {
+                  state.proactivityCalls += 1;
+                  await persistProgress();
+                  const proactive = await withTimeout(
+                    this.proactivity(userId, { now, persist: true, timezone }),
                     Math.max(1, deadline - Date.now()),
                   );
-                  if (proactivityAllowed) {
-                    if (proactivityCalls >= this.settings.maxProactivityCalls) {
-                      finalStatus = 'INTERROMPIDA';
-                      finalReason = 'LIMITE_CHAMADAS_PROATIVIDADE';
-                      stopAfterUser = true;
-                    } else {
-                      proactivityCalls += 1;
-                      const proactive = await withTimeout(
-                        this.proactivity(userId, { now, persist: true, timezone }),
-                        Math.max(1, deadline - Date.now()),
-                      );
-                      if (proactive.estado === 'CRIADA') state.conversationsCreated += 1;
-                      else if (proactive.estado !== 'EXISTENTE') state.actionsSuppressed += 1;
-                    }
-                  } else {
-                    state.actionsSuppressed += 1;
-                  }
+                  if (proactive.estado === 'CRIADA') state.conversationsCreated += 1;
+                  else if (proactive.estado !== 'EXISTENTE') state.actionsSuppressed += 1;
+                  completed = true;
                 }
               }
-            } else {
-              state.actionsSuppressed += 1;
             }
           } catch (error) {
-            timedOut = isAutomationTimeout(error);
-            state.errors += 1;
-            errorsThisRun += 1;
-            if (timedOut) state.timeouts += 1;
-            console.warn('ai_automation_usuario_falhou', { executionId: state.id, codigo: safeErrorCode(error) });
+            if (isAutomationBudgetStop(error)) {
+              finalStatus = 'INTERROMPIDA';
+              finalReason = error.message;
+              budgetStopped = true;
+            } else {
+              const timedOut = isAutomationTimeout(error);
+              state.errors += 1;
+              errorsThisRun += 1;
+              if (timedOut) state.timeouts += 1;
+              state.cursorUserId = userId;
+              state.cursorAttempts += 1;
+              console.warn('ai_automation_usuario_falhou', { executionId: state.id, codigo: safeErrorCode(error) });
+              if (state.cursorAttempts >= this.settings.maxUserRetries) {
+                state.actionsSuppressed += 1;
+                state.cursorAttempts = 0;
+                completed = true;
+              } else {
+                finalStatus = 'INTERROMPIDA';
+                finalReason = timedOut ? 'TIMEOUT_USUARIO' : 'REPROCESSAR_USUARIO';
+                stopAfterUser = true;
+              }
+            }
           }
 
-          state.usersEvaluated += 1;
-          usersThisRun += 1;
-          state.cursorUserId = userId;
-          const progress: AutomationProgress = {
-            cursorUserId: state.cursorUserId,
-            usersEvaluated: state.usersEvaluated,
-            recommendationsGenerated: state.recommendationsGenerated,
-            conversationsCreated: state.conversationsCreated,
-            actionsSuppressed: state.actionsSuppressed,
-            errors: state.errors,
-            timeouts: state.timeouts,
-          };
-          await this.repository.progress(state.id, progress, new Date());
+          if (budgetStopped) {
+            stopAfterUser = true;
+            break;
+          }
 
-          if (errorsThisRun >= this.settings.maxErrors) {
+          usersThisRun += 1;
+          state.usersEvaluated += 1;
+          if (completed) {
+            state.cursorUserId = userId;
+            state.cursorAttempts = 0;
+          }
+          await persistProgress();
+
+          if (completed && errorsThisRun >= this.settings.maxErrors) {
             finalStatus = 'INTERROMPIDA';
             finalReason = 'LIMITE_ERROS';
-            stopAfterUser = true;
-          } else if (timedOut) {
-            finalStatus = 'INTERROMPIDA';
-            finalReason = 'TIMEOUT_USUARIO';
             stopAfterUser = true;
           }
           if (stopAfterUser) break;
         }
       }
 
-      await this.repository.finish(state.id, finalStatus, finalReason, new Date());
+      await this.repository.finish(state.id, state.leaseToken, finalStatus, finalReason, new Date());
       console.info('ai_automation_concluida', {
         executionId: state.id,
         status: finalStatus,
@@ -334,13 +380,19 @@ export class AutomationJobService {
         actionsSuppressed: state.actionsSuppressed,
         errors: state.errors,
         timeouts: state.timeouts,
+        recommendationCalls: state.recommendationCalls,
+        proactivityCalls: state.proactivityCalls,
       });
-      return resultFromRecord(finalStatus, finalReason, state.id, state, recommendationCalls, proactivityCalls);
+      return resultFromRecord(finalStatus, finalReason, state.id, state);
     } catch (error) {
+      if (isAutomationTimeout(error)) {
+        await this.repository.finish(state.id, state.leaseToken, 'INTERROMPIDA', 'TIMEOUT_EXECUCAO', new Date());
+        return resultFromRecord('INTERROMPIDA', 'TIMEOUT_EXECUCAO', state.id, state);
+      }
       try {
-        await this.repository.finish(state.id, 'ERRO', 'ERRO_INTERNO', new Date());
+        await this.repository.finish(state.id, state.leaseToken, 'ERRO', 'ERRO_INTERNO', new Date());
       } catch {
-        // Mantem o erro operacional seguro; a próxima execução poderá assumir o lease expirado.
+        // Um worker que perdeu o fencing token não pode concluir a execução.
       }
       console.error('ai_automation_falhou', { executionId: state.id, codigo: safeErrorCode(error) });
       throw new Error('AI automation processing failed');

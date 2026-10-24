@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
@@ -7,14 +8,18 @@ export type AutomationExecutionStatus = 'EM_ANDAMENTO' | 'CONCLUIDA' | 'INTERROM
 export type AutomationExecution = {
   id: number;
   key: string;
+  leaseToken: string;
   status: AutomationExecutionStatus;
   cursorUserId: number | null;
+  cursorAttempts: number;
   usersEvaluated: number;
   recommendationsGenerated: number;
   conversationsCreated: number;
   actionsSuppressed: number;
   errors: number;
   timeouts: number;
+  recommendationCalls: number;
+  proactivityCalls: number;
   startedAt: Date;
   updatedAt: Date;
   finishedAt: Date | null;
@@ -26,26 +31,31 @@ export type AutomationAcquireResult =
   | { acquired: false; reason: 'CONCORRENCIA' | 'JA_CONCLUIDA'; record: AutomationExecution };
 
 export type AutomationProgress = Partial<Pick<AutomationExecution,
-  'cursorUserId' | 'usersEvaluated' | 'recommendationsGenerated' | 'conversationsCreated'
-  | 'actionsSuppressed' | 'errors' | 'timeouts'>>;
+  'cursorUserId' | 'cursorAttempts' | 'usersEvaluated' | 'recommendationsGenerated'
+  | 'conversationsCreated' | 'actionsSuppressed' | 'errors' | 'timeouts'
+  | 'recommendationCalls' | 'proactivityCalls'>>;
 
 export interface AutomationExecutionRepository {
   acquire(key: string, now: Date, leaseMs: number): Promise<AutomationAcquireResult>;
-  progress(id: number, progress: AutomationProgress, now: Date): Promise<void>;
-  finish(id: number, status: Exclude<AutomationExecutionStatus, 'EM_ANDAMENTO'>, reason: string, now: Date): Promise<void>;
+  progress(id: number, leaseToken: string, progress: AutomationProgress, now: Date): Promise<void>;
+  finish(id: number, leaseToken: string, status: Exclude<AutomationExecutionStatus, 'EM_ANDAMENTO'>, reason: string, now: Date): Promise<void>;
 }
 
 const automationSelect = {
   ai_automacao_execucao_id: true,
   ai_automacao_chave: true,
+  ai_automacao_lease_token: true,
   ai_automacao_status: true,
   ai_automacao_cursor_usuario_id: true,
+  ai_automacao_cursor_tentativas: true,
   ai_automacao_usuarios_avaliados: true,
   ai_automacao_recomendacoes_geradas: true,
   ai_automacao_conversas_criadas: true,
   ai_automacao_acoes_suprimidas: true,
   ai_automacao_erros: true,
   ai_automacao_timeouts: true,
+  ai_automacao_chamadas_recomendacao: true,
+  ai_automacao_chamadas_proatividade: true,
   ai_automacao_data_inicio: true,
   ai_automacao_data_atualizacao: true,
   ai_automacao_data_fim: true,
@@ -55,33 +65,43 @@ const automationSelect = {
 type AutomationRow = {
   ai_automacao_execucao_id: number;
   ai_automacao_chave: string;
+  ai_automacao_lease_token: string;
   ai_automacao_status: string;
   ai_automacao_cursor_usuario_id: number | null;
+  ai_automacao_cursor_tentativas: number;
   ai_automacao_usuarios_avaliados: number;
   ai_automacao_recomendacoes_geradas: number;
   ai_automacao_conversas_criadas: number;
   ai_automacao_acoes_suprimidas: number;
   ai_automacao_erros: number;
   ai_automacao_timeouts: number;
+  ai_automacao_chamadas_recomendacao: number;
+  ai_automacao_chamadas_proatividade: number;
   ai_automacao_data_inicio: Date;
   ai_automacao_data_atualizacao: Date;
   ai_automacao_data_fim: Date | null;
   ai_automacao_motivo: string | null;
 };
 
+type PreviousCursorRow = Pick<AutomationRow,
+  'ai_automacao_status' | 'ai_automacao_cursor_usuario_id' | 'ai_automacao_cursor_tentativas' | 'ai_automacao_motivo'>;
+
 function mapRow(row: AutomationRow): AutomationExecution {
-  const status = row.ai_automacao_status as AutomationExecutionStatus;
   return {
     id: row.ai_automacao_execucao_id,
     key: row.ai_automacao_chave,
-    status,
+    leaseToken: row.ai_automacao_lease_token,
+    status: row.ai_automacao_status as AutomationExecutionStatus,
     cursorUserId: row.ai_automacao_cursor_usuario_id,
+    cursorAttempts: row.ai_automacao_cursor_tentativas,
     usersEvaluated: row.ai_automacao_usuarios_avaliados,
     recommendationsGenerated: row.ai_automacao_recomendacoes_geradas,
     conversationsCreated: row.ai_automacao_conversas_criadas,
     actionsSuppressed: row.ai_automacao_acoes_suprimidas,
     errors: row.ai_automacao_erros,
     timeouts: row.ai_automacao_timeouts,
+    recommendationCalls: row.ai_automacao_chamadas_recomendacao,
+    proactivityCalls: row.ai_automacao_chamadas_proatividade,
     startedAt: row.ai_automacao_data_inicio,
     updatedAt: row.ai_automacao_data_atualizacao,
     finishedAt: row.ai_automacao_data_fim,
@@ -99,10 +119,15 @@ function unavailable() {
 
 type AutomationDatabase = Pick<PrismaClient, 'tb_ai_automacao_execucao'>;
 
+function canCarryCursor(previous: PreviousCursorRow | null) {
+  if (!previous) return false;
+  if (previous.ai_automacao_status === 'INTERROMPIDA' || previous.ai_automacao_status === 'ERRO') return true;
+  return previous.ai_automacao_status === 'CONCLUIDA' && previous.ai_automacao_motivo !== 'SEM_USUARIOS_PENDENTES';
+}
+
 /**
- * Checkpoint persistente do job. A aquisição usa updateMany condicional para
- * que duas instâncias não executem a mesma chave ao mesmo tempo. Não há retry
- * automático após uma falha ambígua de escrita.
+ * Checkpoint persistente com fencing token. O token muda quando um lease
+ * expirado é assumido; workers antigos não conseguem mais atualizar a linha.
  */
 export class PrismaAutomationExecutionRepository implements AutomationExecutionRepository {
   private readonly db: AutomationDatabase;
@@ -119,10 +144,31 @@ export class PrismaAutomationExecutionRepository implements AutomationExecutionR
 
     if (!current) {
       try {
+        const previous = await this.db.tb_ai_automacao_execucao.findFirst({
+          where: { ai_automacao_chave: { startsWith: 'rf026-rf027:' } },
+          orderBy: { ai_automacao_data_inicio: 'desc' },
+          select: {
+            ai_automacao_status: true,
+            ai_automacao_cursor_usuario_id: true,
+            ai_automacao_cursor_tentativas: true,
+            ai_automacao_motivo: true,
+          },
+        }) as PreviousCursorRow | null;
+        const carry = canCarryCursor(previous);
         current = await this.db.tb_ai_automacao_execucao.create({
-          data: { ai_automacao_chave: key, ai_automacao_status: 'EM_ANDAMENTO', ai_automacao_data_atualizacao: now },
+          data: {
+            ai_automacao_chave: key,
+            ai_automacao_lease_token: randomUUID(),
+            ai_automacao_status: 'EM_ANDAMENTO',
+            ai_automacao_cursor_usuario_id: carry ? previous?.ai_automacao_cursor_usuario_id ?? null : null,
+            ai_automacao_cursor_tentativas: carry ? previous?.ai_automacao_cursor_tentativas ?? 0 : 0,
+            ai_automacao_data_atualizacao: now,
+          },
           select: automationSelect,
         }) as AutomationRow;
+        // A criação já é a aquisição do lease. Não passar por updateMany: uma
+        // linha nova ainda não possui lease expirado.
+        return { acquired: true, record: mapRow(current) };
       } catch (error) {
         if (!isUniqueError(error)) throw unavailable();
         current = await this.db.tb_ai_automacao_execucao.findUnique({
@@ -138,15 +184,18 @@ export class PrismaAutomationExecutionRepository implements AutomationExecutionR
     }
 
     const cutoff = new Date(now.getTime() - leaseMs);
+    const nextLeaseToken = randomUUID();
     const takeover = await this.db.tb_ai_automacao_execucao.updateMany({
       where: {
         ai_automacao_execucao_id: current.ai_automacao_execucao_id,
+        ai_automacao_lease_token: current.ai_automacao_lease_token,
         OR: [
           { ai_automacao_status: { in: ['INTERROMPIDA', 'ERRO'] } },
           { ai_automacao_status: 'EM_ANDAMENTO', ai_automacao_data_atualizacao: { lte: cutoff } },
         ],
       },
       data: {
+        ai_automacao_lease_token: nextLeaseToken,
         ai_automacao_status: 'EM_ANDAMENTO',
         ai_automacao_data_atualizacao: now,
         ai_automacao_data_fim: null,
@@ -172,23 +221,29 @@ export class PrismaAutomationExecutionRepository implements AutomationExecutionR
       select: automationSelect,
     }) as AutomationRow | null;
     if (!acquired) throw unavailable();
+    if (acquired.ai_automacao_lease_token !== nextLeaseToken) {
+      return { acquired: false, reason: 'CONCORRENCIA', record: mapRow(acquired) };
+    }
     return { acquired: true, record: mapRow(acquired) };
   }
 
-  async progress(id: number, progress: AutomationProgress, now: Date) {
+  async progress(id: number, leaseToken: string, progress: AutomationProgress, now: Date) {
     const data: Record<string, number | Date | null> = {
       ai_automacao_data_atualizacao: now,
     };
     if (progress.cursorUserId !== undefined) data.ai_automacao_cursor_usuario_id = progress.cursorUserId;
+    if (progress.cursorAttempts !== undefined) data.ai_automacao_cursor_tentativas = progress.cursorAttempts;
     if (progress.usersEvaluated !== undefined) data.ai_automacao_usuarios_avaliados = progress.usersEvaluated;
     if (progress.recommendationsGenerated !== undefined) data.ai_automacao_recomendacoes_geradas = progress.recommendationsGenerated;
     if (progress.conversationsCreated !== undefined) data.ai_automacao_conversas_criadas = progress.conversationsCreated;
     if (progress.actionsSuppressed !== undefined) data.ai_automacao_acoes_suprimidas = progress.actionsSuppressed;
     if (progress.errors !== undefined) data.ai_automacao_erros = progress.errors;
     if (progress.timeouts !== undefined) data.ai_automacao_timeouts = progress.timeouts;
+    if (progress.recommendationCalls !== undefined) data.ai_automacao_chamadas_recomendacao = progress.recommendationCalls;
+    if (progress.proactivityCalls !== undefined) data.ai_automacao_chamadas_proatividade = progress.proactivityCalls;
     try {
       const result = await this.db.tb_ai_automacao_execucao.updateMany({
-        where: { ai_automacao_execucao_id: id, ai_automacao_status: 'EM_ANDAMENTO' },
+        where: { ai_automacao_execucao_id: id, ai_automacao_status: 'EM_ANDAMENTO', ai_automacao_lease_token: leaseToken },
         data,
       });
       if (result.count !== 1) throw unavailable();
@@ -198,10 +253,10 @@ export class PrismaAutomationExecutionRepository implements AutomationExecutionR
     }
   }
 
-  async finish(id: number, status: Exclude<AutomationExecutionStatus, 'EM_ANDAMENTO'>, reason: string, now: Date) {
+  async finish(id: number, leaseToken: string, status: Exclude<AutomationExecutionStatus, 'EM_ANDAMENTO'>, reason: string, now: Date) {
     try {
       const result = await this.db.tb_ai_automacao_execucao.updateMany({
-        where: { ai_automacao_execucao_id: id, ai_automacao_status: 'EM_ANDAMENTO' },
+        where: { ai_automacao_execucao_id: id, ai_automacao_status: 'EM_ANDAMENTO', ai_automacao_lease_token: leaseToken },
         data: {
           ai_automacao_status: status,
           ai_automacao_motivo: reason,

@@ -459,14 +459,18 @@ model tb_ai_proatividade {
 model tb_ai_automacao_execucao {
   ai_automacao_execucao_id            Int       @id @default(autoincrement())
   ai_automacao_chave                  String    @unique @db.VarChar(120)
+  ai_automacao_lease_token             String    @db.Uuid
   ai_automacao_status                 String    @default("EM_ANDAMENTO") @db.VarChar(20)
   ai_automacao_cursor_usuario_id      Int?
+  ai_automacao_cursor_tentativas       Int       @default(0)
   ai_automacao_usuarios_avaliados     Int       @default(0)
   ai_automacao_recomendacoes_geradas  Int       @default(0)
   ai_automacao_conversas_criadas     Int       @default(0)
   ai_automacao_acoes_suprimidas      Int       @default(0)
   ai_automacao_erros                  Int       @default(0)
   ai_automacao_timeouts               Int       @default(0)
+  ai_automacao_chamadas_recomendacao  Int       @default(0)
+  ai_automacao_chamadas_proatividade  Int       @default(0)
   ai_automacao_data_inicio            DateTime  @default(now()) @db.Timestamp(6)
   ai_automacao_data_atualizacao       DateTime  @default(now()) @db.Timestamp(6)
   ai_automacao_data_fim               DateTime?
