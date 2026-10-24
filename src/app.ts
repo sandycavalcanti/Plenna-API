@@ -22,6 +22,7 @@ import { RecorrenciaCronController } from './modules/recorrencia/recorrencia.cro
 import './modules/ai/memory.runtime.js';
 import { memoryRouter } from './modules/ai/memory.routes.js';
 import { recomendacaoRouter } from './modules/recomendacao/recomendacao.routes.js';
+import { AutomationController } from './modules/automacao/automacao.controller.js';
 
 const app = express();
 
@@ -39,6 +40,8 @@ app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);
 app.get('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
 app.post('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
+app.get('/ai/automation/cron', (req, res) => AutomationController.process(req, res));
+app.post('/ai/automation/cron', (req, res) => AutomationController.process(req, res));
 app.use('/recorrencias', recorrenciaRouter);
 app.use('/dashboard', dashboardRouter);
 app.use('/consentimento', consentimentoRouter);

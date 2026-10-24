@@ -454,6 +454,28 @@ model tb_ai_proatividade {
   @@schema("public")
 }
 
+/// Controle persistente do job diário RF026/RF027. A tabela é criada somente
+/// por SQL/migration manual após validação da estrutura física do ambiente.
+model tb_ai_automacao_execucao {
+  ai_automacao_execucao_id            Int       @id @default(autoincrement())
+  ai_automacao_chave                  String    @unique @db.VarChar(120)
+  ai_automacao_status                 String    @default("EM_ANDAMENTO") @db.VarChar(20)
+  ai_automacao_cursor_usuario_id      Int?
+  ai_automacao_usuarios_avaliados     Int       @default(0)
+  ai_automacao_recomendacoes_geradas  Int       @default(0)
+  ai_automacao_conversas_criadas     Int       @default(0)
+  ai_automacao_acoes_suprimidas      Int       @default(0)
+  ai_automacao_erros                  Int       @default(0)
+  ai_automacao_timeouts               Int       @default(0)
+  ai_automacao_data_inicio            DateTime  @default(now()) @db.Timestamp(6)
+  ai_automacao_data_atualizacao       DateTime  @default(now()) @db.Timestamp(6)
+  ai_automacao_data_fim               DateTime?
+  ai_automacao_motivo                 String?   @db.VarChar(80)
+
+  @@index([ai_automacao_status, ai_automacao_data_atualizacao], map: "idx_ai_automacao_status_atualizacao")
+  @@schema("public")
+}
+
 enum compra_classificacao_enum {
   PENDENTE
   IMPULSIVA

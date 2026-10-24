@@ -70,6 +70,15 @@ const recurrenceCronEnabledRaw = process.env.RECURRENCE_CRON_ENABLED ?? "false";
 const recurrenceProcessingBatchSizeRaw = process.env.RECURRENCE_PROCESSING_BATCH_SIZE ?? "25";
 const recurrenceProcessingMaxOccurrencesPerRunRaw = process.env.RECURRENCE_PROCESSING_MAX_OCCURRENCES_PER_RUN ?? "25";
 const recurrenceProcessingTransactionTimeoutMsRaw = process.env.RECURRENCE_PROCESSING_TRANSACTION_TIMEOUT_MS ?? "10000";
+const aiAutomationEnabledRaw = process.env.AI_AUTOMATION_ENABLED ?? "false";
+const aiAutomationBatchSizeRaw = process.env.AI_AUTOMATION_BATCH_SIZE ?? "5";
+const aiAutomationMaxUsersRaw = process.env.AI_AUTOMATION_MAX_USERS ?? "25";
+const aiAutomationTimeoutMsRaw = process.env.AI_AUTOMATION_TIMEOUT_MS ?? "50000";
+const aiAutomationMaxErrorsRaw = process.env.AI_AUTOMATION_MAX_ERRORS ?? "5";
+const aiAutomationMaxRecommendationCallsRaw = process.env.AI_AUTOMATION_MAX_RECOMMENDATION_CALLS ?? "25";
+const aiAutomationMaxProactivityCallsRaw = process.env.AI_AUTOMATION_MAX_PROACTIVITY_CALLS ?? "25";
+const aiAutomationLeaseMsRaw = process.env.AI_AUTOMATION_LEASE_MS ?? "120000";
+const aiAutomationTimezoneRaw = process.env.AI_AUTOMATION_TIMEZONE ?? "America/Sao_Paulo";
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   throw new Error(`Invalid PORT value: ${portRaw}`);
@@ -178,6 +187,15 @@ export const env = {
     "RECURRENCE_PROCESSING_TRANSACTION_TIMEOUT_MS",
     recurrenceProcessingTransactionTimeoutMsRaw,
   ),
+  aiAutomationEnabled: parseStrictBoolean("AI_AUTOMATION_ENABLED", aiAutomationEnabledRaw),
+  aiAutomationBatchSize: requireBoundedPositiveInteger("AI_AUTOMATION_BATCH_SIZE", aiAutomationBatchSizeRaw, 100),
+  aiAutomationMaxUsers: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_USERS", aiAutomationMaxUsersRaw, 1000),
+  aiAutomationTimeoutMs: requireBoundedPositiveInteger("AI_AUTOMATION_TIMEOUT_MS", aiAutomationTimeoutMsRaw, 300_000),
+  aiAutomationMaxErrors: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_ERRORS", aiAutomationMaxErrorsRaw, 100),
+  aiAutomationMaxRecommendationCalls: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_RECOMMENDATION_CALLS", aiAutomationMaxRecommendationCallsRaw, 1000),
+  aiAutomationMaxProactivityCalls: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_PROACTIVITY_CALLS", aiAutomationMaxProactivityCallsRaw, 1000),
+  aiAutomationLeaseMs: requireBoundedPositiveInteger("AI_AUTOMATION_LEASE_MS", aiAutomationLeaseMsRaw, 900_000),
+  aiAutomationTimezone: parseTimezone("AI_AUTOMATION_TIMEZONE", aiAutomationTimezoneRaw),
   cronSecret: process.env.CRON_SECRET ?? "",
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",

@@ -15,6 +15,10 @@
     {
       "path": "/recorrencias/cron",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/ai/automation/cron",
+      "schedule": "0 3 * * *"
     }
   ],
   "functions": {
