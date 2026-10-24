@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
@@ -5,12 +6,6 @@ import { ConsentimentoService } from '../consentimento/consentimento.service.js'
 import { CONSENTIMENTO_CODIGOS, type ConsentimentoCodigo } from '../consentimento/consentimento.constants.js';
 import { recommendationService } from '../recomendacao/recomendacao.service.js';
 import { proactivityService } from '../proatividade/proatividade.service.js';
-import {
-  PrismaAutomationExecutionRepository,
-  type AutomationExecution,
-  type AutomationExecutionRepository,
-  type AutomationProgress,
-} from './automacao.repository.js';
 
 export type AutomationSettings = {
   enabled: boolean;
@@ -20,13 +15,12 @@ export type AutomationSettings = {
   maxErrors: number;
   maxRecommendationCalls: number;
   maxProactivityCalls: number;
-  maxUserRetries: number;
-  leaseMs: number;
   timezone: string;
 };
 
 type ActiveUserSelector = {
-  listActive(afterUserId: number | null, limit: number, retryUserId?: number | null): Promise<number[]>;
+  countActive(): Promise<number>;
+  listActive(offset: number, limit: number): Promise<number[]>;
 };
 
 type ConsentReader = (userId: number, code: ConsentimentoCodigo) => Promise<boolean>;
@@ -34,7 +28,6 @@ type RecommendationRunner = (userId: number, periodo: string, now: Date) => Prom
 type ProactivityRunner = (userId: number, options: { now: Date; persist: true; timezone: string }) => Promise<{ estado?: string }>;
 
 export type AutomationJobDependencies = {
-  repository?: AutomationExecutionRepository;
   users?: ActiveUserSelector;
   consent?: ConsentReader;
   recommendations?: RecommendationRunner;
@@ -43,9 +36,9 @@ export type AutomationJobDependencies = {
 };
 
 export type AutomationJobResult = {
-  status: 'DESABILITADA' | 'CONCORRENCIA' | 'JA_CONCLUIDA' | 'CONCLUIDA' | 'INTERROMPIDA';
+  status: 'DESABILITADA' | 'CONCLUIDA' | 'INTERROMPIDA';
   reason: string;
-  executionId: number | null;
+  executionId: string | null;
   usersEvaluated: number;
   recommendationsGenerated: number;
   conversationsCreated: number;
@@ -65,19 +58,29 @@ export class PrismaActiveUserSelector implements ActiveUserSelector {
     this.db = db;
   }
 
-  async listActive(afterUserId: number | null, limit: number, retryUserId: number | null = null) {
-    const userIdFilter = retryUserId !== null
-      ? { usuario_id: { gte: retryUserId } }
-      : afterUserId === null
-        ? {}
-        : { usuario_id: { gt: afterUserId } };
-    const rows = await this.db.tb_usuario.findMany({
-      where: { usuario_status: true, ...userIdFilter },
+  async countActive() {
+    return this.db.tb_usuario.count({ where: { usuario_status: true } });
+  }
+
+  async listActive(offset: number, limit: number) {
+    const first = await this.db.tb_usuario.findMany({
+      where: { usuario_status: true },
       orderBy: { usuario_id: 'asc' },
+      skip: offset,
       take: limit,
       select: { usuario_id: true },
     });
-    return rows.map((row) => row.usuario_id);
+
+    // A rotação pode atravessar o fim da lista. O segundo trecho mantém a
+    // distribuição simples sem armazenar cursor ou checkpoint.
+    if (first.length >= limit || offset === 0) return first.map((row) => row.usuario_id);
+    const remaining = await this.db.tb_usuario.findMany({
+      where: { usuario_status: true },
+      orderBy: { usuario_id: 'asc' },
+      take: limit - first.length,
+      select: { usuario_id: true },
+    });
+    return [...first, ...remaining].map((row) => row.usuario_id);
   }
 }
 
@@ -90,8 +93,6 @@ function defaultSettings(): AutomationSettings {
     maxErrors: env.aiAutomationMaxErrors,
     maxRecommendationCalls: env.aiAutomationMaxRecommendationCalls,
     maxProactivityCalls: env.aiAutomationMaxProactivityCalls,
-    maxUserRetries: env.aiAutomationMaxUserRetries,
-    leaseMs: env.aiAutomationLeaseMs,
     timezone: env.aiAutomationTimezone,
   };
 }
@@ -115,9 +116,9 @@ function periodFor(date: Date, timezone: string) {
   return `${parts.year}-${parts.month}`;
 }
 
-function dayKeyFor(date: Date, timezone: string) {
+function dayNumberFor(date: Date, timezone: string) {
   const parts = zonedParts(date, timezone);
-  return `${parts.year}-${parts.month}-${parts.day}`;
+  return Math.floor(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)) / 86_400_000);
 }
 
 class AutomationTimeout extends Error {
@@ -149,9 +150,8 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     timer.unref?.();
   });
   try {
-    // This timeout does not cancel the underlying operation. The caller never
-    // retries the ambiguous operation in the same run; persistent dedupe is
-    // responsible for resolving a late completion on a later run.
+    // O timeout não cancela a operação subjacente. Por isso ela não é repetida
+    // nesta execução; recomendações e proatividade usam deduplicação própria.
     return await Promise.race([promise, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
@@ -162,31 +162,23 @@ function safeErrorCode(error: unknown) {
   return error instanceof Error && error.name ? error.name.slice(0, 40) : 'ERRO_DESCONHECIDO';
 }
 
-function resultFromRecord(
-  status: AutomationJobResult['status'],
-  reason: string,
-  executionId: number | null,
-  record: Pick<AutomationExecution,
-    'usersEvaluated' | 'recommendationsGenerated' | 'conversationsCreated' | 'actionsSuppressed'
-    | 'errors' | 'timeouts' | 'recommendationCalls' | 'proactivityCalls'>,
-): AutomationJobResult {
+function emptyResult(status: AutomationJobResult['status'], reason: string, executionId: string | null): AutomationJobResult {
   return {
     status,
     reason,
     executionId,
-    usersEvaluated: record.usersEvaluated,
-    recommendationsGenerated: record.recommendationsGenerated,
-    conversationsCreated: record.conversationsCreated,
-    actionsSuppressed: record.actionsSuppressed,
-    errors: record.errors,
-    timeouts: record.timeouts,
-    recommendationCalls: record.recommendationCalls,
-    proactivityCalls: record.proactivityCalls,
+    usersEvaluated: 0,
+    recommendationsGenerated: 0,
+    conversationsCreated: 0,
+    actionsSuppressed: 0,
+    errors: 0,
+    timeouts: 0,
+    recommendationCalls: 0,
+    proactivityCalls: 0,
   };
 }
 
 export class AutomationJobService {
-  private readonly repository: AutomationExecutionRepository;
   private readonly users: ActiveUserSelector;
   private readonly consent: ConsentReader;
   private readonly recommendations: RecommendationRunner;
@@ -194,7 +186,6 @@ export class AutomationJobService {
   private readonly settings: AutomationSettings;
 
   constructor(dependencies: AutomationJobDependencies = {}) {
-    this.repository = dependencies.repository ?? new PrismaAutomationExecutionRepository();
     this.users = dependencies.users ?? new PrismaActiveUserSelector();
     this.consent = dependencies.consent ?? ((userId, code) => ConsentimentoService.temConsentimentoAtivo(userId, code));
     this.recommendations = dependencies.recommendations
@@ -205,198 +196,149 @@ export class AutomationJobService {
 
   async run(options: { now?: Date; periodo?: string } = {}): Promise<AutomationJobResult> {
     const now = options.now ?? new Date();
-    if (!this.settings.enabled) {
-      return resultFromRecord('DESABILITADA', 'FLAG_DESABILITADA', null, {
-        usersEvaluated: 0, recommendationsGenerated: 0, conversationsCreated: 0,
-        actionsSuppressed: 0, errors: 0, timeouts: 0, recommendationCalls: 0, proactivityCalls: 0,
-      });
-    }
+    const runId = randomUUID();
+    if (!this.settings.enabled) return emptyResult('DESABILITADA', 'FLAG_DESABILITADA', null);
 
     const timezone = this.settings.timezone;
-    const key = `rf026-rf027:${dayKeyFor(now, timezone)}`;
     const periodo = options.periodo ?? periodFor(now, timezone);
-    const acquired = await this.repository.acquire(key, now, this.settings.leaseMs);
-    if (!acquired.acquired) {
-      const status = acquired.reason === 'JA_CONCLUIDA' ? 'JA_CONCLUIDA' : 'CONCORRENCIA';
-      return resultFromRecord(status, acquired.reason, acquired.record.id, acquired.record);
-    }
-
-    const state = { ...acquired.record };
-    let errorsThisRun = 0;
-    let finalStatus: 'CONCLUIDA' | 'INTERROMPIDA' = 'CONCLUIDA';
-    let finalReason = 'SEM_USUARIOS_PENDENTES';
     const startedAt = Date.now();
     const deadline = startedAt + this.settings.timeoutMs;
-    let usersThisRun = 0;
+    let usersEvaluated = 0;
+    let recommendationsGenerated = 0;
+    let conversationsCreated = 0;
+    let actionsSuppressed = 0;
+    let errors = 0;
+    let timeouts = 0;
+    let recommendationCalls = 0;
+    let proactivityCalls = 0;
+    let finalStatus: AutomationJobResult['status'] = 'CONCLUIDA';
+    let finalReason = 'CONCLUIDA';
 
-    const persistProgress = () => this.repository.progress(state.id, state.leaseToken, {
-      cursorUserId: state.cursorUserId,
-      cursorAttempts: state.cursorAttempts,
-      usersEvaluated: state.usersEvaluated,
-      recommendationsGenerated: state.recommendationsGenerated,
-      conversationsCreated: state.conversationsCreated,
-      actionsSuppressed: state.actionsSuppressed,
-      errors: state.errors,
-      timeouts: state.timeouts,
-      recommendationCalls: state.recommendationCalls,
-      proactivityCalls: state.proactivityCalls,
-    }, new Date());
-
-    console.info('ai_automation_inicio', { executionId: state.id });
+    console.info('ai_automation_inicio', { runId });
 
     try {
-      let stopAfterUser = false;
-      while (!stopAfterUser) {
-        const remainingUsers = this.settings.maxUsers - usersThisRun;
-        if (remainingUsers <= 0) {
-          finalStatus = 'INTERROMPIDA';
-          finalReason = 'LIMITE_USUARIOS';
-          break;
-        }
-        const remainingTime = deadline - Date.now();
-        if (remainingTime <= 0) {
-          finalStatus = 'INTERROMPIDA';
-          finalReason = 'TIMEOUT_EXECUCAO';
-          break;
-        }
+      const activeCount = await withTimeout(this.users.countActive(), Math.max(1, deadline - Date.now()));
+      if (activeCount === 0) {
+        finalReason = 'SEM_USUARIOS_ELEGIVEIS';
+      } else {
+        const offset = (dayNumberFor(now, timezone) * this.settings.maxUsers) % activeCount;
+        const userIds = await withTimeout(
+          this.users.listActive(offset, this.settings.maxUsers),
+          Math.max(1, deadline - Date.now()),
+        );
 
-        const take = Math.min(this.settings.batchSize, remainingUsers);
-        const retryUserId = state.cursorAttempts > 0 ? state.cursorUserId : null;
-        const userIds = await withTimeout(this.users.listActive(state.cursorUserId, take, retryUserId), remainingTime);
-        if (userIds.length === 0) break;
+        for (let index = 0; index < userIds.length; index += this.settings.batchSize) {
+          const batch = userIds.slice(index, index + this.settings.batchSize);
+          for (const userId of batch) {
+            if (Date.now() >= deadline) {
+              finalStatus = 'INTERROMPIDA';
+              finalReason = 'TIMEOUT_EXECUCAO';
+              break;
+            }
 
-        for (const userId of userIds) {
-          if (Date.now() >= deadline) {
-            finalStatus = 'INTERROMPIDA';
-            finalReason = 'TIMEOUT_EXECUCAO';
-            stopAfterUser = true;
-            break;
-          }
+            usersEvaluated += 1;
+            try {
+              if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error('invalid selected user');
+              const userTimeout = Math.max(1, deadline - Date.now());
+              const personalized = await withTimeout(
+                this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO),
+                userTimeout,
+              );
+              if (!personalized) {
+                actionsSuppressed += 1;
+                continue;
+              }
 
-          let completed = false;
-          let budgetStopped = false;
-          try {
-            if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error('invalid selected user');
-            const userTimeout = Math.max(1, deadline - Date.now());
-            const personalized = await withTimeout(
-              this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO),
-              userTimeout,
-            );
-            if (!personalized) {
-              state.actionsSuppressed += 1;
-              completed = true;
-            } else if (state.recommendationCalls >= this.settings.maxRecommendationCalls) {
-              throw new AutomationBudgetStop('LIMITE_CHAMADAS_RECOMENDACAO');
-            } else {
-              state.recommendationCalls += 1;
-              await persistProgress();
+              if (recommendationCalls >= this.settings.maxRecommendationCalls) {
+                throw new AutomationBudgetStop('LIMITE_CHAMADAS_RECOMENDACAO');
+              }
+              recommendationCalls += 1;
               const generated = await withTimeout(
                 this.recommendations(userId, periodo, now),
                 Math.max(1, deadline - Date.now()),
               );
               const items = Array.isArray(generated.itens) ? generated.itens : [];
-              state.recommendationsGenerated += items.length;
-              if (items.length === 0) {
-                completed = true;
-              } else {
-                const proactivityAllowed = await withTimeout(
-                  this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE),
-                  Math.max(1, deadline - Date.now()),
-                );
-                if (!proactivityAllowed) {
-                  state.actionsSuppressed += 1;
-                  completed = true;
-                } else if (state.proactivityCalls >= this.settings.maxProactivityCalls) {
-                  await persistProgress();
-                  throw new AutomationBudgetStop('LIMITE_CHAMADAS_PROATIVIDADE');
-                } else {
-                  state.proactivityCalls += 1;
-                  await persistProgress();
-                  const proactive = await withTimeout(
-                    this.proactivity(userId, { now, persist: true, timezone }),
-                    Math.max(1, deadline - Date.now()),
-                  );
-                  if (proactive.estado === 'CRIADA') state.conversationsCreated += 1;
-                  else if (proactive.estado !== 'EXISTENTE') state.actionsSuppressed += 1;
-                  completed = true;
-                }
+              recommendationsGenerated += items.length;
+              if (items.length === 0) continue;
+
+              const proactivityAllowed = await withTimeout(
+                this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE),
+                Math.max(1, deadline - Date.now()),
+              );
+              if (!proactivityAllowed) {
+                actionsSuppressed += 1;
+                continue;
               }
-            }
-          } catch (error) {
-            if (isAutomationBudgetStop(error)) {
-              finalStatus = 'INTERROMPIDA';
-              finalReason = error.message;
-              budgetStopped = true;
-            } else {
-              const timedOut = isAutomationTimeout(error);
-              state.errors += 1;
-              errorsThisRun += 1;
-              if (timedOut) state.timeouts += 1;
-              state.cursorUserId = userId;
-              state.cursorAttempts += 1;
-              console.warn('ai_automation_usuario_falhou', { executionId: state.id, codigo: safeErrorCode(error) });
-              if (state.cursorAttempts >= this.settings.maxUserRetries) {
-                state.actionsSuppressed += 1;
-                state.cursorAttempts = 0;
-                completed = true;
-              } else {
+
+              if (proactivityCalls >= this.settings.maxProactivityCalls) {
+                throw new AutomationBudgetStop('LIMITE_CHAMADAS_PROATIVIDADE');
+              }
+              proactivityCalls += 1;
+              const proactive = await withTimeout(
+                this.proactivity(userId, { now, persist: true, timezone }),
+                Math.max(1, deadline - Date.now()),
+              );
+              if (proactive.estado === 'CRIADA') conversationsCreated += 1;
+              else if (proactive.estado !== 'EXISTENTE') actionsSuppressed += 1;
+            } catch (error) {
+              if (isAutomationBudgetStop(error)) {
                 finalStatus = 'INTERROMPIDA';
-                finalReason = timedOut ? 'TIMEOUT_USUARIO' : 'REPROCESSAR_USUARIO';
-                stopAfterUser = true;
+                finalReason = error.message;
+                break;
+              }
+              errors += 1;
+              if (isAutomationTimeout(error)) {
+                timeouts += 1;
+                finalStatus = 'INTERROMPIDA';
+                finalReason = 'TIMEOUT_USUARIO';
+                console.warn('ai_automation_usuario_falhou', { runId, codigo: safeErrorCode(error) });
+                break;
+              }
+              console.warn('ai_automation_usuario_falhou', { runId, codigo: safeErrorCode(error) });
+              if (errors >= this.settings.maxErrors) {
+                finalStatus = 'INTERROMPIDA';
+                finalReason = 'LIMITE_ERROS';
+                break;
               }
             }
           }
-
-          if (budgetStopped) {
-            stopAfterUser = true;
-            break;
-          }
-
-          usersThisRun += 1;
-          state.usersEvaluated += 1;
-          if (completed) {
-            state.cursorUserId = userId;
-            state.cursorAttempts = 0;
-          }
-          await persistProgress();
-
-          if (completed && errorsThisRun >= this.settings.maxErrors) {
-            finalStatus = 'INTERROMPIDA';
-            finalReason = 'LIMITE_ERROS';
-            stopAfterUser = true;
-          }
-          if (stopAfterUser) break;
+          if (finalStatus === 'INTERROMPIDA') break;
         }
       }
-
-      await this.repository.finish(state.id, state.leaseToken, finalStatus, finalReason, new Date());
-      console.info('ai_automation_concluida', {
-        executionId: state.id,
-        status: finalStatus,
-        reason: finalReason,
-        usersEvaluated: state.usersEvaluated,
-        recommendationsGenerated: state.recommendationsGenerated,
-        conversationsCreated: state.conversationsCreated,
-        actionsSuppressed: state.actionsSuppressed,
-        errors: state.errors,
-        timeouts: state.timeouts,
-        recommendationCalls: state.recommendationCalls,
-        proactivityCalls: state.proactivityCalls,
-      });
-      return resultFromRecord(finalStatus, finalReason, state.id, state);
     } catch (error) {
-      if (isAutomationTimeout(error)) {
-        await this.repository.finish(state.id, state.leaseToken, 'INTERROMPIDA', 'TIMEOUT_EXECUCAO', new Date());
-        return resultFromRecord('INTERROMPIDA', 'TIMEOUT_EXECUCAO', state.id, state);
-      }
-      try {
-        await this.repository.finish(state.id, state.leaseToken, 'ERRO', 'ERRO_INTERNO', new Date());
-      } catch {
-        // Um worker que perdeu o fencing token não pode concluir a execução.
-      }
-      console.error('ai_automation_falhou', { executionId: state.id, codigo: safeErrorCode(error) });
-      throw new Error('AI automation processing failed');
+      finalStatus = 'INTERROMPIDA';
+      finalReason = isAutomationTimeout(error) ? 'TIMEOUT_EXECUCAO' : 'ERRO_INTERNO';
+      if (isAutomationTimeout(error)) timeouts += 1;
+      else errors += 1;
+      console.error('ai_automation_falhou', { runId, codigo: safeErrorCode(error) });
     }
+
+    console.info('ai_automation_concluida', {
+      runId,
+      status: finalStatus,
+      reason: finalReason,
+      usersEvaluated,
+      recommendationsGenerated,
+      conversationsCreated,
+      actionsSuppressed,
+      errors,
+      timeouts,
+      recommendationCalls,
+      proactivityCalls,
+    });
+    return {
+      status: finalStatus,
+      reason: finalReason,
+      executionId: runId,
+      usersEvaluated,
+      recommendationsGenerated,
+      conversationsCreated,
+      actionsSuppressed,
+      errors,
+      timeouts,
+      recommendationCalls,
+      proactivityCalls,
+    };
   }
 }
 
