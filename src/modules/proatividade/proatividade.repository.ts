@@ -2,6 +2,7 @@ import { Prisma, PrismaClient, type notificacao_tipo_enum } from '@prisma/client
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
 import { NotificationService } from '../notification/notification.service.js';
+import { CONSENTIMENTO_CODIGOS } from '../consentimento/consentimento.constants.js';
 
 export type ProactivityStored = {
   id: number;
@@ -114,7 +115,27 @@ export class PrismaProactivityRepository implements ProactivityRepository {
       return await this.db.$transaction(async (tx) => {
         // Serializa a janela de proatividade do usuário no banco; não depende
         // de locks locais que desapareceriam em outra instância da API.
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`proatividade:${input.userId}`}, 0))`;
+        await tx.$queryRaw<Array<{ locked: null }>>`SELECT pg_advisory_xact_lock(hashtextextended(${`proatividade:${input.userId}`}, 0)) AS locked`;
+        // O mesmo lock de usuário usado pelo ConsentimentoService serializa a
+        // revogação com a decisão de criar a conversa.
+        const userRows = await tx.$queryRaw<Array<{ usuario_id: number }>>`
+          SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${input.userId} FOR UPDATE
+        `;
+        if (userRows.length !== 1) throw new AppError('Usuário autenticado não encontrado', 404);
+
+        const activeConsents = await tx.tb_consentimento.count({
+          where: {
+            usuario_id: input.userId,
+            consentimento_status: true,
+            tb_consentimento_tipo: {
+              consentimento_tipo_codigo: {
+                in: [CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE, CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO],
+              },
+            },
+          },
+        });
+        if (activeConsents !== 2) throw new AppError('Consentimento proativo não está ativo', 403);
+
         const inserted = await tx.$queryRaw<Array<{ ai_proatividade_id: number }>>`
           INSERT INTO public.tb_ai_proatividade (
             usuario_id,

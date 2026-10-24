@@ -1,4 +1,6 @@
 import { env } from '../../lib/env.js';
+import { createAIProvider } from '../email/ai-provider.factory.js';
+import type { AIProvider } from '../email/ai-provider.js';
 import { proactiveFactsSchema, proactiveTextSchema, type ProactiveFacts, type ProactiveText } from './proatividade.contracts.js';
 
 export type ProactiveTextProvider = {
@@ -29,8 +31,22 @@ const FORBIDDEN_WORDS = new Set([
   'viciado', 'viciada', 'certeza', 'causou', 'causa', 'sempre', 'nunca', 'obrigatorio',
 ]);
 
+const DIRECTIONAL_STEMS = [
+  'acim', 'abaix', 'aument', 'cai', 'cresc', 'diminu', 'dentro', 'elev', 'exced', 'fora',
+  'frequ', 'impuls', 'mais', 'melhor', 'menor', 'neg', 'nao', 'menos', 'pior', 'reduz',
+  'sem', 'subi', 'super', 'queda',
+];
+
 function words(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').match(/[a-z]+|\d+(?:[.,]\d+)?/g) ?? [];
+}
+
+function hasDirectionalStem(value: string) {
+  return DIRECTIONAL_STEMS.some((stem) => value.startsWith(stem));
+}
+
+function sharesDirectionalStem(left: string, right: string) {
+  return DIRECTIONAL_STEMS.some((stem) => left.startsWith(stem) && right.startsWith(stem));
 }
 
 function deterministic(facts: ProactiveFacts, fonte: ProactiveText['fonte'] = 'DETERMINISTICA'): ProactiveText {
@@ -44,20 +60,53 @@ function groundedOutput(raw: string, facts: ProactiveFacts): ProactiveText | nul
   const result = proactiveTextSchema.safeParse(parsed);
   if (!result.success) return null;
 
-  const source = new Set(words([facts.titulo, facts.texto, ...facts.referencias, ...facts.limitacoes].join(' ')));
+  const sourceText = [facts.titulo, facts.texto, facts.periodo ?? '', ...facts.referencias, ...facts.limitacoes].join(' ');
+  const sourceWords = words(sourceText);
+  const source = new Set(sourceWords);
   const outputWords = words(`${result.data.titulo} ${result.data.texto}`);
-  const numericSource = new Set([...source].filter((word) => /^\d/.test(word)));
+  const numericSource = sourceWords.filter((word) => /^\d/.test(word));
+  const outputNumbers = outputWords.filter((word) => /^\d/.test(word));
   const contentSource = new Set([...source].filter((word) => /[a-z]/.test(word) && word.length > 3));
   const grounded = outputWords.filter((word) => contentSource.has(word));
 
+  // Números precisam aparecer na mesma ordem e em um trecho contíguo dos
+  // fatos. Isso impede combinar valores de evidências distintas para formar
+  // uma afirmação nova.
+  if (outputNumbers.length > 0) {
+    const isContiguous = numericSource.some((_, index) =>
+      numericSource.slice(index, index + outputNumbers.length).join('|') === outputNumbers.join('|'));
+    if (!isContiguous) return null;
+  }
+
   for (const word of outputWords) {
     if (FORBIDDEN_WORDS.has(word)) return null;
-    if (/^\d/.test(word) && !numericSource.has(word)) return null;
+    if (/^\d/.test(word) && !numericSource.includes(word)) return null;
     if (!/^[a-z]+$/.test(word) && !/^\d/.test(word)) return null;
+    if (hasDirectionalStem(word) && !sourceWords.some((sourceWord) => sharesDirectionalStem(word, sourceWord))) return null;
     if (!source.has(word) && !SAFE_GENERIC_WORDS.has(word)) return null;
   }
   if (grounded.length === 0) return null;
   return { ...result.data, fonte: 'IA' };
+}
+
+export function createApprovedProactiveMessageService(
+  providerFactory: () => AIProvider | null = createAIProvider,
+) {
+  // O provider externo só é construído com aprovação explícita. O default é
+  // determinístico e não realiza chamadas de rede.
+  if (!env.proactivityAiEnabled || !env.proactivityExternalApproved) {
+    return new ProactiveMessageService();
+  }
+
+  try {
+    const provider = providerFactory();
+    if (!provider) return new ProactiveMessageService();
+    return new ProactiveMessageService({
+      chat: (messages) => provider.chat(messages.map((message) => ({ role: message.role, content: message.content }))),
+    }, { enabled: true });
+  } catch {
+    return new ProactiveMessageService();
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {

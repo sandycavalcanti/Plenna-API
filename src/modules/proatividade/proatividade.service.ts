@@ -6,7 +6,7 @@ import { ConsentimentoService } from '../consentimento/consentimento.service.js'
 import { recommendationService, type RecommendationService } from '../recomendacao/recomendacao.service.js';
 import { dispatchPushAfterCommit, type PushNotificationCandidate } from '../notification/push.service.js';
 import { PrismaProactivityRepository, type ProactivityRepository } from './proatividade.repository.js';
-import { ProactiveMessageService } from './proatividade.text.js';
+import { createApprovedProactiveMessageService, ProactiveMessageService } from './proatividade.text.js';
 import {
   proactiveFactsSchema,
   proactiveReasonSchema,
@@ -115,12 +115,22 @@ export class ProactivityService {
     this.repository = dependencies.repository ?? new PrismaProactivityRepository();
     this.recommendations = dependencies.recommendations ?? recommendationService;
     this.consent = dependencies.consent ?? ConsentimentoService;
-    this.messages = dependencies.messages ?? new ProactiveMessageService();
+    this.messages = dependencies.messages ?? createApprovedProactiveMessageService();
     this.dispatchPush = dependencies.dispatchPush ?? dispatchPushAfterCommit;
   }
 
   private async hasConsent(userId: number, code: ConsentimentoCodigo) {
     return this.consent.temConsentimentoAtivo(userId, code);
+  }
+
+  private async authorizationReason(userId: number): Promise<ProactiveReason | null> {
+    if (!(await this.hasConsent(userId, CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE))) {
+      return 'CONSENTIMENTO_PROATIVIDADE_INATIVO';
+    }
+    if (!(await this.hasConsent(userId, CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO))) {
+      return 'CONSENTIMENTO_PERSONALIZACAO_INATIVO';
+    }
+    return null;
   }
 
   async processUser(userId: number, options: ProcessProactivityOptions = {}): Promise<ProactiveResult & { mensagem?: string; preview?: boolean }> {
@@ -131,9 +141,8 @@ export class ProactivityService {
       estado, motivo, recomendacaoId, historicoId: null, notificacaoId: null, fonte: null,
     });
 
-    if (!(await this.hasConsent(userId, CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE))) {
-      return empty('CONSENTIMENTO_PROATIVIDADE_INATIVO');
-    }
+    const initialAuthorization = await this.authorizationReason(userId);
+    if (initialAuthorization) return empty(initialAuthorization);
     if (!this.enabled && options.persist !== false) {
       return empty('ESTRUTURA_INDISPONIVEL');
     }
@@ -177,18 +186,31 @@ export class ProactivityService {
       };
     }
 
+    // Revalidação imediatamente antes da gravação. A transação Prisma faz a
+    // segunda proteção sob lock do usuário para cobrir revogação concorrente.
+    const beforePersistAuthorization = await this.authorizationReason(userId);
+    if (beforePersistAuthorization) return empty(beforePersistAuthorization, candidate.id);
+
     // There is intentionally no retry here: an ambiguous write must be resolved
     // by the persistent unique key, not repeated by the process.
-    const persisted = await this.repository.createIfAbsent({
-      userId,
-      key,
-      recommendationId: candidate.id,
-      recommendationKey: candidate.chave,
-      title: message.titulo,
-      message: message.texto,
-      createdAt: now,
-      cooldownSince: since,
-    });
+    let persisted;
+    try {
+      persisted = await this.repository.createIfAbsent({
+        userId,
+        key,
+        recommendationId: candidate.id,
+        recommendationKey: candidate.chave,
+        title: message.titulo,
+        message: message.texto,
+        createdAt: now,
+        cooldownSince: since,
+      });
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 403) {
+        return empty('CONSENTIMENTO_PROATIVIDADE_INATIVO', candidate.id);
+      }
+      throw error;
+    }
 
     if (!persisted.created) {
       return proactiveResultSchema.parse({
@@ -201,12 +223,19 @@ export class ProactivityService {
       });
     }
 
-    if (persisted.record.notificationId) {
-      await this.dispatchPush(userId, [{
-        notificationId: persisted.record.notificationId,
-        type: 'PROATIVA',
-        body: 'Você tem uma nova mensagem da Plenna.',
-      }]);
+    // Revogação após o commit não recria nem remove a conversa já autorizada,
+    // mas impede o despacho proativo desta execução.
+    if (persisted.record.notificationId && !(await this.authorizationReason(userId))) {
+      try {
+        await this.dispatchPush(userId, [{
+          notificationId: persisted.record.notificationId,
+          type: 'PROATIVA',
+          body: 'Você tem uma nova mensagem da Plenna.',
+        }]);
+      } catch {
+        // Push é best effort; o histórico e a notificação persistidos são a
+        // fonte de verdade e a chamada não será repetida automaticamente.
+      }
     }
 
     return proactiveResultSchema.parse({

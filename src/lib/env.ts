@@ -49,6 +49,7 @@ const recommendationMaxCandidatesRaw = process.env.AI_RECOMMENDATIONS_MAX_CANDID
 const recommendationMaxContextCharsRaw = process.env.AI_RECOMMENDATIONS_MAX_CONTEXT_CHARS ?? "6000";
 const recommendationTimeoutMsRaw = process.env.AI_RECOMMENDATIONS_TIMEOUT_MS ?? "5000";
 const proactivityAiEnabledRaw = process.env.AI_PROACTIVITY_AI_ENABLED ?? "false";
+const proactivityExternalApprovedRaw = process.env.AI_PROACTIVITY_EXTERNAL_APPROVED ?? "false";
 const proactivityEnabledRaw = process.env.AI_PROACTIVITY_ENABLED ?? "false";
 const proactivityCooldownDaysRaw = process.env.AI_PROACTIVITY_COOLDOWN_DAYS ?? "7";
 const proactivityMaxCandidatesRaw = process.env.AI_PROACTIVITY_MAX_CANDIDATES ?? "3";
@@ -199,6 +200,7 @@ export const env = {
   recommendationTimeoutMs: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_TIMEOUT_MS", recommendationTimeoutMsRaw, 30_000),
   proactivityEnabled: parseStrictBoolean("AI_PROACTIVITY_ENABLED", proactivityEnabledRaw),
   proactivityAiEnabled: parseStrictBoolean("AI_PROACTIVITY_AI_ENABLED", proactivityAiEnabledRaw),
+  proactivityExternalApproved: parseStrictBoolean("AI_PROACTIVITY_EXTERNAL_APPROVED", proactivityExternalApprovedRaw),
   proactivityCooldownDays: requireBoundedPositiveInteger("AI_PROACTIVITY_COOLDOWN_DAYS", proactivityCooldownDaysRaw, 365),
   proactivityMaxCandidates: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_CANDIDATES", proactivityMaxCandidatesRaw, 10),
   proactivityMaxAttempts: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_ATTEMPTS", proactivityMaxAttemptsRaw, 3),

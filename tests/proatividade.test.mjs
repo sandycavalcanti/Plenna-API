@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 process.env.AI_PROACTIVITY_ENABLED = 'true';
+process.env.AI_PROACTIVITY_AI_ENABLED = 'false';
+process.env.AI_PROACTIVITY_EXTERNAL_APPROVED = 'false';
 
-const { ProactiveMessageService } = await import('../.tmp-phase4-compile/src/modules/proatividade/proatividade.text.js');
+const { ProactiveMessageService, createApprovedProactiveMessageService } = await import('../.tmp-phase4-compile/src/modules/proatividade/proatividade.text.js');
 const { ProactivityService, isQuietHours } = await import('../.tmp-phase4-compile/src/modules/proatividade/proatividade.service.js');
 const { PrismaProactivityRepository } = await import('../.tmp-phase4-compile/src/modules/proatividade/proatividade.repository.js');
 
@@ -77,6 +79,22 @@ test('redação proativa usa somente fatos e cai para fallback quando há afirma
   const fallback = await invented.generate(facts);
   assert.equal(fallback.fonte, 'DETERMINISTICA_FALLBACK');
   assert.doesNotMatch(fallback.texto, /999/);
+
+  const inverted = new ProactiveMessageService({
+    async chat() { return JSON.stringify({ titulo: 'Acompanhe sua meta', texto: 'Sua meta está abaixo do limite no periodo.' }); },
+  }, { enabled: true });
+  assert.equal((await inverted.generate(facts)).fonte, 'DETERMINISTICA_FALLBACK');
+});
+
+test('provider externo permanece desligado sem aprovação explícita', async () => {
+  const service = createApprovedProactiveMessageService(() => {
+    throw new Error('provider não deveria ser construído');
+  });
+  const result = await service.generate({
+    tipo: 'ATENCAO_META', titulo: 'Acompanhe sua meta', texto: 'O progresso conhecido merece acompanhamento.',
+    referencias: ['meta:3'], limitacoes: [],
+  });
+  assert.equal(result.fonte, 'DETERMINISTICA');
 });
 
 test('redação proativa usa fallback em timeout e sem provider aprovado', async () => {
@@ -109,6 +127,31 @@ test('elegibilidade bloqueia consentimento, horário silencioso, cooldown e evid
   const noEvidenceResult = await noEvidence.processUser(1, { now, timezone: 'UTC' });
   assert.equal(noEvidenceResult.motivo, 'SEM_RECOMENDACAO_ELEGIVEL');
   assert.equal(noEvidenceResult.estado, 'NENHUMA_ACAO');
+});
+
+test('revogação durante a redação impede a gravação proativa', async () => {
+  let revoked = false;
+  const revocableConsent = {
+    async temConsentimentoAtivo(_userId, code) {
+      return !revoked && (code === 'IA_PROATIVIDADE' || code === 'IA_PERSONALIZACAO');
+    },
+  };
+  const slowMessage = new ProactiveMessageService({
+    async chat() {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      revoked = true;
+      return JSON.stringify({ titulo: 'Acompanhe sua meta', texto: 'Os dados registrados indicam acompanhar sua meta no periodo.' });
+    },
+  }, { enabled: true });
+  const repo = repository();
+  const result = await new ProactivityService({
+    consent: revocableConsent,
+    messages: slowMessage,
+    repository: repo,
+    recommendations: recommendations([candidate()]),
+  }).processUser(1, { now: new Date('2026-10-24T12:00:00.000Z'), timezone: 'UTC' });
+  assert.equal(result.motivo, 'CONSENTIMENTO_PROATIVIDADE_INATIVO');
+  assert.equal(repo.records.size, 0);
 });
 
 test('estrutura física desabilitada não inicia uma conversa real', async () => {
@@ -153,11 +196,15 @@ test('repositório Prisma mantém história, associação e notificação na mes
     ai_proatividade_motivo: null, ai_proatividade_data_criacao: new Date(), ai_proatividade_data_atualizacao: new Date(),
   };
   const calls = [];
+  let activeConsentCount = 2;
   const tx = {
     async $queryRaw(strings) {
-      calls.push(strings[0]);
+      calls.push(strings.join(''));
       if (strings.join('').includes('pg_advisory_xact_lock')) return [];
       return strings.join('').includes('tb_notificacao') ? [{ notificacao_id: 44 }] : [{ ai_proatividade_id: 1 }];
+    },
+    tb_consentimento: {
+      async count() { return activeConsentCount; },
     },
     tb_ai_proatividade: {
       async findUnique() { return control; },
@@ -185,5 +232,13 @@ test('repositório Prisma mantém história, associação e notificação na mes
   assert.equal(result.record.historyId, 77);
   assert.equal(result.record.notificationId, 44);
   assert.ok(calls.some((call) => typeof call === 'object' && call.historico_origem === 'PROATIVO'));
+  assert.ok(calls.some((call) => typeof call === 'string' && call.includes('FOR UPDATE')));
+
+  activeConsentCount = 1;
+  await assert.rejects(
+    () => repository.createIfAbsent({ userId: 7, key: 'revoked-key', recommendationId: 10, recommendationKey: 'recommendation-key', title: 'Mensagem', message: 'Texto' }),
+    (error) => error?.statusCode === 403,
+  );
+  assert.equal(calls.filter((call) => typeof call === 'string' && call.includes('INSERT INTO public.tb_ai_proatividade')).length, 1);
 });
 
