@@ -17,7 +17,7 @@ export const MEMORY_DEDUPE_KEY_MAX_LENGTH = 160;
 export const MEMORY_LIST_DEFAULT_LIMIT = 20;
 export const MEMORY_LIST_MAX_LIMIT = 50;
 
-const memoryIdSchema = z.number().int().positive();
+export const memoryIdSchema = z.number().int().positive();
 
 export const memoryContentSchema = z
   .string()
@@ -48,6 +48,12 @@ export const memoryStatusSchema = z.enum([
 ]);
 
 export const memoryTimestampSchema = z.coerce.date();
+
+/**
+ * Schema exposto ao provider: datas chegam como ISO-8601 e são convertidas
+ * novamente pelo MemoryService antes da persistência.
+ */
+export const memoryToolTimestampSchema = z.string().datetime({ offset: true });
 
 export const memoryDedupeKeySchema = z
   .string()
@@ -139,6 +145,48 @@ export const memoryUpdateInputSchema = z
     requireEvidenceForInferredMemory(value, context);
   });
 
+const memorySaveToolInputSchema = z
+  .object({
+    conteudo: memoryContentSchema,
+    origem: memoryOriginSchema,
+    evidencia: memoryEvidenceSchema.optional(),
+    historico_id: memoryIdSchema.nullable().optional(),
+    data_expiracao: memoryToolTimestampSchema.nullable().optional(),
+  })
+  .strict()
+  .superRefine(requireEvidenceForInferredMemory);
+
+const memoryUpdateToolInputSchema = z
+  .object({
+    memoria_id: memoryIdSchema,
+    conteudo: memoryContentSchema.optional(),
+    origem: memoryOriginSchema.optional(),
+    evidencia: memoryEvidenceSchema.optional(),
+    historico_id: memoryIdSchema.nullable().optional(),
+    data_expiracao: memoryToolTimestampSchema.nullable().optional(),
+    status: memoryStatusSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const hasChange = [
+      value.conteudo,
+      value.origem,
+      value.evidencia,
+      value.historico_id,
+      value.data_expiracao,
+      value.status,
+    ].some((field) => field !== undefined);
+
+    if (!hasChange) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A atualizaÃ§Ã£o precisa informar ao menos um campo alterÃ¡vel.',
+      });
+    }
+
+    requireEvidenceForInferredMemory(value, context);
+  });
+
 export const memoryInactivateInputSchema = z
   .object({ memoria_id: memoryIdSchema })
   .strict();
@@ -217,11 +265,11 @@ export const memoryToolContracts = {
     resultSchema: memoryListResultSchema,
   },
   memory_save: {
-    inputSchema: memorySaveInputSchema,
+    inputSchema: memorySaveToolInputSchema,
     resultSchema: memorySaveResultSchema,
   },
   memory_update: {
-    inputSchema: memoryUpdateInputSchema,
+    inputSchema: memoryUpdateToolInputSchema,
     resultSchema: memoryUpdateResultSchema,
   },
 } as const;

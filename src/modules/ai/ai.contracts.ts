@@ -5,6 +5,8 @@ export const toolNameSchema = z.string().regex(/^[a-z][a-z0-9_]{1,63}$/);
 export const toolExecutionContextSchema = z.object({
   usuario_id: z.number().int().positive(),
   requestId: z.string().trim().min(1).max(128).optional(),
+  // Calculado pelo backend a partir da mensagem atual; nunca vem do modelo.
+  memory_write_intent: z.boolean().optional(),
 }).strict();
 
 export type ToolExecutionContext = Readonly<z.infer<typeof toolExecutionContextSchema>>;

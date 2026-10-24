@@ -58,6 +58,12 @@ export class ToolRegistry {
       .map(({ name, description }) => ({ name, description }))
       .sort((left, right) => left.name.localeCompare(right.name));
   }
+
+  /** Definições completas para adapters de provider; não é um contrato HTTP. */
+  definitions(): readonly AnyToolDefinition[] {
+    return [...this.tools.values()]
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
 }
 
 /** Ponto único para o catálogo de tools autorizadas do backend. */

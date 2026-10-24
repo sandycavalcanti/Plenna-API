@@ -120,7 +120,8 @@ const { AIProviderError } = await import('../../src/modules/email/ai-provider.js
 const { RequestyProvider } = await import('../../src/modules/email/requesty.provider.js');
 const { CodexLocalError, CodexLocalProvider } = await import('../../src/modules/email/codex-local.provider.js');
 const { env } = await import('../../src/lib/env.js');
-const { ZodError } = await import('zod');
+const { ZodError, z } = await import('zod');
+const { aiToolRegistry } = await import('../../src/modules/ai/ai.registry.js');
 const { ChatController } = await import('../../src/modules/chat/chat.controller.js');
 const { AppError } = await import('../../src/errors/AppError.js');
 const { handleError } = await import('../../src/utils/handleError.js');
@@ -205,6 +206,40 @@ test('envia, preserva contexto autorizado e persiste user e assistant sem duplic
   assert.equal(contexts[0].some((message: any) => message.content === 'Resposta atual'), false);
   assert.equal(histories[0].historico_nome, 'Antes');
   assert.ok(histories[0].historico_data_modificacao >= histories[0].historico_data_criacao);
+});
+
+test('ChatService integra registry, executor e tool calling sem persistir eventos internos', async () => {
+  if (!aiToolRegistry.has('test_chat_echo')) {
+    aiToolRegistry.register({
+      name: 'test_chat_echo',
+      description: 'Tool de teste do fluxo de chat.',
+      argsSchema: z.object({ valor: z.string() }).strict(),
+      resultSchema: z.object({ resposta: z.string() }).strict(),
+      execute: async (args, context) => ({ resposta: `${args.valor}:${context.usuario_id}` }),
+    });
+  }
+
+  const providerCalls: any[] = [];
+  let round = 0;
+  const provider = {
+    ...providerReturning('não usado'),
+    chatWithTools: async (messages: any[], tools: any[]) => {
+      providerCalls.push({ messages, tools });
+      round += 1;
+      return round === 1
+        ? { content: '', tool_calls: [{ id: 'chat-call-1', type: 'function', function: { name: 'test_chat_echo', arguments: '{"valor":"real"}' } }] }
+        : { content: 'Resposta baseada em dados consultados.', tool_calls: [] };
+    },
+  };
+
+  const history = await ChatService.createHistory(1, client);
+  const result = await ChatService.sendMessage(1, history.historico_id, { texto: 'Consulte isso' }, client, () => provider as any);
+
+  assert.equal(result.mensagemIA.texto, 'Resposta baseada em dados consultados.');
+  assert.equal(providerCalls[0].tools.some((tool: any) => tool.function.name === 'test_chat_echo'), true);
+  assert.equal(providerCalls[1].messages.at(-1).tool_call_id, 'chat-call-1');
+  assert.equal(messages.filter((message) => message.mensagem_remetente === true).length, 1);
+  assert.equal(messages.some((message) => message.mensagem_texto.includes('tool_call_id')), false);
 });
 
 test('deriva titulo da primeira mensagem, normaliza espacos e respeita 45 caracteres', async () => {
@@ -471,6 +506,34 @@ test('CodexLocal conversacional converte timeout sem depender de schema', async 
     );
   } finally {
     env.codexLocalTimeoutMs = originalTimeout;
+  }
+});
+
+test('Requesty conversacional preserva tool calls e envia definições OpenAI-compatíveis', async () => {
+  const axios = (await import('axios')).default as any;
+  const originalPost = axios.post;
+  const calls: any[] = [];
+  env.requestyApiKey = 'mock-key';
+  env.requestyChatModel = 'mock-tool-model';
+  axios.post = async (...args: any[]) => {
+    calls.push(args);
+    return { data: { choices: [{ message: { content: '', tool_calls: [{ id: 'call-9', type: 'function', function: { name: 'finance_summary', arguments: '{"periodo":"2026-10"}' } }] } }] } };
+  };
+
+  try {
+    const result = await new RequestyProvider().chatWithTools!([
+      { role: 'system', content: 'Sistema' },
+      { role: 'user', content: 'Quanto gastei?' },
+    ], [{
+      type: 'function',
+      function: { name: 'finance_summary', description: 'Resumo', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+    }]);
+    assert.equal(result.tool_calls[0].id, 'call-9');
+    assert.equal(calls[0][1].model, 'mock-tool-model');
+    assert.equal(calls[0][1].tool_choice, 'auto');
+    assert.equal(calls[0][1].tools[0].function.name, 'finance_summary');
+  } finally {
+    axios.post = originalPost;
   }
 });
 

@@ -129,6 +129,31 @@ test('valida argumentos pelo contrato Zod da tool', async () => {
   );
 });
 
+test('exige intenção explícita do usuário antes de salvar ou atualizar memória', async () => {
+  const calls: Array<{ operation: string; userId: number; args: unknown }> = [];
+  const registry = new ToolRegistry();
+  registerMemoryTools(registry, fakeService(calls), async () => ({
+    usuario_id: 42,
+    consentimento_memoria_ativo: true,
+    pode_ler: true,
+    pode_escrever: true,
+    pode_excluir: true,
+  }));
+
+  await assert.rejects(
+    () => executeTool(registry, { name: 'memory_save', arguments: { conteudo: 'Guardar isto', origem: MEMORY_ORIGINS.DECLARADA } }, { usuario_id: 42 }),
+    { code: 'TOOL_EXECUTION_FAILED' },
+  );
+
+  await executeTool(
+    registry,
+    { name: 'memory_save', arguments: { conteudo: 'Guardar isto', origem: MEMORY_ORIGINS.DECLARADA } },
+    { usuario_id: 42, memory_write_intent: true },
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].operation, 'save');
+});
+
 test('aceita IA_MEMORIA como consentimento específico', () => {
   assert.equal(consentimentoCodigoSchema.parse('IA_MEMORIA'), 'IA_MEMORIA');
 });

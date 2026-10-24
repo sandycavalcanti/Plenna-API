@@ -40,3 +40,24 @@ export function toPublicToolError(error: unknown): PublicToolError {
     message: publicMessages.TOOL_EXECUTION_FAILED,
   };
 }
+export type AIOrchestrationErrorCode =
+  | 'AI_TOOL_CALL_LIMIT'
+  | 'AI_TOOL_ROUND_LIMIT'
+  | 'AI_TOOL_TIMEOUT'
+  | 'AI_PROVIDER_TOOLS_UNAVAILABLE'
+  | 'AI_RESPONSE_INVALID';
+
+const orchestrationMessages: Record<AIOrchestrationErrorCode, string> = {
+  AI_TOOL_CALL_LIMIT: 'A consulta atingiu o limite de ferramentas permitido.',
+  AI_TOOL_ROUND_LIMIT: 'A consulta atingiu o limite de etapas permitido.',
+  AI_TOOL_TIMEOUT: 'A consulta excedeu o tempo limite permitido.',
+  AI_PROVIDER_TOOLS_UNAVAILABLE: 'O provedor atual não oferece suporte a ferramentas.',
+  AI_RESPONSE_INVALID: 'A resposta da IA não pôde ser validada.',
+};
+
+export class AIOrchestrationError extends Error {
+  constructor(public readonly code: AIOrchestrationErrorCode) {
+    super(orchestrationMessages[code]);
+    this.name = 'AIOrchestrationError';
+  }
+}

@@ -4,6 +4,10 @@ import { env } from '../../lib/env.js';
 import { createAIProvider } from '../email/ai-provider.factory.js';
 import { AIProviderError, type AIProvider } from '../email/ai-provider.js';
 import { CodexLocalError } from '../email/codex-local.provider.js';
+import { AIOrchestrationError } from '../ai/ai.errors.js';
+import { AIOrchestrator } from '../ai/ai.orchestrator.js';
+import { aiToolRegistry } from '../ai/ai.registry.js';
+import '../ai/memory.runtime.js';
 import { MESSAGE_SENDER, DEFAULT_HISTORY_NAME, type ChatDatabase, type PublicHistoryWithMessages } from './chat.contracts.js';
 import { buildChatContext } from './chat.context.js';
 import { createMessageSchema, historyIdSchema, type CreateMessageDTO } from './chat.schemas.js';
@@ -62,6 +66,10 @@ function sanitizeGeneratedHistoryName(value: unknown) {
 function providerFailure(error: unknown) {
   if (error instanceof AppError) return error;
 
+  if (error instanceof AIOrchestrationError) {
+    return new AppError(error.message, error.code === 'AI_TOOL_TIMEOUT' ? 504 : 502);
+  }
+
   if (error instanceof AIProviderError) {
     return new AppError(
       error.code === 'timeout' ? 'Tempo limite ao consultar a IA' : 'Falha ao consultar a IA',
@@ -82,6 +90,11 @@ function providerFailure(error: unknown) {
   }
 
   return new AppError('Falha ao consultar a IA', 502);
+}
+
+/** Intenção de escrita é inferida somente da mensagem autenticada do usuário. */
+export function hasExplicitMemoryWriteIntent(text: string) {
+  return /\b(?:lembre-se|lembra(?:r)?|memorize|memorizar|guarde|guardar|salve|salvar|anote|anotar|atualize minha mem[oó]ria|corrija minha mem[oó]ria|esque[cç]a|esquecer|remova da mem[oó]ria)\b/i.test(text);
 }
 
 export class ChatFirstMessageError extends AppError {
@@ -415,7 +428,15 @@ export class ChatService {
     const context = buildChatContext(after.mensagens, persistedCurrent);
     let assistantText: string;
     try {
-      assistantText = await provider.chat(context);
+      const orchestration = await new AIOrchestrator(aiToolRegistry).run(
+        provider,
+        context,
+        {
+          usuario_id: userId,
+          memory_write_intent: hasExplicitMemoryWriteIntent(persistedCurrent.texto),
+        },
+      );
+      assistantText = orchestration.text;
     } catch (error) {
       throw providerFailure(error);
     }
