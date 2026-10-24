@@ -92,9 +92,36 @@ function providerFailure(error: unknown) {
   return new AppError('Falha ao consultar a IA', 502);
 }
 
-/** Intenção de escrita é inferida somente da mensagem autenticada do usuário. */
+/**
+ * A intenção de escrita é derivada somente da mensagem autenticada do usuário.
+ * Perguntas de recuperação de memória e frases ambíguas permanecem somente leitura.
+ */
 export function hasExplicitMemoryWriteIntent(text: string) {
-  return /\b(?:lembre-se|lembra(?:r)?|memorize|memorizar|guarde|guardar|salve|salvar|anote|anotar|atualize minha mem[oó]ria|corrija minha mem[oó]ria|esque[cç]a|esquecer|remova da mem[oó]ria)\b/i.test(text);
+  const normalized = text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('pt-BR')
+    .trim();
+
+  if (!normalized) return false;
+
+  const isRecallQuestion = /\?/.test(normalized) && (
+    /\b(?:voce|vc)\s+(?:se\s+)?(?:lembra|recorda)\b/.test(normalized)
+    || /\b(?:o que|qual|quais)\b[^?]{0,80}\b(?:lembra|recorda)\b/.test(normalized)
+    || /\b(?:voce|vc)\s+(?:pode|poderia|consegue)\s+me\s+(?:lembrar|recordar)\b/.test(normalized)
+  );
+  if (isRecallQuestion) return false;
+
+  if (/\b(?:nao|nunca|jamais)\s+(?:precisa\s+)?(?:salvar|guardar|registrar|anotar|memorizar|lembrar)\b/.test(normalized)) {
+    return false;
+  }
+
+  const directWrite = /^(?:por favor\s*,?\s*)?(?:registre|anote|salve|guarde|memorize|atualize|corrija|adicione|remova|esqueca)\b/.test(normalized);
+  const directRemember = /^(?:por favor\s*,?\s*)?lembre-se\b[\s\S]{0,120}\b(?:que|isso|isto|minha memoria|na memoria)\b/.test(normalized);
+  const requestedWrite = /\b(?:quero|gostaria|preciso)\s+que\s+(?:voce\s+)?(?:registre|anote|salve|guarde|memorize|lembre(?:-se)?|atualize|corrija|adicione|remova|esqueca)\b/.test(normalized);
+  const politeWrite = /\b(?:voce|vc)\s+(?:pode|poderia)\s+(?:por favor\s+)?(?:salvar|guardar|registrar|anotar|memorizar|atualizar|corrigir|adicionar|remover|esquecer)\b[^?]{0,120}(?:\bque\b|\b(?:na|em)\s+(?:minha\s+)?memoria\b|\b(?:minha|esta)\s+memoria\b)/.test(normalized);
+
+  return directWrite || directRemember || requestedWrite || politeWrite;
 }
 
 export class ChatFirstMessageError extends AppError {

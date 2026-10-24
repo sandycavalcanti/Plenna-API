@@ -97,6 +97,14 @@ function parseToolArguments(raw: string): unknown {
   }
 }
 
+function canonicalizeToolArguments(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalizeToolArguments).join(',')}]`;
+
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalizeToolArguments(object[key])}`).join(',')}}`;
+}
+
 async function executeCall(
   registry: ToolRegistry,
   call: AIChatToolCall,
@@ -186,7 +194,7 @@ export class AIOrchestrator {
       });
 
       for (const call of response.tool_calls) {
-        const signature = `${call.function.name}:${call.function.arguments}`;
+        const signature = `${call.function.name}:${canonicalizeToolArguments(parseToolArguments(call.function.arguments))}`;
         const cached = completedCalls.get(signature);
         const toolMessage = cached
           ? { ...cached, tool_call_id: call.id, name: call.function.name }

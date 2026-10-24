@@ -113,7 +113,7 @@ function makeClient() {
 const client = makeClient();
 (globalThis as any).prismaRuntime = { client, pool: { end: async () => {} } };
 
-const { ChatFirstMessageError, ChatService } = await import('../../src/modules/chat/chat.service.js');
+const { ChatFirstMessageError, ChatService, hasExplicitMemoryWriteIntent } = await import('../../src/modules/chat/chat.service.js');
 const { buildChatContext } = await import('../../src/modules/chat/chat.context.js');
 const { PLENNA_CHAT_SYSTEM_PROMPT } = await import('../../src/modules/chat/chat.prompt.js');
 const { AIProviderError } = await import('../../src/modules/email/ai-provider.js');
@@ -206,6 +206,27 @@ test('envia, preserva contexto autorizado e persiste user e assistant sem duplic
   assert.equal(contexts[0].some((message: any) => message.content === 'Resposta atual'), false);
   assert.equal(histories[0].historico_nome, 'Antes');
   assert.ok(histories[0].historico_data_modificacao >= histories[0].historico_data_criacao);
+});
+
+test('intenção de memória distingue escrita explícita de perguntas de lembrança', () => {
+  const positives = [
+    'Registre na minha memória que prefiro economizar para viajar.',
+    'Quero que você memorize que minha meta é montar uma reserva.',
+    'Atualize minha memória: agora quero reduzir gastos com delivery.',
+    'Você pode salvar isso na memória, por favor?',
+    'Você pode atualizar minha memória?',
+    'Lembre-se de que eu quero acompanhar meu limite mensal.',
+  ];
+  const negatives = [
+    'Você lembra do meu objetivo?',
+    'O que você lembra sobre mim?',
+    'Você pode me lembrar do meu objetivo?',
+    'Você pode guardar isso?',
+    'Não precisa guardar isso.',
+  ];
+
+  for (const text of positives) assert.equal(hasExplicitMemoryWriteIntent(text), true, text);
+  for (const text of negatives) assert.equal(hasExplicitMemoryWriteIntent(text), false, text);
 });
 
 test('ChatService integra registry, executor e tool calling sem persistir eventos internos', async () => {

@@ -77,7 +77,14 @@ const commitmentsInputSchema = z.object({ inicio: dateOnly, fim: dateOnly, limit
   if (fim <= inicio) context.addIssue({ code: 'custom', path: ['fim'], message: 'O fim deve ser posterior ao início.' });
   if (fim.getTime() - inicio.getTime() > 366 * 86_400_000) context.addIssue({ code: 'custom', path: ['fim'], message: 'A janela máxima é de 366 dias.' });
 });
-const commitmentResultSchema = z.object({ inicio: z.coerce.date(), fim: z.coerce.date(), total: z.number().nonnegative(), ocorrencias: z.array(z.object({ recorrenciaId: z.number().int().positive(), dataPrevista: z.string(), valor: z.number().nonnegative() }).strict()).max(200) }).strict();
+const commitmentResultSchema = z.object({
+  inicio: z.coerce.date(),
+  fim: z.coerce.date(),
+  total: z.number().nonnegative().nullable(),
+  total_parcial: z.number().nonnegative().nullable(),
+  parcial: z.boolean(),
+  ocorrencias: z.array(z.object({ recorrenciaId: z.number().int().positive(), dataPrevista: z.string(), valor: z.number().nonnegative() }).strict()).max(200),
+}).strict();
 
 const usageResultSchema = z.object({ periodo: z.string(), itens: z.array(z.object({ app: z.string(), tempo_total: z.number().nonnegative(), gasto_total: z.number().nonnegative() }).strict()).max(50), autorizado: z.literal(true) }).strict();
 const interactionInputSchema = z.object({ limite: z.coerce.number().int().min(1).max(20).default(10) }).strict();
@@ -86,6 +93,8 @@ const profileResultSchema = z.object({ nome: z.string(), limiteCompra: z.number(
 const consentResultSchema = z.object({ consentimentos: z.array(z.object({ codigo: z.string(), ativo: z.boolean() }).strict()).max(20) }).strict();
 
 type PurchaseListArgs = { inicio?: Date; fim?: Date; limite: number };
+const RECURRENCE_OCCURRENCE_LIMIT = 50;
+const MAX_COMMITMENT_OCCURRENCES = 200;
 type FinancialToolDependencies = {
   financeSummary: (userId: number, periodo?: string) => Promise<unknown>;
   listPurchases: (userId: number, args: PurchaseListArgs) => Promise<unknown>;
@@ -215,15 +224,27 @@ export function createFinancialToolDefinitions(dependencies: FinancialToolDepend
       const args = normalizeCommitmentArgs(rawArgs);
       const rows = await dependencies.recurrences(context.usuario_id, 'ATIVA');
       const ocorrencias: Array<{ recorrenciaId: number; dataPrevista: string; valor: number }> = [];
+      let parcial = rows.length > args.limite;
       for (const row of (rows as any[]).slice(0, args.limite)) {
-        const upcoming = await dependencies.upcoming(context.usuario_id, row.id, 50) as any;
+        const upcoming = await dependencies.upcoming(context.usuario_id, row.id, RECURRENCE_OCCURRENCE_LIMIT) as any;
+        if ((upcoming.ocorrencias ?? []).length >= RECURRENCE_OCCURRENCE_LIMIT) parcial = true;
         const valor = (row.itens ?? []).reduce((sum: number, item: any) => sum + Number(item.valor ?? 0), 0);
         for (const occurrence of upcoming.ocorrencias ?? []) {
           const timestamp = new Date(`${occurrence.dataPrevista}T00:00:00.000Z`).getTime();
           if (timestamp >= args.inicio.getTime() && timestamp < args.fim.getTime()) ocorrencias.push({ recorrenciaId: row.id, dataPrevista: occurrence.dataPrevista, valor });
         }
       }
-      return { inicio: args.inicio, fim: args.fim, total: ocorrencias.reduce((sum, item) => sum + item.valor, 0), ocorrencias: ocorrencias.slice(0, 200) };
+      if (ocorrencias.length > MAX_COMMITMENT_OCCURRENCES) parcial = true;
+      const ocorrenciasLimitadas = ocorrencias.slice(0, MAX_COMMITMENT_OCCURRENCES);
+      const totalParcial = ocorrenciasLimitadas.reduce((sum, item) => sum + item.valor, 0);
+      return {
+        inicio: args.inicio,
+        fim: args.fim,
+        total: parcial ? null : totalParcial,
+        total_parcial: parcial ? totalParcial : null,
+        parcial,
+        ocorrencias: ocorrenciasLimitadas,
+      };
     } },
     { name: 'usage_summary', description: 'Consulta tempo de uso somente com consentimento específico ativo.', argsSchema: monthInputSchema, resultSchema: usageResultSchema, execute: (args, context) => dependencies.usage(context.usuario_id, args.periodo) },
     { name: 'interaction_recent', description: 'Consulta poucas mensagens recentes do histórico próprio para contexto.', argsSchema: interactionInputSchema, resultSchema: interactionResultSchema, execute: (args, context) => dependencies.interactions(context.usuario_id, args.limite) },

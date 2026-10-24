@@ -151,6 +151,30 @@ test('interrompe provider ou tool que excede o timeout e limita resultados', asy
   assert.equal(slowResult.text, 'Tool lenta tratada com segurança.');
   assert.match(slowMessages[1].at(-1).content, /TOOL_EXECUTION_FAILED/);
 
+  let writeAttempts = 0;
+  const writeRegistry = new ToolRegistry();
+  writeRegistry.register({
+    name: 'memory_save',
+    description: 'Tool de escrita simulada.',
+    argsSchema: z.object({ conteudo: z.string(), origem: z.string() }).strict(),
+    resultSchema: z.object({ salvo: z.boolean() }).strict(),
+    execute: async () => {
+      writeAttempts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { salvo: true };
+    },
+  });
+  const repeatedWrite = toolCall('write-1', 'memory_save', { conteudo: 'não repetir', origem: 'DECLARADA' });
+  const repeatedWriteProvider = providerWithToolRounds([
+    { content: '', tool_calls: [repeatedWrite] },
+    { content: '', tool_calls: [{ ...repeatedWrite, id: 'write-2', function: { ...repeatedWrite.function, arguments: '{"origem":"DECLARADA","conteudo":"não repetir"}' } }] },
+    { content: 'Falha de escrita tratada sem retry.', tool_calls: [] },
+  ]);
+  await new AIOrchestrator(writeRegistry, {
+    maxCalls: 3, maxRounds: 3, timeoutMs: 100, toolTimeoutMs: 5, maxToolResultChars: 100,
+  }).run(repeatedWriteProvider, [{ role: 'user', content: 'salvar' }], context);
+  assert.equal(writeAttempts, 1);
+
   const providerTimeout: AIProvider = {
     ...providerWithToolRounds([]),
     chatWithTools: async () => {

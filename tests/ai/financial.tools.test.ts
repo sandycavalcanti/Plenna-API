@@ -77,3 +77,40 @@ test('representa ausência de dados sem inventar zero financeiro', async () => {
   assert.equal(result.result.orcamentoMensal, null);
   assert.equal(result.result.estadoOrcamento, 'SEM_ORCAMENTO');
 });
+
+test('sinaliza compromissos recorrentes parciais quando os limites impedem cobertura total', async () => {
+  const manyRecurrences = dependencies();
+  manyRecurrences.recurrences = async () => Array.from({ length: 25 }, (_, index) => ({
+    id: index + 1,
+    itens: [{ valor: 10 }],
+  }));
+  manyRecurrences.upcoming = async () => ({
+    ocorrencias: [{ dataPrevista: '2026-01-15' }, { dataPrevista: '2026-02-15' }],
+  });
+  const manyRegistry = new ToolRegistry();
+  for (const definition of createFinancialToolDefinitions(manyRecurrences)) manyRegistry.register(definition);
+
+  const manyResult: any = await executeTool(manyRegistry, {
+    name: 'recurrence_commitments',
+    arguments: { inicio: '2026-01-01T00:00:00.000Z', fim: '2026-12-31T00:00:00.000Z', limite: 20 },
+  }, { usuario_id: 42 });
+  assert.equal(manyResult.result.parcial, true);
+  assert.equal(manyResult.result.total, null);
+  assert.equal(manyResult.result.total_parcial, 400);
+
+  const manyOccurrences = dependencies();
+  manyOccurrences.recurrences = async () => [{ id: 1, itens: [{ valor: 7 }] }];
+  manyOccurrences.upcoming = async () => ({
+    ocorrencias: Array.from({ length: 50 }, () => ({ dataPrevista: '2026-01-15' })),
+  });
+  const occurrencesRegistry = new ToolRegistry();
+  for (const definition of createFinancialToolDefinitions(manyOccurrences)) occurrencesRegistry.register(definition);
+
+  const occurrencesResult: any = await executeTool(occurrencesRegistry, {
+    name: 'recurrence_commitments',
+    arguments: { inicio: '2026-01-01T00:00:00.000Z', fim: '2026-12-31T00:00:00.000Z', limite: 20 },
+  }, { usuario_id: 42 });
+  assert.equal(occurrencesResult.result.parcial, true);
+  assert.equal(occurrencesResult.result.total, null);
+  assert.equal(occurrencesResult.result.total_parcial, 350);
+});
