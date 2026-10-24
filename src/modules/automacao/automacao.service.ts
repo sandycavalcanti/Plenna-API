@@ -158,8 +158,33 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
-function safeErrorCode(error: unknown) {
-  return error instanceof Error && error.name ? error.name.slice(0, 40) : 'ERRO_DESCONHECIDO';
+function safeDiagnosticText(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  return value
+    .replace(/postgres(?:ql)?:\/\/\S+/gi, '[REDACTED_URL]')
+    .replace(/(?:password|token|secret|authorization|api[_-]?key)\s*[:=]?\s*\S+/gi, '[REDACTED]')
+    .replace(/'(?:''|[^'])*'/g, '[REDACTED]')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '[REDACTED]')
+    .replace(/\b\d+(?:[.,]\d+)?\b/g, '[NUMBER]')
+    .replace(/\s+/g, ' ')
+    .slice(0, 240);
+}
+
+function safeErrorDetails(stage: string, error: unknown) {
+  const details = {
+    etapa: stage,
+    tipo: error instanceof Error ? error.name.slice(0, 80) : 'ERRO_DESCONHECIDO',
+    codigo: error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code.slice(0, 40)
+      : undefined,
+  };
+  if (process.env.NODE_ENV === 'production') return details;
+  const cause = error instanceof Error && 'cause' in error ? error.cause : undefined;
+  return {
+    ...details,
+    mensagem: safeDiagnosticText(error instanceof Error ? error.message : error),
+    causa: safeDiagnosticText(cause instanceof Error ? cause.message : cause),
+  };
 }
 
 function emptyResult(status: AutomationJobResult['status'], reason: string, executionId: string | null): AutomationJobResult {
@@ -237,9 +262,11 @@ export class AutomationJobService {
             }
 
             usersEvaluated += 1;
+            let userStage = 'user_validation';
             try {
               if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error('invalid selected user');
               const userTimeout = Math.max(1, deadline - Date.now());
+              userStage = 'consent_personalizacao';
               const personalized = await withTimeout(
                 this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO),
                 userTimeout,
@@ -253,6 +280,7 @@ export class AutomationJobService {
                 throw new AutomationBudgetStop('LIMITE_CHAMADAS_RECOMENDACAO');
               }
               recommendationCalls += 1;
+              userStage = 'recommendation_generate';
               const generated = await withTimeout(
                 this.recommendations(userId, periodo, now),
                 Math.max(1, deadline - Date.now()),
@@ -261,6 +289,7 @@ export class AutomationJobService {
               recommendationsGenerated += items.length;
               if (items.length === 0) continue;
 
+              userStage = 'consent_proatividade';
               const proactivityAllowed = await withTimeout(
                 this.consent(userId, CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE),
                 Math.max(1, deadline - Date.now()),
@@ -274,6 +303,7 @@ export class AutomationJobService {
                 throw new AutomationBudgetStop('LIMITE_CHAMADAS_PROATIVIDADE');
               }
               proactivityCalls += 1;
+              userStage = 'proactivity_process';
               const proactive = await withTimeout(
                 this.proactivity(userId, { now, persist: true, timezone }),
                 Math.max(1, deadline - Date.now()),
@@ -291,10 +321,10 @@ export class AutomationJobService {
                 timeouts += 1;
                 finalStatus = 'INTERROMPIDA';
                 finalReason = 'TIMEOUT_USUARIO';
-                console.warn('ai_automation_usuario_falhou', { runId, codigo: safeErrorCode(error) });
+                console.warn('ai_automation_usuario_falhou', { runId, detalhes: safeErrorDetails(userStage, error) });
                 break;
               }
-              console.warn('ai_automation_usuario_falhou', { runId, codigo: safeErrorCode(error) });
+              console.warn('ai_automation_usuario_falhou', { runId, detalhes: safeErrorDetails(userStage, error) });
               if (errors >= this.settings.maxErrors) {
                 finalStatus = 'INTERROMPIDA';
                 finalReason = 'LIMITE_ERROS';
@@ -310,7 +340,7 @@ export class AutomationJobService {
       finalReason = isAutomationTimeout(error) ? 'TIMEOUT_EXECUCAO' : 'ERRO_INTERNO';
       if (isAutomationTimeout(error)) timeouts += 1;
       else errors += 1;
-      console.error('ai_automation_falhou', { runId, codigo: safeErrorCode(error) });
+      console.error('ai_automation_falhou', { runId, detalhes: safeErrorDetails('job', error) });
     }
 
     console.info('ai_automation_concluida', {

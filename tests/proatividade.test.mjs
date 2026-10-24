@@ -198,9 +198,11 @@ test('repositório Prisma mantém história, associação e notificação na mes
   const calls = [];
   let activeConsentCount = 2;
   const tx = {
+    async $executeRaw(strings) {
+      calls.push({ kind: 'executeRaw', query: strings.join('') });
+    },
     async $queryRaw(strings) {
       calls.push(strings.join(''));
-      if (strings.join('').includes('pg_advisory_xact_lock')) return [];
       return strings.join('').includes('tb_notificacao') ? [{ notificacao_id: 44 }] : [{ ai_proatividade_id: 1 }];
     },
     tb_consentimento: {
@@ -231,6 +233,7 @@ test('repositório Prisma mantém história, associação e notificação na mes
   assert.equal(result.created, true);
   assert.equal(result.record.historyId, 77);
   assert.equal(result.record.notificationId, 44);
+  assert.ok(calls.some((call) => call?.kind === 'executeRaw' && call.query.includes('pg_advisory_xact_lock')));
   assert.ok(calls.some((call) => typeof call === 'object' && call.historico_origem === 'PROATIVO'));
   assert.ok(calls.some((call) => typeof call === 'string' && call.includes('FOR UPDATE')));
 
@@ -240,5 +243,32 @@ test('repositório Prisma mantém história, associação e notificação na mes
     (error) => error?.statusCode === 403,
   );
   assert.equal(calls.filter((call) => typeof call === 'string' && call.includes('INSERT INTO public.tb_ai_proatividade')).length, 1);
+});
+
+test('falha do lock produz diagnóstico seguro sem expor parâmetros sensíveis', async () => {
+  const originalError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args);
+  try {
+    const repository = new PrismaProactivityRepository({
+      async $transaction(callback) {
+        return callback({
+          async $executeRaw() {
+            throw new Error('password=senha-super-secreta usuario_id=7 valor=999');
+          },
+        });
+      },
+    });
+    await assert.rejects(
+      () => repository.createIfAbsent({ userId: 7, key: 'secret-key', recommendationId: 10, recommendationKey: 'recommendation-key', title: 'Mensagem', message: 'Texto' }),
+      (error) => error?.statusCode === 500,
+    );
+  } finally {
+    console.error = originalError;
+  }
+
+  const rendered = JSON.stringify(logs);
+  assert.match(rendered, /advisory_lock/);
+  assert.doesNotMatch(rendered, /senha-super-secreta|secret-key|999/);
 });
 

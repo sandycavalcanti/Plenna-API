@@ -79,6 +79,46 @@ function isUniqueError(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
 
+function diagnosticCode(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) return error.code;
+  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
+    return error.code.slice(0, 40);
+  }
+  return undefined;
+}
+
+function sanitizeDiagnosticText(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  return value
+    .replace(/postgres(?:ql)?:\/\/\S+/gi, '[REDACTED_URL]')
+    .replace(/(?:password|token|secret|authorization|api[_-]?key)\s*[:=]?\s*\S+/gi, '[REDACTED]')
+    .replace(/'(?:''|[^'])*'/g, '[REDACTED]')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '[REDACTED]')
+    .replace(/\b\d+(?:[.,]\d+)?\b/g, '[NUMBER]')
+    .replace(/\s+/g, ' ')
+    .slice(0, 240);
+}
+
+export function logProactivityFailure(stage: string, error: unknown) {
+  const details = {
+    stage: stage.slice(0, 60),
+    tipo: error instanceof Error ? error.name.slice(0, 80) : 'ERRO_DESCONHECIDO',
+    codigo: diagnosticCode(error),
+  };
+
+  if (process.env.NODE_ENV === 'production') {
+    console.error('ai_proactivity_persistencia_falhou', details);
+    return;
+  }
+
+  const cause = error instanceof Error && 'cause' in error ? error.cause : undefined;
+  console.error('ai_proactivity_persistencia_falhou', {
+    ...details,
+    mensagem: sanitizeDiagnosticText(error instanceof Error ? error.message : error),
+    causa: sanitizeDiagnosticText(cause instanceof Error ? cause.message : cause),
+  });
+}
+
 export class PrismaProactivityRepository implements ProactivityRepository {
   private readonly db: ProactivityDatabase;
 
@@ -111,18 +151,24 @@ export class PrismaProactivityRepository implements ProactivityRepository {
   }
 
   async createIfAbsent(input: ProactivityPersistInput) {
+    let stage = 'transaction.begin';
     try {
       return await this.db.$transaction(async (tx) => {
         // Serializa a janela de proatividade do usuário no banco; não depende
         // de locks locais que desapareceriam em outra instância da API.
-        await tx.$queryRaw<Array<{ locked: null }>>`SELECT pg_advisory_xact_lock(hashtextextended(${`proatividade:${input.userId}`}, 0)) AS locked`;
+        stage = 'advisory_lock';
+        // pg_advisory_xact_lock retorna void. $executeRaw executa o lock na
+        // mesma transacao sem pedir ao Prisma para desserializar esse tipo.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`proatividade:${input.userId}`}, 0))`;
         // O mesmo lock de usuário usado pelo ConsentimentoService serializa a
         // revogação com a decisão de criar a conversa.
+        stage = 'user_lock';
         const userRows = await tx.$queryRaw<Array<{ usuario_id: number }>>`
           SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${input.userId} FOR UPDATE
         `;
         if (userRows.length !== 1) throw new AppError('Usuário autenticado não encontrado', 404);
 
+        stage = 'consent_check';
         const activeConsents = await tx.tb_consentimento.count({
           where: {
             usuario_id: input.userId,
@@ -136,6 +182,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
         });
         if (activeConsents !== 2) throw new AppError('Consentimento proativo não está ativo', 403);
 
+        stage = 'proactivity_control_insert';
         const inserted = await tx.$queryRaw<Array<{ ai_proatividade_id: number }>>`
           INSERT INTO public.tb_ai_proatividade (
             usuario_id,
@@ -157,6 +204,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
           RETURNING ai_proatividade_id
         `;
 
+        stage = 'proactivity_control_read';
         const control = await tx.tb_ai_proatividade.findUnique({
           where: { usuario_chave_unique: { usuario_id: input.userId, ai_proatividade_chave: input.key } },
           select: proactivitySelect,
@@ -164,6 +212,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
         if (!control) throw new AppError('Proatividade não pôde ser registrada', 500);
         if (inserted.length === 0) return { created: false, record: mapRecord(control) };
 
+        stage = 'cooldown_check';
         const recent = input.cooldownSince
           ? await tx.tb_ai_proatividade.findFirst({
             where: {
@@ -184,6 +233,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
           return { created: false, record: mapRecord(suppressed) };
         }
 
+        stage = 'recommendation_check';
         const recommendation = await tx.tb_ai_recomendacao.findFirst({
           where: {
             usuario_id: input.userId,
@@ -208,6 +258,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
           return { created: false, record: mapRecord(suppressed) };
         }
 
+        stage = 'history_create';
         const now = input.createdAt ?? new Date();
         const history = await tx.tb_historico.create({
           data: {
@@ -220,6 +271,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
           select: { historico_id: true },
         });
 
+        stage = 'message_create';
         await tx.tb_mensagem.create({
           data: {
             historico_id: history.historico_id,
@@ -234,6 +286,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
           select: { mensagem_id: true },
         });
 
+        stage = 'recommendation_link';
         const linked = await tx.tb_ai_recomendacao.updateMany({
           where: {
             usuario_id: input.userId,
@@ -255,6 +308,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
           return { created: false, record: mapRecord(suppressed) };
         }
 
+        stage = 'notification_create';
         const notification = await NotificationService.createNotification({
           userId: input.userId,
           type: 'PROATIVA' as notificacao_tipo_enum,
@@ -265,6 +319,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
           historyId: history.historico_id,
         }, tx);
 
+        stage = 'proactivity_control_complete';
         const completed = await tx.tb_ai_proatividade.update({
           where: { ai_proatividade_id: control.ai_proatividade_id },
           data: {
@@ -283,6 +338,7 @@ export class PrismaProactivityRepository implements ProactivityRepository {
         if (existing) return { created: false, record: existing };
       }
       if (error instanceof AppError) throw error;
+      logProactivityFailure(stage, error);
       throw new AppError('Não foi possível criar a conversa proativa', 500);
     }
   }
