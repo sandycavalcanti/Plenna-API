@@ -12,18 +12,20 @@ export type ProactiveTextSettings = {
   maxAttempts?: number;
   maxContextChars?: number;
   timeoutMs?: number;
+  fallbackReason?: ProactiveFallbackReason;
 };
 
-const SAFE_GENERIC_WORDS = new Set([
-  'a', 'ao', 'aos', 'as', 'com', 'como', 'considere', 'confira', 'de', 'do', 'dos', 'e', 'em', 'esta', 'este',
-  'fato', 'foi', 'ha', 'isso', 'mais', 'na', 'nas', 'no', 'nos', 'observar', 'o', 'os', 'para', 'pode', 'por',
-  'que', 'se', 'seu', 'seus', 'sua', 'suas', 'sobre', 'tambem', 'um', 'uma', 'voce', 'vale', 'verifique', 'com',
-  'base', 'dados', 'registrados', 'registro', 'periodo', 'momento', 'proximo', 'proxima', 'ajudar', 'acompanhar',
-  'acompanhe', 'organizar', 'planejamento', 'planeje', 'revisar', 'revise', 'atencao', 'mensagem', 'plenna',
-  'identificado', 'identificada', 'indica', 'indicam', 'pode', 'ser', 'uma', 'forma', 'de', 'manter', 'seu',
-  'controle', 'caso', 'quando', 'sinta', 'necessidade', 'lembrar', 'compartilhar', 'observacao', 'observacao',
-  'financeira', 'financeiro', 'informacao', 'informacoes', 'conhecido', 'conhecida', 'registrada', 'registrado',
-]);
+export type ProactiveFallbackReason =
+  | 'FLAGS_DESABILITADAS'
+  | 'PROVIDER_NAO_CONFIGURADO'
+  | 'PROVIDER_CONSTRUCAO_FALHOU'
+  | 'PROVIDER_ERRO'
+  | 'TIMEOUT'
+  | 'JSON_INVALIDO'
+  | 'SCHEMA_INVALIDO'
+  | 'SAIDA_NAO_FUNDAMENTADA'
+  | 'AFIRMACAO_NAO_AUTORIZADA'
+  | 'NUMERO_NAO_EVIDENCIADO';
 
 const FORBIDDEN_WORDS = new Set([
   'senha', 'senhas', 'token', 'tokens', 'credencial', 'credenciais', 'oauth', 'segredo', 'segredos', 'api', 'chave',
@@ -35,6 +37,17 @@ const DIRECTIONAL_STEMS = [
   'acim', 'abaix', 'aument', 'cai', 'cresc', 'diminu', 'dentro', 'elev', 'exced', 'fora',
   'frequ', 'impuls', 'mais', 'melhor', 'menor', 'neg', 'nao', 'menos', 'pior', 'reduz',
   'sem', 'subi', 'super', 'queda',
+];
+
+const FACTUAL_STEMS = [
+  ...DIRECTIONAL_STEMS,
+  'ating', 'abert', 'fech', 'categori', 'comprom', 'compr', 'econom', 'gast', 'limit',
+  'meta', 'media', 'poup', 'progress', 'recorr', 'saldo', 'total', 'valor', 'quant',
+];
+
+const FORBIDDEN_STEMS = [
+  'ansied', 'caus', 'culp', 'depress', 'diagnost', 'emoc', 'garant', 'obrig', 'prova',
+  'signific', 'vici',
 ];
 
 function words(value: string) {
@@ -49,16 +62,39 @@ function sharesDirectionalStem(left: string, right: string) {
   return DIRECTIONAL_STEMS.some((stem) => left.startsWith(stem) && right.startsWith(stem));
 }
 
+function sharesFactualStem(left: string, right: string) {
+  return FACTUAL_STEMS.some((stem) => left.startsWith(stem) && right.startsWith(stem));
+}
+
+function hasForbiddenStem(value: string) {
+  return FORBIDDEN_WORDS.has(value) || FORBIDDEN_STEMS.some((stem) => value.startsWith(stem));
+}
+
+function logRedaction(event: string, details: Record<string, unknown> = {}) {
+  console.info('ai_proactivity_redacao', {
+    evento: event,
+    provider: env.aiProvider,
+    iaHabilitada: env.proactivityAiEnabled,
+    externoAprovado: env.proactivityExternalApproved,
+    ...details,
+  });
+}
+
+function errorReason(error: unknown): ProactiveFallbackReason {
+  if (error instanceof Error && error.message === 'PROACTIVE_TEXT_TIMEOUT') return 'TIMEOUT';
+  return 'PROVIDER_ERRO';
+}
+
 function deterministic(facts: ProactiveFacts, fonte: ProactiveText['fonte'] = 'DETERMINISTICA'): ProactiveText {
   const text = `Quero compartilhar uma observação baseada em dados registrados: ${facts.titulo}. ${facts.texto}`;
   return { ...proactiveTextSchema.parse({ titulo: facts.titulo, texto: text.slice(0, 600) }), fonte };
 }
 
-function groundedOutput(raw: string, facts: ProactiveFacts): ProactiveText | null {
+function groundedOutput(raw: string, facts: ProactiveFacts): { output: ProactiveText | null; reason?: ProactiveFallbackReason } {
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return null; }
+  try { parsed = JSON.parse(raw); } catch { return { output: null, reason: 'JSON_INVALIDO' }; }
   const result = proactiveTextSchema.safeParse(parsed);
-  if (!result.success) return null;
+  if (!result.success) return { output: null, reason: 'SCHEMA_INVALIDO' };
 
   const sourceText = [facts.titulo, facts.texto, facts.periodo ?? '', ...facts.referencias, ...facts.limitacoes].join(' ');
   const sourceWords = words(sourceText);
@@ -73,20 +109,28 @@ function groundedOutput(raw: string, facts: ProactiveFacts): ProactiveText | nul
   // fatos. Isso impede combinar valores de evidências distintas para formar
   // uma afirmação nova.
   if (outputNumbers.length > 0) {
-    const isContiguous = numericSource.some((_, index) =>
-      numericSource.slice(index, index + outputNumbers.length).join('|') === outputNumbers.join('|'));
-    if (!isContiguous) return null;
+    let sourceIndex = 0;
+    for (const number of outputNumbers) {
+      const foundAt = numericSource.indexOf(number, sourceIndex);
+      if (foundAt < 0) return { output: null, reason: 'NUMERO_NAO_EVIDENCIADO' };
+      sourceIndex = foundAt + 1;
+    }
   }
 
   for (const word of outputWords) {
-    if (FORBIDDEN_WORDS.has(word)) return null;
-    if (/^\d/.test(word) && !numericSource.includes(word)) return null;
-    if (!/^[a-z]+$/.test(word) && !/^\d/.test(word)) return null;
-    if (hasDirectionalStem(word) && !sourceWords.some((sourceWord) => sharesDirectionalStem(word, sourceWord))) return null;
-    if (!source.has(word) && !SAFE_GENERIC_WORDS.has(word)) return null;
+    if (hasForbiddenStem(word)) return { output: null, reason: 'AFIRMACAO_NAO_AUTORIZADA' };
+    if (/^\d/.test(word)) continue;
+    if (!/^[a-z]+$/.test(word)) return { output: null, reason: 'SCHEMA_INVALIDO' };
+    if (hasDirectionalStem(word) && !sourceWords.some((sourceWord) => sharesDirectionalStem(word, sourceWord))) {
+      return { output: null, reason: 'AFIRMACAO_NAO_AUTORIZADA' };
+    }
+    if (FACTUAL_STEMS.some((stem) => word.startsWith(stem))
+      && !sourceWords.some((sourceWord) => sharesFactualStem(word, sourceWord))) {
+      return { output: null, reason: 'AFIRMACAO_NAO_AUTORIZADA' };
+    }
   }
-  if (grounded.length === 0) return null;
-  return { ...result.data, fonte: 'IA' };
+  if (grounded.length === 0) return { output: null, reason: 'SAIDA_NAO_FUNDAMENTADA' };
+  return { output: { ...result.data, fonte: 'IA' } };
 }
 
 export function createApprovedProactiveMessageService(
@@ -95,17 +139,31 @@ export function createApprovedProactiveMessageService(
   // O provider externo só é construído com aprovação explícita. O default é
   // determinístico e não realiza chamadas de rede.
   if (!env.proactivityAiEnabled || !env.proactivityExternalApproved) {
-    return new ProactiveMessageService();
+    logRedaction('provider_desabilitado', { fonte: 'DETERMINISTICA', motivo: 'FLAGS_DESABILITADAS' });
+    return new ProactiveMessageService(undefined, { fallbackReason: 'FLAGS_DESABILITADAS' });
   }
 
   try {
     const provider = providerFactory();
-    if (!provider) return new ProactiveMessageService();
+    if (!provider) {
+      logRedaction('provider_nao_configurado', {
+        fonte: 'DETERMINISTICA',
+        motivo: 'PROVIDER_NAO_CONFIGURADO',
+        providerConfigurado: false,
+      });
+      return new ProactiveMessageService(undefined, { fallbackReason: 'PROVIDER_NAO_CONFIGURADO' });
+    }
+    logRedaction('provider_pronto', { providerConfigurado: true });
     return new ProactiveMessageService({
       chat: (messages) => provider.chat(messages.map((message) => ({ role: message.role, content: message.content }))),
     }, { enabled: true });
-  } catch {
-    return new ProactiveMessageService();
+  } catch (error) {
+    logRedaction('provider_construcao_falhou', {
+      fonte: 'DETERMINISTICA',
+      motivo: 'PROVIDER_CONSTRUCAO_FALHOU',
+      tipo: error instanceof Error ? error.name.slice(0, 80) : 'ERRO_DESCONHECIDO',
+    });
+    return new ProactiveMessageService(undefined, { fallbackReason: 'PROVIDER_CONSTRUCAO_FALHOU' });
   }
 }
 
@@ -129,7 +187,14 @@ export class ProactiveMessageService {
   async generate(rawFacts: ProactiveFacts): Promise<ProactiveText> {
     const facts = proactiveFactsSchema.parse(rawFacts);
     const fallback = deterministic(facts);
-    if (!(this.settings.enabled ?? env.proactivityAiEnabled) || !this.provider) return fallback;
+    const aiEnabled = this.settings.enabled ?? env.proactivityAiEnabled;
+    if (!aiEnabled || !this.provider) {
+      logRedaction('redacao_finalizada', {
+        fonte: 'DETERMINISTICA',
+        motivo: this.settings.fallbackReason ?? (aiEnabled ? 'PROVIDER_NAO_CONFIGURADO' : 'FLAGS_DESABILITADAS'),
+      });
+      return fallback;
+    }
 
     const limitedFacts = JSON.stringify({
       tipo: facts.tipo,
@@ -142,16 +207,35 @@ export class ProactiveMessageService {
 
     const maxAttempts = Math.max(1, Math.min(this.settings.maxAttempts ?? env.proactivityMaxAttempts, 3));
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      logRedaction('tentativa_externa', { iaHabilitada: aiEnabled, tentativa: attempt, maxTentativas: maxAttempts });
       try {
       const raw = await withTimeout(this.provider.chat([
         { role: 'system', content: 'Redija uma mensagem proativa curta em português brasileiro. Responda somente JSON com titulo e texto. Reescreva apenas os fatos fornecidos; não invente números, causas, emoções, diagnósticos ou dados pessoais.' },
         { role: 'user', content: limitedFacts },
       ]), this.settings.timeoutMs ?? env.proactivityTimeoutMs);
-      return groundedOutput(raw, facts) ?? deterministic(facts, 'DETERMINISTICA_FALLBACK');
-      } catch {
-        if (attempt === maxAttempts) return deterministic(facts, 'DETERMINISTICA_FALLBACK');
+      const validation = groundedOutput(raw, facts);
+      if (validation.output) {
+        logRedaction('redacao_finalizada', { iaHabilitada: aiEnabled, fonte: 'IA', validacao: 'ACEITA', tentativa: attempt });
+        return validation.output;
+      }
+      logRedaction('redacao_finalizada', {
+        iaHabilitada: aiEnabled,
+        fonte: 'DETERMINISTICA_FALLBACK',
+        validacao: 'REJEITADA',
+        motivo: validation.reason ?? 'SAIDA_NAO_FUNDAMENTADA',
+        tentativa: attempt,
+      });
+      return deterministic(facts, 'DETERMINISTICA_FALLBACK');
+      } catch (error) {
+        const motivo = errorReason(error);
+        logRedaction('tentativa_externa_falhou', { iaHabilitada: aiEnabled, motivo, tentativa: attempt, maxTentativas: maxAttempts });
+        if (attempt === maxAttempts) {
+          logRedaction('redacao_finalizada', { iaHabilitada: aiEnabled, fonte: 'DETERMINISTICA_FALLBACK', motivo });
+          return deterministic(facts, 'DETERMINISTICA_FALLBACK');
+        }
       }
     }
+    logRedaction('redacao_finalizada', { iaHabilitada: aiEnabled, fonte: 'DETERMINISTICA_FALLBACK', motivo: 'PROVIDER_ERRO' });
     return deterministic(facts, 'DETERMINISTICA_FALLBACK');
   }
 }

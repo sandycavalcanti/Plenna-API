@@ -86,6 +86,49 @@ test('redação proativa usa somente fatos e cai para fallback quando há afirma
   assert.equal((await inverted.generate(facts)).fonte, 'DETERMINISTICA_FALLBACK');
 });
 
+test('aceita linguagem natural nova quando os fatos relevantes continuam ancorados', async () => {
+  const facts = {
+    tipo: 'ATENCAO_META', titulo: 'Mantenha sua meta no radar',
+    texto: 'A meta Cadeira Gamer continua aberta no periodo.',
+    periodo: '2026-10', referencias: ['meta:3'], limitacoes: [],
+  };
+  let calls = 0;
+  const originalInfo = console.info;
+  const logs = [];
+  console.info = (...args) => logs.push(args);
+  try {
+    const service = new ProactiveMessageService({
+      async chat() {
+        calls += 1;
+        return JSON.stringify({
+          titulo: 'Vale acompanhar este objetivo',
+          texto: 'A Cadeira Gamer continua aberta. Se quiser, posso ajudar a planejar os proximos passos.',
+        });
+      },
+    }, { enabled: true });
+    const result = await service.generate(facts);
+    assert.equal(result.fonte, 'IA');
+    assert.equal(calls, 1);
+  } finally {
+    console.info = originalInfo;
+  }
+  const rendered = JSON.stringify(logs);
+  assert.match(rendered, /tentativa_externa/);
+  assert.match(rendered, /"fonte":"IA"/);
+  assert.doesNotMatch(rendered, /Cadeira Gamer|proximos passos/);
+});
+
+test('JSON inválido do provider produz fallback categorizado', async () => {
+  const service = new ProactiveMessageService({
+    async chat() { return 'resposta fora do contrato'; },
+  }, { enabled: true });
+  const result = await service.generate({
+    tipo: 'ATENCAO_META', titulo: 'Acompanhe sua meta', texto: 'O progresso conhecido merece acompanhamento.',
+    referencias: ['meta:3'], limitacoes: [],
+  });
+  assert.equal(result.fonte, 'DETERMINISTICA_FALLBACK');
+});
+
 test('provider externo permanece desligado sem aprovação explícita', async () => {
   const service = createApprovedProactiveMessageService(() => {
     throw new Error('provider não deveria ser construído');
