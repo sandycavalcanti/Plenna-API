@@ -203,11 +203,22 @@ model tb_integracao {
 }
 
 model tb_ai_anotacao {
-  ai_anotacao_id           Int        @id @default(autoincrement())
-  usuario_id               Int
-  ai_anotacao_texto        String
-  ai_anotacao_data_criacao DateTime   @default(now()) @db.Timestamp(6)
-  tb_usuario               tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  ai_anotacao_id              Int           @id @default(autoincrement())
+  usuario_id                  Int
+  ai_anotacao_texto           String
+  ai_anotacao_data_criacao    DateTime      @default(now()) @db.Timestamp(6)
+  ai_anotacao_origem          String?       @db.VarChar(12)
+  ai_anotacao_status           String?       @db.VarChar(10)
+  ai_anotacao_chave_dedupe    String?       @db.VarChar(160)
+  ai_anotacao_evidencia       String?
+  ai_anotacao_historico_id    Int?
+  ai_anotacao_data_expiracao  DateTime?     @db.Timestamp(6)
+  ai_anotacao_data_atualizacao DateTime?     @db.Timestamp(6)
+  tb_usuario                  tb_usuario    @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_historico                tb_historico? @relation(fields: [ai_anotacao_historico_id], references: [historico_id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([usuario_id, ai_anotacao_chave_dedupe], map: "uq_ai_anotacao_usuario_dedupe", where: raw("(ai_anotacao_chave_dedupe IS NOT NULL)"))
+  @@index([usuario_id, ai_anotacao_status, ai_anotacao_data_atualizacao(sort: Desc), ai_anotacao_id(sort: Desc)], map: "idx_ai_anotacao_usuario_status_ordem")
 
   @@schema("public")
 }
@@ -219,6 +230,7 @@ model tb_historico {
   historico_data_criacao     DateTime             @default(now()) @db.Timestamp(6)
   historico_data_modificacao DateTime             @default(now()) @db.Timestamp(6)
   historico_origem           String               @default("MANUAL") @db.VarChar(20)
+  tb_ai_anotacao             tb_ai_anotacao[]
   tb_ai_recomendacao         tb_ai_recomendacao[]
   tb_usuario                 tb_usuario           @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
   tb_mensagem                tb_mensagem[]

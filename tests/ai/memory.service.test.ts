@@ -10,7 +10,7 @@ import {
 import {
   MemoryRepositoryConflictError,
   type MemoryRepository,
-  type MemoryRepositoryListFilters,
+  type MemoryRepositoryListQuery,
   type MemoryRepositoryUpdate,
 } from '../../src/modules/ai/memory.repository.js';
 import {
@@ -55,17 +55,30 @@ class FakeMemoryRepository implements MemoryRepository {
     return this.memories.size;
   }
 
-  async listByUsuario(usuarioId: number, filters: MemoryRepositoryListFilters = {}): Promise<MemoryRecord[]> {
-    return [...this.memories.values()]
+  async listByUsuario(usuarioId: number, query: MemoryRepositoryListQuery) {
+    const records = [...this.memories.values()]
       .filter((memory) => memory.usuario_id === usuarioId)
-      .filter((memory) => filters.status === undefined || memory.status === filters.status)
-      .filter((memory) => filters.origem === undefined || memory.origem === filters.origem)
-      .map((memory) => this.clone(memory));
+      .filter((memory) => query.status === MEMORY_STATUS.ATIVA
+        ? memory.status === MEMORY_STATUS.ATIVA || memory.status === undefined
+        : memory.status === query.status)
+      .filter((memory) => query.origem === undefined || memory.origem === query.origem)
+      .filter((memory) => memory.data_expiracao === null || memory.data_expiracao > query.agora)
+      .sort((left, right) => {
+        const byDate = right.data_atualizacao.getTime() - left.data_atualizacao.getTime();
+        return byDate || right.memoria_id - left.memoria_id;
+      });
+    const page = records.slice(query.offset, query.offset + query.limit + 1);
+    const hasMore = page.length > query.limit;
+
+    return {
+      itens: page.slice(0, query.limit).map((memory) => this.clone(memory)),
+      proximo_cursor: hasMore ? String(query.offset + query.limit) : null,
+    };
   }
 
-  async findById(memoriaId: number): Promise<MemoryRecord | null> {
+  async findById(usuarioId: number, memoriaId: number): Promise<MemoryRecord | null> {
     const memory = this.memories.get(memoriaId);
-    return memory ? this.clone(memory) : null;
+    return memory && memory.usuario_id === usuarioId ? this.clone(memory) : null;
   }
 
   async findByDedupeKey(usuarioId: number, chaveDedupe: string): Promise<MemoryRecord | null> {
@@ -76,8 +89,8 @@ class FakeMemoryRepository implements MemoryRepository {
     return memory ? this.clone(memory) : null;
   }
 
-  async findHistoricoOwner(historicoId: number): Promise<number | null> {
-    return this.histories.get(historicoId) ?? null;
+  async hasHistoricoForUsuario(usuarioId: number, historicoId: number): Promise<boolean> {
+    return this.histories.get(historicoId) === usuarioId;
   }
 
   async create(data: MemorySavePersistence): Promise<MemoryRecord> {
@@ -98,9 +111,13 @@ class FakeMemoryRepository implements MemoryRepository {
     return this.clone(created);
   }
 
-  async update(memoriaId: number, data: MemoryRepositoryUpdate): Promise<MemoryRecord | null> {
+  async update(
+    usuarioId: number,
+    memoriaId: number,
+    data: MemoryRepositoryUpdate,
+  ): Promise<MemoryRecord | null> {
     const current = this.memories.get(memoriaId);
-    if (!current) {
+    if (!current || current.usuario_id !== usuarioId) {
       return null;
     }
 
@@ -119,7 +136,11 @@ class FakeMemoryRepository implements MemoryRepository {
     return this.clone(updated);
   }
 
-  async delete(memoriaId: number): Promise<boolean> {
+  async delete(usuarioId: number, memoriaId: number): Promise<boolean> {
+    const memory = this.memories.get(memoriaId);
+    if (!memory || memory.usuario_id !== usuarioId) {
+      return false;
+    }
     return this.memories.delete(memoriaId);
   }
 
@@ -187,6 +208,59 @@ test('salva e identifica duplicatas com chave determinística por usuário', asy
   assert.equal(repository.count(), 1);
 });
 
+test('deduplica memórias idênticas do mesmo usuário em históricos diferentes', async () => {
+  const repository = new FakeMemoryRepository();
+  repository.setHistoryOwner(10, 42);
+  repository.setHistoryOwner(11, 42);
+  const service = createService(repository);
+  const input = {
+    conteudo: 'Prefere receber um resumo semanal.',
+    origem: MEMORY_ORIGINS.DECLARADA,
+  };
+
+  const first = await service.save(consentedUser, { ...input, historico_id: 10 });
+  const second = await service.save(consentedUser, { ...input, historico_id: 11 });
+
+  assert.equal(first.deduplicada, false);
+  assert.equal(second.deduplicada, true);
+  assert.equal(second.memoria.memoria_id, first.memoria.memoria_id);
+  assert.equal(repository.count(), 1);
+});
+
+test('não devolve duplicata inativa ou expirada como criação bem-sucedida', async () => {
+  const inactiveRepository = new FakeMemoryRepository();
+  const inactiveService = createService(inactiveRepository);
+  const inactiveInput = {
+    conteudo: 'Memória desativada não deve ser reutilizada silenciosamente.',
+    origem: MEMORY_ORIGINS.DECLARADA,
+  };
+  const inactive = await inactiveService.save(consentedUser, inactiveInput);
+  await inactiveService.inactivate(consentedUser, { memoria_id: inactive.memoria.memoria_id });
+
+  await assert.rejects(
+    () => inactiveService.save(consentedUser, inactiveInput),
+    (error: unknown) => error instanceof MemoryServiceError
+      && error.code === 'MEMORY_DUPLICATE_INACTIVE_OR_EXPIRED',
+  );
+
+  const expiredRepository = new FakeMemoryRepository();
+  const expiredService = createService(expiredRepository);
+  const expiredInput = {
+    conteudo: 'Memória expirada não deve ser reutilizada silenciosamente.',
+    origem: MEMORY_ORIGINS.DECLARADA,
+  };
+  const expired = await expiredService.save(consentedUser, expiredInput);
+  await expiredRepository.update(consentedUser.usuario_id, expired.memoria.memoria_id, {
+    data_expiracao: new Date('2026-10-23T00:00:00.000Z'),
+  });
+
+  await assert.rejects(
+    () => expiredService.save(consentedUser, expiredInput),
+    (error: unknown) => error instanceof MemoryServiceError
+      && error.code === 'MEMORY_DUPLICATE_INACTIVE_OR_EXPIRED',
+  );
+});
+
 test('não aceita identidade do modelo e não mistura deduplicação entre usuários', async () => {
   const repository = new FakeMemoryRepository();
   const service = createService(repository);
@@ -247,6 +321,7 @@ test('lista somente o dono, aplica filtros, paginação e remove memórias expir
 test('valida ownership do histórico antes de criar ou atualizar', async () => {
   const repository = new FakeMemoryRepository();
   repository.setHistoryOwner(10, 42);
+  repository.setHistoryOwner(11, 42);
   repository.setHistoryOwner(20, 99);
   const service = createService(repository);
 
@@ -264,6 +339,12 @@ test('valida ownership do histórico antes de criar ou atualizar', async () => {
     origem: MEMORY_ORIGINS.DECLARADA,
     historico_id: 10,
   });
+  const duplicateFromAnotherHistory = await service.save(consentedUser, {
+    conteudo: 'Histórico próprio.',
+    origem: MEMORY_ORIGINS.DECLARADA,
+    historico_id: 11,
+  });
+  assert.equal(duplicateFromAnotherHistory.deduplicada, true);
   await assert.rejects(
     () => service.update(consentedUser, {
       memoria_id: saved.memoria.memoria_id,

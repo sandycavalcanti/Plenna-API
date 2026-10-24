@@ -33,6 +33,7 @@ import {
 export type MemoryServiceErrorCode =
   | 'MEMORY_CURSOR_INVALID'
   | 'MEMORY_DUPLICATE'
+  | 'MEMORY_DUPLICATE_INACTIVE_OR_EXPIRED'
   | 'MEMORY_HISTORY_NOT_FOUND'
   | 'MEMORY_HISTORY_OWNER_MISMATCH'
   | 'MEMORY_NOT_FOUND'
@@ -56,7 +57,6 @@ type MemoryDedupeSource = {
   usuario_id: number;
   conteudo: string;
   origem: string;
-  historico_id: number | null;
 };
 
 function createDeterministicDedupeKey(source: MemoryDedupeSource): string {
@@ -64,7 +64,6 @@ function createDeterministicDedupeKey(source: MemoryDedupeSource): string {
     usuario_id: source.usuario_id,
     conteudo: source.conteudo,
     origem: source.origem,
-    historico_id: source.historico_id,
   });
   const digest = createHash('sha256').update(canonical, 'utf8').digest('hex');
   return `memory:v1:${digest}`;
@@ -83,31 +82,20 @@ export class MemoryService {
   async list(context: unknown, input: unknown = {}): Promise<MemoryListResult> {
     const authorization = assertMemoryAuthorized('memory_list', context);
     const filters = parseMemoryListInput(input);
-    const records = await this.repositoryCall(() => (
+    const offset = this.parseCursor(filters.cursor);
+    const page = await this.repositoryCall(() => (
       this.repository.listByUsuario(authorization.usuario_id, {
         status: filters.status,
         origem: filters.origem,
+        offset,
+        limit: filters.limite,
+        agora: this.currentTime(),
       })
     ));
 
-    const visible = records
-      .map((record) => this.validateRepositoryRecord(record))
-      .filter((record) => record.usuario_id === authorization.usuario_id)
-      .filter((record) => record.status === filters.status)
-      .filter((record) => filters.origem === undefined || record.origem === filters.origem)
-      .filter((record) => !this.isExpired(record))
-      .sort((left, right) => {
-        const byDate = right.data_atualizacao.getTime() - left.data_atualizacao.getTime();
-        return byDate || right.memoria_id - left.memoria_id;
-      });
-
-    const offset = this.parseCursor(filters.cursor);
-    const page = visible.slice(offset, offset + filters.limite);
-    const nextOffset = offset + page.length;
-
     return {
-      itens: page,
-      proximo_cursor: nextOffset < visible.length ? String(nextOffset) : null,
+      itens: page.itens.map((record) => this.assertOwnedRepositoryRecord(record, authorization)),
+      proximo_cursor: page.proximo_cursor,
     };
   }
 
@@ -120,14 +108,16 @@ export class MemoryService {
       usuario_id: authorization.usuario_id,
       conteudo: parsedInput.conteudo,
       origem: parsedInput.origem,
-      historico_id: parsedInput.historico_id ?? null,
     });
     const existing = await this.repositoryCall(() => (
       this.repository.findByDedupeKey(authorization.usuario_id, dedupeKey)
     ));
 
     if (existing && existing.usuario_id === authorization.usuario_id) {
-      return { memoria: this.validateRepositoryRecord(existing), deduplicada: true };
+      return {
+        memoria: this.assertUsableDuplicate(existing),
+        deduplicada: true,
+      };
     }
 
     const persistence = buildMemorySavePersistence(
@@ -155,7 +145,7 @@ export class MemoryService {
 
         if (concurrent && concurrent.usuario_id === authorization.usuario_id) {
           return {
-            memoria: this.validateRepositoryRecord(concurrent),
+            memoria: this.assertUsableDuplicate(concurrent),
             deduplicada: true,
           };
         }
@@ -184,7 +174,11 @@ export class MemoryService {
     const patch = this.buildUpdatePatch(current, validatedInput, authorization);
 
     try {
-      const updated = await this.repository.update(current.memoria_id, patch);
+      const updated = await this.repository.update(
+        authorization.usuario_id,
+        current.memoria_id,
+        patch,
+      );
       if (!updated) {
         throw new MemoryServiceError(
           'MEMORY_NOT_FOUND',
@@ -215,7 +209,7 @@ export class MemoryService {
     const current = await this.findOwnedMemory(parsedInput.memoria_id, authorization);
 
     try {
-      const updated = await this.repository.update(current.memoria_id, {
+      const updated = await this.repository.update(authorization.usuario_id, current.memoria_id, {
         status: MEMORY_STATUS.INATIVA,
       });
       if (!updated) {
@@ -240,7 +234,7 @@ export class MemoryService {
     const current = await this.findOwnedMemory(parsedInput.memoria_id, authorization);
 
     try {
-      const deleted = await this.repository.delete(current.memoria_id);
+      const deleted = await this.repository.delete(authorization.usuario_id, current.memoria_id);
       if (!deleted) {
         throw new MemoryServiceError(
           'MEMORY_NOT_FOUND',
@@ -259,11 +253,6 @@ export class MemoryService {
 
   private currentTime(): Date {
     return new Date(this.now().getTime());
-  }
-
-  private isExpired(record: MemoryRecord): boolean {
-    return record.data_expiracao !== null
-      && record.data_expiracao.getTime() <= this.currentTime().getTime();
   }
 
   private parseCursor(cursor: MemoryListInput['cursor']): number {
@@ -286,7 +275,9 @@ export class MemoryService {
     memoriaId: number,
     authorization: MemoryAuthorizationContext,
   ): Promise<MemoryRecord> {
-    const record = await this.repositoryCall(() => this.repository.findById(memoriaId));
+    const record = await this.repositoryCall(() => (
+      this.repository.findById(authorization.usuario_id, memoriaId)
+    ));
     if (!record) {
       throw new MemoryServiceError(
         'MEMORY_NOT_FOUND',
@@ -305,17 +296,10 @@ export class MemoryService {
       return;
     }
 
-    const ownerId = await this.repositoryCall(() => (
-      this.repository.findHistoricoOwner(historicoId)
+    const belongsToUser = await this.repositoryCall(() => (
+      this.repository.hasHistoricoForUsuario(authorization.usuario_id, historicoId)
     ));
-    if (ownerId === null) {
-      throw new MemoryServiceError(
-        'MEMORY_HISTORY_NOT_FOUND',
-        'O histórico informado não foi encontrado.',
-      );
-    }
-
-    if (ownerId !== authorization.usuario_id) {
+    if (!belongsToUser) {
       throw new MemoryServiceError(
         'MEMORY_HISTORY_OWNER_MISMATCH',
         'O histórico informado não pertence ao usuário autenticado.',
@@ -350,8 +334,7 @@ export class MemoryService {
     }
 
     const changesDedupeIdentity = input.conteudo !== undefined
-      || input.origem !== undefined
-      || input.historico_id !== undefined;
+      || input.origem !== undefined;
     if (changesDedupeIdentity) {
       const nextOrigin = input.origem ?? current.origem;
       if (nextOrigin !== MEMORY_ORIGINS.DESCONHECIDA) {
@@ -359,9 +342,6 @@ export class MemoryService {
           usuario_id: authorization.usuario_id,
           conteudo: input.conteudo ?? current.conteudo,
           origem: nextOrigin,
-          historico_id: input.historico_id !== undefined
-            ? input.historico_id
-            : current.historico_id,
         });
       }
     }
@@ -379,6 +359,26 @@ export class MemoryService {
     }
 
     return parsed.data;
+  }
+
+  private assertUsableDuplicate(record: MemoryRecord): MemoryRecord {
+    const validated = this.validateRepositoryRecord(record);
+    if (
+      validated.status !== MEMORY_STATUS.ATIVA
+      || this.isExpired(validated, this.currentTime())
+    ) {
+      throw new MemoryServiceError(
+        'MEMORY_DUPLICATE_INACTIVE_OR_EXPIRED',
+        'A memória equivalente já existe, mas não está disponível para deduplicação ativa.',
+      );
+    }
+
+    return validated;
+  }
+
+  private isExpired(record: MemoryRecord, now: Date): boolean {
+    return record.data_expiracao !== null
+      && record.data_expiracao.getTime() <= now.getTime();
   }
 
   private assertOwnedRepositoryRecord(
