@@ -268,6 +268,20 @@ test('exige consentimento e permissão por operação, preservando o isolamento 
     (error: unknown) => error instanceof MemoryPolicyError && error.code === 'MEMORY_OPERATION_FORBIDDEN',
   );
 
+  const revokedWithDeleteAuthorization = {
+    ...authorizedContext,
+    consentimento_memoria_ativo: false,
+    pode_excluir: true,
+  };
+  assert.deepEqual(
+    assertMemoryAuthorized('memory_delete', revokedWithDeleteAuthorization),
+    revokedWithDeleteAuthorization,
+  );
+  assert.throws(
+    () => assertMemoryAuthorized('memory_update', revokedWithDeleteAuthorization),
+    (error: unknown) => error instanceof MemoryPolicyError && error.code === 'MEMORY_CONSENT_REQUIRED',
+  );
+
   assert.deepEqual(assertMemoryOwner(42, authorizedContext), authorizedContext);
   assert.throws(
     () => assertMemoryOwner(99, authorizedContext),

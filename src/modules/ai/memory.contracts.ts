@@ -495,7 +495,10 @@ export function assertMemoryAuthorized(
     );
   }
 
-  if (!parsedContext.data.consentimento_memoria_ativo) {
+  if (
+    operation !== 'memory_delete'
+    && !parsedContext.data.consentimento_memoria_ativo
+  ) {
     throw new MemoryPolicyError(
       'MEMORY_CONSENT_REQUIRED',
       'O consentimento de memória não está ativo.',
