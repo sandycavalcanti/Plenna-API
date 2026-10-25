@@ -16,6 +16,7 @@ model tb_categoria {
   tb_notificacao         tb_notificacao[]
   tb_preferencia         tb_preferencia[]
   tb_propaganda          tb_propaganda[]
+  referencias_historicas tb_referencia_financeira[]
 
   @@schema("public")
 }
@@ -53,6 +54,7 @@ model tb_compra {
   tb_notificacao                   tb_notificacao[]
   tb_rf018_contexto_revisao        tb_rf018_contexto_revisao[]
   tb_rf018_avaliacao               tb_rf018_avaliacao[]
+  eventos                          tb_compra_evento[]
 
   @@unique([usuario_id, compra_email_mensagem_id])
   @@unique([compra_id, usuario_id])
@@ -80,6 +82,7 @@ model tb_compra_item {
   tb_compra                  tb_compra?               @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra_recorrencia      tb_compra_recorrencia?   @relation(fields: [compra_recorrencia_id], references: [compra_recorrencia_id], onDelete: NoAction, onUpdate: NoAction)
   tb_rf018_item_contexto     tb_rf018_item_contexto[]
+  eventos                    tb_compra_evento[]
 
   @@unique([compra_item_id, compra_id])
   @@index([compra_id, compra_item_ativo], map: "idx_compra_item_compra_ativo")
@@ -185,6 +188,7 @@ model tb_usuario {
   tb_propaganda             tb_propaganda[]
   tb_redefinicao_senha      tb_redefinicao_senha[]
   tb_tempo_uso              tb_tempo_uso[]
+  referencias_historicas    tb_referencia_financeira[]
 
   @@schema("public")
 }
@@ -492,5 +496,52 @@ model tb_rf018_avaliacao {
 
   @@unique([compra_id, versao_motor, fontes_hash])
   @@index([compra_id, avaliacao_id])
+  @@schema("public")
+}
+
+model tb_compra_evento {
+  evento_id         Int                @id @default(autoincrement())
+  compra_id         Int
+  usuario_id        Int
+  compra_item_id    Int?
+  revisao           Int
+  operacao_id       String             @db.Uuid
+  requisicao_hash   String             @db.VarChar(64)
+  tipo              String             @db.VarChar(32)
+  dados             Json               @db.JsonB
+  efetiva_em        DateTime?          @db.Date
+  registrada_em     DateTime           @default(now()) @db.Timestamptz(3)
+  origem            String             @default("DECLARADO") @db.VarChar(32)
+  corrige_evento_id Int?               @unique
+  anulado           Boolean            @default(false)
+  compra            tb_compra          @relation(fields: [compra_id, usuario_id], references: [compra_id, usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  item              tb_compra_item?    @relation(fields: [compra_item_id, compra_id], references: [compra_item_id, compra_id], onDelete: NoAction, onUpdate: NoAction)
+  corrigido         tb_compra_evento?  @relation("correcoes", fields: [corrige_evento_id, compra_id], references: [evento_id, compra_id], onDelete: NoAction, onUpdate: NoAction)
+  correcoes         tb_compra_evento[] @relation("correcoes")
+
+  @@unique([evento_id, compra_id])
+  @@unique([compra_id, revisao])
+  @@unique([compra_id, operacao_id])
+  @@index([usuario_id, efetiva_em])
+  @@schema("public")
+}
+
+model tb_referencia_financeira {
+  referencia_id Int           @id @default(autoincrement())
+  usuario_id    Int
+  categoria_id  Int?
+  tipo          String        @db.VarChar(32)
+  valor         Decimal?      @db.Decimal(12, 2)
+  vigente_desde DateTime      @db.Timestamptz(3)
+  registrada_em DateTime      @default(now()) @db.Timestamptz(3)
+  periodo       String?       @db.VarChar(7)
+  aplicacao     String        @db.VarChar(32)
+  origem        String        @db.VarChar(32)
+  operacao_id   String        @db.Uuid
+  usuario       tb_usuario    @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  categoria     tb_categoria? @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([usuario_id, operacao_id])
+  @@index([usuario_id, tipo, vigente_desde])
   @@schema("public")
 }
