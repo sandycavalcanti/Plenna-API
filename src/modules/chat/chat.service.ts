@@ -6,6 +6,7 @@ import { AIProviderError, type AIProvider } from '../email/ai-provider.js';
 import { CodexLocalError } from '../email/codex-local.provider.js';
 import { MESSAGE_SENDER, DEFAULT_HISTORY_NAME, type ChatDatabase, type PublicHistoryWithMessages } from './chat.contracts.js';
 import { buildChatContext } from './chat.context.js';
+import { consultarRespostaIndicadores } from './chat.indicadores.js';
 import { createMessageSchema, historyIdSchema, type CreateMessageDTO } from './chat.schemas.js';
 import { serializeHistory, serializeMessage } from './chat.serializers.js';
 
@@ -402,6 +403,12 @@ export class ChatService {
       throw new AppError('Mensagem do usuario nao foi recuperada apos persistencia', 500);
     }
 
+    const respostaIndicadores = db === prisma ? await consultarRespostaIndicadores(userId,persistedCurrent.texto) : null;
+    if(respostaIndicadores!==null){
+      const assistantMessage=await this.createAssistantMessage(userId,historyId,respostaIndicadores,db);
+      const finalHistory=await this.getHistory(userId,historyId,db);
+      return {historico:finalHistory.historico,mensagemUsuario:userMessage,mensagemIA:assistantMessage};
+    }
     let provider: AIProvider | null;
     try {
       provider = providerFactory();
