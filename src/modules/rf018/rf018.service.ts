@@ -14,7 +14,7 @@ export class RF018Service {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
-  /** Shared read snapshot; caller owns the transaction. No persistence. */
+
   static async consultarSnapshot(tx: Prisma.TransactionClient, userId: number, periodo: string, now = new Date()) {
       const { start, end } = parseMonth(periodo);
       if (now <= start) throw new AppError('Periodo ainda nao observado', 400);

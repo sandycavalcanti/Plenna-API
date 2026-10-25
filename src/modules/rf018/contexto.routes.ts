@@ -5,6 +5,7 @@ import { handleError } from '../../utils/handleError.js';
 import { contextoParamsSchema } from './contexto.schemas.js';
 import { ContextoService } from './contexto.service.js';
 import { AvaliacaoService } from './avaliacao.service.js';
+import { HistoricoService } from './historico.service.js';
 
 export const contextoRouter = Router();
 contextoRouter.use(authMiddleware);
@@ -23,6 +24,21 @@ contextoRouter.get('/:compraId/contexto/historico', async (req, res) => {
         (req as AuthRequest).userId!,
         compraId,
         antes,
+      ),
+    );
+  } catch (error) {
+    return handleError(res, 500, error);
+  }
+});
+contextoRouter.get('/:compraId/indicadores-historicos', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { compraId } = contextoParamsSchema.parse(req.params);
+    z.object({}).strict().parse(req.query);
+    return res.json(
+      await HistoricoService.complementarCompra(
+        (req as AuthRequest).userId!,
+        compraId,
       ),
     );
   } catch (error) {

@@ -7,7 +7,7 @@ function validateIdentity(input: EntradaPeriodo) {
     const ids = new Set<number>();
     for (const row of rows) {
       if (row.usuarioId !== input.usuarioId) throw new Error('RF018_USER_MISMATCH');
-      // Canonical purchase identity belongs to reconciliation, never to this engine.
+
       if (ids.has(row.id)) throw new Error('RF018_DUPLICATE_CANONICAL_PURCHASE');
       ids.add(row.id);
     }

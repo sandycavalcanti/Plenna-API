@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const estadosAvaliacao = z.enum(['DADOS_INSUFICIENTES', 'AGUARDANDO_CONTEXTO', 'POSSIVEL_IMPULSIVA', 'SEM_SINAIS_RELEVANTES', 'NAO_AVALIAVEL']);
 export const disponibilidade = z.enum(['DISPONIVEL', 'PARCIAL', 'INDISPONIVEL']);
 const id = z.number().int().positive();
-// Decimal strings preserve money at the boundary; financeiro.ts owns rounding.
+
 const money = z.union([z.number().finite().nonnegative(), z.string().regex(/^\d+(?:\.\d+)?$/)]).nullable();
 const instant = z.string().datetime({ offset: true });
 const compra = z.object({
@@ -20,7 +20,7 @@ const janela = z.object({
   cobertura: z.enum(['COMPLETA', 'PARCIAL', 'DESCONHECIDA']),
 }).strict();
 const limit = z.object({ valor: money, vigencia: z.enum(['DO_PERIODO', 'ATUAL_SEM_HISTORICO']), referencia: z.string().min(1) }).strict();
-// Optional extension only: no Android ingestion, permission checks or correlation here.
+
 const rf017 = z.object({
   versaoContrato: z.literal(1), utilizavel: z.literal(false),
   disponibilidade: z.enum(['NAO_FORNECIDA', 'SEM_AUTORIZACAO', 'DESCONHECIDA', 'PARCIAL']),

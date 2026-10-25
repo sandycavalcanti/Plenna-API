@@ -1,5 +1,6 @@
 import { cents, financialWhere, parseMonth, summarizeValues } from '../compra/financeiro.js';
 import type { EntradaPeriodo, CompraRF018 } from './rf018.schemas.js';
+import { comparacaoTemporal } from './temporal.policy.js';
 
 export function observedWindow(window: EntradaPeriodo['janela']) {
   const { start, end } = parseMonth(window.periodo);
@@ -39,7 +40,9 @@ export function descriptiveIndicators(input: EntradaPeriodo) {
     const sameDuration = previous.cutoff.getTime() - previous.start.getTime() === window.cutoff.getTime() - window.start.getTime();
     const missingDates = input.anterior.compras.some(row => row.ativa && row.status === 'CONFIRMADA' && row.horario === null);
     comparison.periodoAnterior = input.anterior.janela.periodo;
-    comparison.motivo = !sameDuration ? 'JANELAS_NAO_EQUIVALENTES' : partial || missingDates || input.anterior.janela.cobertura !== 'COMPLETA' || !input.anterior.coberturaComparavel ? 'COBERTURA_NAO_COMPARAVEL' : null;
+    const coverage = !partial && !missingDates && input.anterior.janela.cobertura === 'COMPLETA' && input.anterior.coberturaComparavel ? 'COMPLETA' : 'DESCONHECIDA';
+    const temporal = comparacaoTemporal(window.cutoff.getTime() - window.start.getTime(), coverage);
+    comparison.motivo = !sameDuration ? 'JANELAS_NAO_EQUIVALENTES' : !temporal.elegivel ? 'COBERTURA_NAO_COMPARAVEL' : null;
     if (!comparison.motivo) {
       const count = input.anterior.compras.filter(row => eligible(row, input.usuarioId, previous)).length;
       comparison = { disponibilidade: 'DISPONIVEL', motivo: null, periodoAnterior: input.anterior.janela.periodo, comprasAnterior: count, diferenca: rows.length - count, variacaoRelativa: count === 0 ? null : (rows.length - count) / count };
