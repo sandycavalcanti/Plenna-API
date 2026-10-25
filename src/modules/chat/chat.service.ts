@@ -6,10 +6,10 @@ import { AIProviderError, type AIProvider } from '../email/ai-provider.js';
 import { CodexLocalError } from '../email/codex-local.provider.js';
 import { AIOrchestrationError } from '../ai/ai.errors.js';
 import { AIOrchestrator } from '../ai/ai.orchestrator.js';
-import { aiToolRegistry } from '../ai/ai.registry.js';
-import { memoryService } from '../ai/memory.runtime.js';
+import { aiToolRegistry, ToolRegistry } from '../ai/ai.registry.js';
+import { automaticMemoryToolDefinition } from '../ai/memory.runtime.js';
 import { resolveMemoryAuthorization } from '../ai/memory.authorization.js';
-import { AutomaticMemoryService, hasMemoryWriteOptOut } from '../ai/memory.automatic.js';
+import { hasMemoryWriteOptOut } from '../ai/memory.automatic.js';
 import { MESSAGE_SENDER, DEFAULT_HISTORY_NAME, type ChatDatabase, type PublicHistoryWithMessages } from './chat.contracts.js';
 import { buildChatContext } from './chat.context.js';
 import { createMessageSchema, historyIdSchema, type CreateMessageDTO } from './chat.schemas.js';
@@ -31,10 +31,35 @@ const messageSelect = {
   mensagem_data_criacao: true,
 } as const;
 
-const automaticMemoryService = new AutomaticMemoryService(
-  memoryService,
-  resolveMemoryAuthorization,
-);
+function buildChatToolRegistry(includeAutomaticMemory: boolean): ToolRegistry {
+  if (!includeAutomaticMemory) return aiToolRegistry;
+
+  const registry = new ToolRegistry();
+  for (const definition of aiToolRegistry.definitions()) registry.register(definition);
+  registry.register(automaticMemoryToolDefinition);
+  return registry;
+}
+
+async function canOfferAutomaticMemory(
+  userId: number,
+  message: string,
+  explicitWriteIntent: boolean,
+  provider: AIProvider,
+): Promise<boolean> {
+  if (
+    !env.aiMemoryAutomaticEnabled
+    || explicitWriteIntent
+    || hasMemoryWriteOptOut(message)
+    || typeof provider.chatWithTools !== 'function'
+  ) return false;
+
+  try {
+    const authorization = await resolveMemoryAuthorization(userId);
+    return authorization.consentimento_memoria_ativo && authorization.pode_escrever;
+  } catch {
+    return false;
+  }
+}
 
 function assertUserId(userId: number) {
   if (!Number.isInteger(userId) || userId <= 0) {
@@ -121,6 +146,12 @@ export function hasExplicitMemoryWriteIntent(text: string) {
   if (isRecallQuestion) return false;
 
   if (hasMemoryWriteOptOut(normalized)) {
+    return false;
+  }
+
+  // "Guardar isso" sem indicar memória, destinatário ou conteúdo é ambíguo;
+  // não deve transformar uma pergunta/conversa em autorização de escrita.
+  if (/^(?:voce|vc)\s+(?:pode|poderia)\s+(?:guardar|salvar|registrar|anotar|memorizar)\s+isso\??$/.test(normalized)) {
     return false;
   }
 
@@ -462,14 +493,24 @@ export class ChatService {
 
     const context = buildChatContext(after.mensagens, persistedCurrent);
     const explicitMemoryWriteIntent = hasExplicitMemoryWriteIntent(persistedCurrent.texto);
+    const automaticMemoryInMainRound = await canOfferAutomaticMemory(
+      userId,
+      persistedCurrent.texto,
+      explicitMemoryWriteIntent,
+      provider,
+    );
+    const chatToolRegistry = buildChatToolRegistry(automaticMemoryInMainRound);
     let assistantText: string;
     try {
-      const orchestration = await new AIOrchestrator(aiToolRegistry).run(
+      const orchestration = await new AIOrchestrator(chatToolRegistry).run(
         provider,
         context,
         {
           usuario_id: userId,
           memory_write_intent: explicitMemoryWriteIntent,
+          historico_id: historyId,
+          mensagem_atual: persistedCurrent.texto,
+          memory_automatic_enabled: automaticMemoryInMainRound,
         },
       );
       assistantText = orchestration.text;
@@ -487,16 +528,6 @@ export class ChatService {
       assistantText,
       db,
     );
-
-    // A avaliação automática é secundária: falhas não invalidam a resposta
-    // já persistida e o serviço revalida consentimento antes de escrever.
-    await automaticMemoryService.consider({
-      usuario_id: userId,
-      historico_id: historyId,
-      mensagem: persistedCurrent.texto,
-      provider,
-      explicitWriteIntent: explicitMemoryWriteIntent,
-    });
 
     if (shouldGenerateTitle) {
       await this.generateHistoryTitle(

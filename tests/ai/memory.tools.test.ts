@@ -3,8 +3,9 @@ import test from 'node:test';
 import { executeTool } from '../../src/modules/ai/ai.executor.js';
 import { ToolRegistry } from '../../src/modules/ai/ai.registry.js';
 import { MEMORY_ORIGINS, MEMORY_STATUS } from '../../src/modules/ai/memory.contracts.js';
-import { createMemoryToolDefinitions, registerMemoryTools } from '../../src/modules/ai/memory.tools.js';
+import { createAutomaticMemoryToolDefinition, createMemoryToolDefinitions, registerMemoryTools } from '../../src/modules/ai/memory.tools.js';
 import type { MemoryService } from '../../src/modules/ai/memory.service.js';
+import type { AutomaticMemoryService } from '../../src/modules/ai/memory.automatic.js';
 import { consentimentoCodigoSchema } from '../../src/modules/consentimento/consentimento.schemas.js';
 
 const record = {
@@ -156,4 +157,75 @@ test('exige intenção explícita do usuário antes de salvar ou atualizar memó
 
 test('aceita IA_MEMORIA como consentimento específico', () => {
   assert.equal(consentimentoCodigoSchema.parse('IA_MEMORIA'), 'IA_MEMORIA');
+});
+
+test('a tool automática usa somente o contexto interno e não recebe identidade nos argumentos', async () => {
+  const calls: unknown[] = [];
+  const automaticService = {
+    saveCandidate: async (input: unknown) => {
+      calls.push(input);
+      return { status: 'SALVA' as const, memoria: record };
+    },
+  } as unknown as AutomaticMemoryService;
+  const registry = new ToolRegistry();
+  registry.register(createAutomaticMemoryToolDefinition(automaticService));
+
+  const result = await executeTool(
+    registry,
+    {
+      name: 'memory_automatic_candidate',
+      arguments: {
+        conteudo: 'Relata esperar antes de comprar roupas.',
+        origem: MEMORY_ORIGINS.INFERIDA,
+        evidencia: 'esperar antes de comprar roupas',
+      },
+    },
+    {
+      usuario_id: 42,
+      historico_id: 9,
+      mensagem_atual: 'Eu espero antes de comprar roupas para evitar excessos.',
+      memory_automatic_enabled: true,
+    },
+  );
+
+  assert.deepEqual(result.result, { status: 'SALVA' });
+  assert.deepEqual(calls, [{
+    usuario_id: 42,
+    historico_id: 9,
+    mensagem: 'Eu espero antes de comprar roupas para evitar excessos.',
+    candidato: {
+      conteudo: 'Relata esperar antes de comprar roupas.',
+      origem: MEMORY_ORIGINS.INFERIDA,
+      evidencia: 'esperar antes de comprar roupas',
+    },
+    explicitWriteIntent: undefined,
+  }]);
+});
+
+test('a tool automática não executa quando o backend não a habilita no contexto', async () => {
+  let calls = 0;
+  const automaticService = {
+    saveCandidate: async () => {
+      calls += 1;
+      return { status: 'SALVA' as const, memoria: record };
+    },
+  } as unknown as AutomaticMemoryService;
+  const registry = new ToolRegistry();
+  registry.register(createAutomaticMemoryToolDefinition(automaticService));
+
+  const result = await executeTool(
+    registry,
+    {
+      name: 'memory_automatic_candidate',
+      arguments: {
+        conteudo: 'Preferência duradoura.',
+        origem: MEMORY_ORIGINS.DECLARADA,
+        evidencia: 'Preferência declarada',
+      },
+    },
+    { usuario_id: 42, memory_automatic_enabled: false },
+  );
+
+  assert.deepEqual(result.result, { status: 'SEM_CANDIDATO' });
+  assert.equal(calls, 0);
 });

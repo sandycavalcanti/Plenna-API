@@ -187,6 +187,31 @@ const memoryUpdateToolInputSchema = z
     requireEvidenceForInferredMemory(value, context);
   });
 
+export const memoryAutomaticCandidateInputSchema = z
+  .object({
+    conteudo: memoryContentSchema,
+    origem: memoryOriginSchema,
+    // A ferramenta automática sempre precisa apontar a evidência da mensagem
+    // atual; o histórico e o usuário continuam sendo definidos pelo backend.
+    evidencia: memoryEvidenceSchema,
+  })
+  .strict()
+  .superRefine(requireEvidenceForInferredMemory);
+
+const memoryAutomaticCandidateResultSchema = z
+  .object({
+    status: z.enum([
+      'SALVA',
+      'DUPLICADA',
+      'SEM_CANDIDATO',
+      'CONSENTIMENTO_INATIVO',
+      'OPTOUT',
+      'CANDIDATO_INVALIDO',
+      'FALHA',
+    ]),
+  })
+  .strict();
+
 export const memoryInactivateInputSchema = z
   .object({ memoria_id: memoryIdSchema })
   .strict();
@@ -272,6 +297,10 @@ export const memoryToolContracts = {
     inputSchema: memoryUpdateToolInputSchema,
     resultSchema: memoryUpdateResultSchema,
   },
+  memory_automatic_candidate: {
+    inputSchema: memoryAutomaticCandidateInputSchema,
+    resultSchema: memoryAutomaticCandidateResultSchema,
+  },
 } as const;
 
 export type MemoryOrigin = z.infer<typeof memoryOriginSchema>;
@@ -282,6 +311,8 @@ export type MemoryListInput = z.infer<typeof memoryListInputSchema>;
 export type MemorySaveInput = z.infer<typeof memorySaveInputSchema>;
 export type MemorySavePersistence = z.infer<typeof memorySavePersistenceSchema>;
 export type MemoryUpdateInput = z.infer<typeof memoryUpdateInputSchema>;
+export type MemoryAutomaticCandidateInput = z.infer<typeof memoryAutomaticCandidateInputSchema>;
+export type MemoryAutomaticCandidateResult = z.infer<typeof memoryAutomaticCandidateResultSchema>;
 export type MemoryInactivateInput = z.infer<typeof memoryInactivateInputSchema>;
 export type MemoryDeleteInput = z.infer<typeof memoryDeleteInputSchema>;
 export type MemoryLegacyRecord = z.infer<typeof memoryLegacyRecordSchema>;

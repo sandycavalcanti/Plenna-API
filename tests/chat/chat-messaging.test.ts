@@ -104,6 +104,9 @@ function makeClient() {
         return sorted[0] ? pick(sorted[0], select) : null;
       },
     },
+    tb_consentimento: {
+      findFirst: async () => ({ consentimento_id: 1 }),
+    },
   };
 
   client.$transaction = async (callback: (transaction: any) => Promise<unknown>) => callback(client);
@@ -261,6 +264,38 @@ test('ChatService integra registry, executor e tool calling sem persistir evento
   assert.equal(providerCalls[1].messages.at(-1).tool_call_id, 'chat-call-1');
   assert.equal(messages.filter((message) => message.mensagem_remetente === true).length, 1);
   assert.equal(messages.some((message) => message.mensagem_texto.includes('tool_call_id')), false);
+});
+
+test('oferece memória automática na rodada principal sem fazer uma segunda chamada externa', async () => {
+  const previousEnabled = env.aiMemoryAutomaticEnabled;
+  env.aiMemoryAutomaticEnabled = true;
+  try {
+    const providerCalls: any[] = [];
+    const provider = {
+      ...providerReturning('Resposta principal'),
+      chatWithTools: async (messages: any[], tools: any[]) => {
+        providerCalls.push({ messages, tools });
+        return { content: 'Resposta principal', tool_calls: [] };
+      },
+    };
+
+    const history = await ChatService.createHistory(1, client);
+    await ChatService.sendMessage(
+      1,
+      history.historico_id,
+      { texto: 'Eu espero dois dias antes de comprar roupas para evitar excessos.' },
+      client,
+      () => provider as any,
+    );
+
+    assert.equal(providerCalls.length, 1);
+    assert.equal(
+      providerCalls[0].tools.some((tool: any) => tool.function.name === 'memory_automatic_candidate'),
+      true,
+    );
+  } finally {
+    env.aiMemoryAutomaticEnabled = previousEnabled;
+  }
 });
 
 test('deriva titulo da primeira mensagem, normaliza espacos e respeita 45 caracteres', async () => {

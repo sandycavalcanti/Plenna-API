@@ -6,6 +6,7 @@ import {
   memoryToolContracts,
 } from './memory.contracts.js';
 import type { MemoryService } from './memory.service.js';
+import type { AutomaticMemoryService } from './memory.automatic.js';
 
 export type MemoryAuthorizationResolver = (
   usuarioId: number,
@@ -53,6 +54,47 @@ export function createMemoryToolDefinitions(
       },
     },
   ];
+}
+
+/**
+ * Tool visível somente na composição do chatbot. Ela reaproveita a rodada
+ * principal do provider; não inicia uma segunda chamada de IA.
+ */
+export function createAutomaticMemoryToolDefinition(
+  service: AutomaticMemoryService,
+): ToolDefinition {
+  return {
+    name: 'memory_automatic_candidate',
+    description: 'Propõe uma memória duradoura baseada na mensagem atual. Use somente para preferências, objetivos ou hábitos úteis no futuro, com evidência curta; não use para comentários passageiros, compras isoladas, segredos ou mensagens inteiras.',
+    argsSchema: memoryToolContracts.memory_automatic_candidate.inputSchema,
+    resultSchema: memoryToolContracts.memory_automatic_candidate.resultSchema,
+    execute: async (args, context) => {
+      if (
+        context.memory_automatic_enabled !== true
+        || !context.historico_id
+        || !context.mensagem_atual
+      ) {
+        return { status: 'SEM_CANDIDATO' as const };
+      }
+
+      const result = await service.saveCandidate({
+        usuario_id: context.usuario_id,
+        historico_id: context.historico_id,
+        mensagem: context.mensagem_atual,
+        candidato: args,
+        explicitWriteIntent: context.memory_write_intent,
+      });
+
+      if (result.status === 'SALVA' || result.status === 'DUPLICADA') {
+        return { status: result.status };
+      }
+      if (result.status === 'CONSENTIMENTO_INATIVO' || result.status === 'OPTOUT') {
+        return { status: result.status };
+      }
+      if (result.status === 'FALHA') return { status: 'FALHA' as const };
+      return { status: 'CANDIDATO_INVALIDO' as const };
+    },
+  };
 }
 
 export function registerMemoryTools(

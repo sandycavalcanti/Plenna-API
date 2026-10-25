@@ -88,6 +88,12 @@ class FakeMemoryRepository implements MemoryRepository {
   }
 }
 
+class FailingMemoryRepository extends FakeMemoryRepository {
+  override async create(_data: MemorySavePersistence): Promise<MemoryRecord> {
+    throw new Error('erro de persistência simulado');
+  }
+}
+
 function authorization(active = true) {
   return {
     usuario_id: 7,
@@ -105,6 +111,19 @@ function providerFor(decision: unknown, calls: { count: number }) {
       return JSON.stringify(decision);
     },
   };
+}
+
+async function captureAutomaticMemoryLogs<T>(operation: () => Promise<T>) {
+  const entries: unknown[][] = [];
+  const originalInfo = console.info;
+  console.info = (...args: Parameters<typeof console.info>) => {
+    entries.push(args);
+  };
+  try {
+    return { value: await operation(), entries };
+  } finally {
+    console.info = originalInfo;
+  }
 }
 
 test('reconhece pedidos naturais explícitos sem confundir recuperação com gravação', () => {
@@ -236,6 +255,135 @@ test('exige evidência para inferências e não armazena conteúdo sensível', a
   });
   assert.equal(sensitive.status, 'IGNORADA');
   assert.equal(calls.count, 1);
+  assert.equal(repository.count(), 0);
+});
+
+test('diferencia JSON inválido de schema inválido e registra apenas metadados seguros', async () => {
+  const repository = new FakeMemoryRepository();
+  const service = new AutomaticMemoryService(
+    new MemoryService(repository, { now: () => NOW }),
+    async () => authorization(),
+    { enabled: true, timeoutMs: 100 },
+  );
+  const sensitiveMarker = 'MARCADOR_NAO_DEVE_APARECER_NO_LOG';
+
+  const invalidJson = await captureAutomaticMemoryLogs(() => service.consider({
+    usuario_id: 7,
+    historico_id: 11,
+    mensagem: `Tenho uma preferência duradoura ${sensitiveMarker}.`,
+    provider: { async chat() { return 'não é JSON'; } },
+  }));
+  assert.deepEqual(invalidJson.value, { status: 'RESPOSTA_INVALIDA', motivo: 'JSON_INVALIDO' });
+
+  const invalidSchema = await captureAutomaticMemoryLogs(() => service.consider({
+    usuario_id: 7,
+    historico_id: 11,
+    mensagem: 'Tenho uma preferência duradoura por orientações curtas.',
+    provider: { async chat() { return JSON.stringify({ salvar: true, conteudo: 'Prefere orientações curtas.', origem: 'INFERIDA' }); } },
+  }));
+  assert.deepEqual(invalidSchema.value, { status: 'RESPOSTA_INVALIDA', motivo: 'SCHEMA_INVALIDO' });
+
+  const logs = JSON.stringify([...invalidJson.entries, ...invalidSchema.entries]);
+  assert.match(logs, /ai_memory_automatica/);
+  assert.doesNotMatch(logs, new RegExp(sensitiveMarker));
+  assert.doesNotMatch(logs, /não é JSON|Prefere orientações/);
+});
+
+test('classifica provider indisponível, decisão sem candidato e falha de persistência', async () => {
+  const service = new AutomaticMemoryService(
+    new MemoryService(new FakeMemoryRepository(), { now: () => NOW }),
+    async () => authorization(),
+    { enabled: true, timeoutMs: 100 },
+  );
+
+  const disabledService = new AutomaticMemoryService(
+    new MemoryService(new FakeMemoryRepository(), { now: () => NOW }),
+    async () => authorization(),
+    { enabled: false },
+  );
+  assert.deepEqual(
+    await disabledService.consider({
+      usuario_id: 7,
+      historico_id: 11,
+      mensagem: 'Tenho uma preferência duradoura.',
+      provider: { async chat() { throw new Error('não deveria ser chamado'); } },
+    }),
+    { status: 'DESABILITADA' },
+  );
+
+  assert.deepEqual(
+    await service.consider({ usuario_id: 7, historico_id: 11, mensagem: 'Tenho uma preferência duradoura.' }),
+    { status: 'PROVIDER_INDISPONIVEL' },
+  );
+  assert.deepEqual(
+    await service.consider({
+      usuario_id: 7,
+      historico_id: 11,
+      mensagem: 'Oi, tudo bem?',
+      provider: { async chat() { return JSON.stringify({ salvar: false }); } },
+    }),
+    { status: 'SEM_CANDIDATO' },
+  );
+
+  const failingService = new AutomaticMemoryService(
+    new MemoryService(new FailingMemoryRepository(), { now: () => NOW }),
+    async () => authorization(),
+    { enabled: true, timeoutMs: 100 },
+  );
+  assert.deepEqual(
+    await failingService.consider({
+      usuario_id: 7,
+      historico_id: 11,
+      mensagem: 'Tenho uma preferência duradoura por orientações curtas.',
+      provider: providerFor({ salvar: true, conteudo: 'Prefere orientações curtas.', origem: 'DECLARADA' }, { count: 0 }),
+    }),
+    { status: 'FALHA', motivo: 'PERSISTENCIA' },
+  );
+});
+
+test('salva candidato da rodada principal sem uma segunda chamada ao provider', async () => {
+  const repository = new FakeMemoryRepository();
+  const service = new AutomaticMemoryService(
+    new MemoryService(repository, { now: () => NOW }),
+    async () => authorization(),
+    { enabled: true },
+  );
+
+  const result = await service.saveCandidate({
+    usuario_id: 7,
+    historico_id: 11,
+    mensagem: 'Eu espero dois dias antes de comprar roupas para evitar compras desnecessárias.',
+    candidato: {
+      conteudo: 'Relata esperar dois dias antes de comprar roupas.',
+      origem: 'INFERIDA',
+      evidencia: 'esperar dois dias antes de comprar roupas',
+    },
+  });
+
+  assert.equal(result.status, 'SALVA');
+  assert.equal(repository.count(), 1);
+});
+
+test('rejeita candidato automático com número que não aparece na mensagem', async () => {
+  const repository = new FakeMemoryRepository();
+  const service = new AutomaticMemoryService(
+    new MemoryService(repository, { now: () => NOW }),
+    async () => authorization(),
+    { enabled: true },
+  );
+
+  const result = await service.saveCandidate({
+    usuario_id: 7,
+    historico_id: 11,
+    mensagem: 'Eu espero dois dias antes de comprar roupas.',
+    candidato: {
+      conteudo: 'Relata esperar cinco dias antes de comprar roupas.',
+      origem: 'INFERIDA',
+      evidencia: 'esperar cinco dias antes de comprar roupas',
+    },
+  });
+
+  assert.deepEqual(result, { status: 'IGNORADA', motivo: 'CONTEUDO_INVALIDO' });
   assert.equal(repository.count(), 0);
 });
 

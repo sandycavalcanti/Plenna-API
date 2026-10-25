@@ -6,10 +6,12 @@ import {
   memoryContentSchema,
   memoryEvidenceSchema,
   memoryIdSchema,
+  memoryAutomaticCandidateInputSchema,
   memoryOriginSchema,
   MemoryPolicyError,
 } from './memory.contracts.js';
 import type { MemoryAuthorizationContext } from './memory.contracts.js';
+import type { MemoryAutomaticCandidateInput } from './memory.contracts.js';
 import { MemoryService, MemoryServiceError } from './memory.service.js';
 
 const automaticMemoryDecisionSchema = z
@@ -43,8 +45,11 @@ export type AutomaticMemorySettings = {
   timeoutMs?: number;
 };
 
+export type AutomaticMemoryInvalidResponseReason = 'JSON_INVALIDO' | 'SCHEMA_INVALIDO';
+
 export type AutomaticMemoryResult =
-  | { status: 'DESABILITADA' | 'CONSENTIMENTO_INATIVO' | 'OPTOUT' | 'EXPLICITA_DELEGADA' | 'SEM_CANDIDATO' | 'RESPOSTA_INVALIDA' | 'PROVIDER_INDISPONIVEL' | 'CONSENTIMENTO_REVOGADO_DURANTE_ANALISE' }
+  | { status: 'DESABILITADA' | 'CONSENTIMENTO_INATIVO' | 'OPTOUT' | 'EXPLICITA_DELEGADA' | 'SEM_CANDIDATO' | 'PROVIDER_INDISPONIVEL' | 'CONSENTIMENTO_REVOGADO_DURANTE_ANALISE' }
+  | { status: 'RESPOSTA_INVALIDA'; motivo: AutomaticMemoryInvalidResponseReason }
   | { status: 'SALVA' | 'DUPLICADA'; memoria: Awaited<ReturnType<MemoryService['save']>>['memoria'] }
   | { status: 'IGNORADA' | 'FALHA'; motivo: 'CONTEUDO_INVALIDO' | 'CONTEUDO_SENSIVEL' | 'PERSISTENCIA' | 'DUPLICATA_INDISPONIVEL' | 'PROVIDER' | 'TIMEOUT' };
 
@@ -83,13 +88,74 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-function parseDecision(raw: string): AutomaticMemoryDecision | null {
+type ParsedAutomaticMemoryDecision =
+  | { decision: AutomaticMemoryDecision }
+  | { motivo: AutomaticMemoryInvalidResponseReason };
+
+function parseDecision(raw: string): ParsedAutomaticMemoryDecision {
+  let json: unknown;
   try {
-    const parsed = automaticMemoryDecisionSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : null;
+    json = JSON.parse(raw);
   } catch {
-    return null;
+    return { motivo: 'JSON_INVALIDO' };
   }
+
+  const parsed = automaticMemoryDecisionSchema.safeParse(json);
+  return parsed.success ? { decision: parsed.data } : { motivo: 'SCHEMA_INVALIDO' };
+}
+
+type AutomaticMemoryLogValue = boolean | number | string;
+
+function logAutomaticMemory(
+  evento: string,
+  details: Record<string, AutomaticMemoryLogValue> = {},
+): void {
+  // Os eventos são deliberadamente poucos e nunca carregam mensagem, evidência,
+  // prompt, resposta do provider, identificadores de usuário ou dados financeiros.
+  if (env.isProduction && evento !== 'final' && evento !== 'falha_integracao') return;
+  console.info('ai_memory_automatica', { evento, ...details });
+}
+
+function groundingTokens(text: string): string[] {
+  return normalizeForIntent(text).match(/[\p{L}\p{N}]{4,}/gu) ?? [];
+}
+
+const portugueseNumberWords = new Set([
+  'zero', 'um', 'uma', 'dois', 'duas', 'tres', 'quatro', 'cinco', 'seis',
+  'sete', 'oito', 'nove', 'dez', 'onze', 'doze', 'treze', 'catorze',
+  'quatorze', 'quinze', 'dezesseis', 'dezessete', 'dezoito', 'dezenove',
+  'vinte', 'trinta', 'quarenta', 'cinquenta', 'sessenta', 'setenta',
+  'oitenta', 'noventa', 'cem',
+]);
+
+function numericTokens(text: string): string[] {
+  const normalized = normalizeForIntent(text);
+  const digits = normalized.match(/\b\d+(?:[.,]\d+)?\b/g) ?? [];
+  const words = (normalized.match(/[\p{L}]+/gu) ?? [])
+    .filter((word) => portugueseNumberWords.has(word));
+  return [...digits, ...words];
+}
+
+/**
+ * A tool recebe uma decisão do mesmo modelo que está respondendo o chat, mas
+ * a persistência só é aceita quando a evidência mantém ligação observável com
+ * a mensagem atual. Isso é uma barreira conservadora, não uma prova semântica
+ * completa de segurança.
+ */
+function isGroundedCandidate(message: string, candidate: MemoryAutomaticCandidateInput): boolean {
+  const normalizedMessage = normalizeForIntent(message);
+  const normalizedContent = normalizeForIntent(candidate.conteudo);
+  if (!normalizedMessage || normalizedContent === normalizedMessage) return false;
+
+  const sourceTokens = new Set(groundingTokens(message));
+  const evidenceTokens = new Set(groundingTokens(candidate.evidencia));
+  const overlap = [...evidenceTokens].filter((token) => sourceTokens.has(token)).length;
+  const minimumOverlap = sourceTokens.size <= 6 ? 1 : 2;
+  if (overlap < minimumOverlap) return false;
+
+  const sourceNumbers = new Set(numericTokens(message));
+  return numericTokens(`${candidate.conteudo} ${candidate.evidencia}`)
+    .every((number) => sourceNumbers.has(number));
 }
 
 export class AutomaticMemoryService {
@@ -99,6 +165,96 @@ export class AutomaticMemoryService {
     private readonly settings: AutomaticMemorySettings = {},
   ) {}
 
+  /**
+   * Persiste um candidato produzido pela rodada principal do chatbot. Não
+   * chama provider: a decisão de relevância já veio como tool call da rodada
+   * principal e o backend ainda revalida consentimento, evidência e conteúdo.
+   */
+  async saveCandidate(input: {
+    usuario_id: number;
+    historico_id: number;
+    mensagem: string;
+    candidato: unknown;
+    explicitWriteIntent?: boolean;
+  }): Promise<AutomaticMemoryResult> {
+    const startedAt = Date.now();
+    const enabled = this.settings.enabled ?? env.aiMemoryAutomaticEnabled;
+    let consentimento: 'NAO_AVALIADO' | 'ATIVO' | 'INATIVO' = 'NAO_AVALIADO';
+    const finish = (result: AutomaticMemoryResult): AutomaticMemoryResult => {
+      const details: Record<string, AutomaticMemoryLogValue> = {
+        fluxo: 'RODADA_PRINCIPAL',
+        resultado: result.status,
+        duracaoMs: Date.now() - startedAt,
+        habilitada: enabled,
+        consentimento,
+        tentativaExterna: false,
+      };
+      if ('motivo' in result) details.motivo = result.motivo;
+      logAutomaticMemory('final', details);
+      return result;
+    };
+
+    logAutomaticMemory('inicio', {
+      fluxo: 'RODADA_PRINCIPAL',
+      habilitada: enabled,
+      providerSelecionado: env.aiProvider,
+      // A ferramenta só é exposta quando a rodada possui chatWithTools.
+      providerDisponivel: true,
+    });
+
+    if (!memoryIdSchema.safeParse(input.usuario_id).success || !memoryIdSchema.safeParse(input.historico_id).success) {
+      return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_INVALIDO' });
+    }
+    if (hasMemoryWriteOptOut(input.mensagem)) return finish({ status: 'OPTOUT' });
+    if (input.explicitWriteIntent) return finish({ status: 'EXPLICITA_DELEGADA' });
+    if (sensitiveMemoryInputPattern.test(input.mensagem)) {
+      return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_SENSIVEL' });
+    }
+    if (!enabled) return finish({ status: 'DESABILITADA' });
+
+    const parsedCandidate = memoryAutomaticCandidateInputSchema.safeParse(input.candidato);
+    if (!parsedCandidate.success || !isGroundedCandidate(input.mensagem, parsedCandidate.data)) {
+      return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_INVALIDO' });
+    }
+
+    let authorization: MemoryAuthorizationContext;
+    try {
+      authorization = await this.resolveAuthorization(input.usuario_id);
+    } catch {
+      consentimento = 'INATIVO';
+      return finish({ status: 'CONSENTIMENTO_INATIVO' });
+    }
+    if (!authorization.consentimento_memoria_ativo || !authorization.pode_escrever) {
+      consentimento = 'INATIVO';
+      return finish({ status: 'CONSENTIMENTO_INATIVO' });
+    }
+    consentimento = 'ATIVO';
+
+    try {
+      const result = await this.memoryService.saveAutomatic(
+        { ...authorization, pode_escrever_automaticamente: true },
+        { ...parsedCandidate.data, historico_id: input.historico_id },
+      );
+      return finish(result.deduplicada
+        ? { status: 'DUPLICADA', memoria: result.memoria }
+        : { status: 'SALVA', memoria: result.memoria });
+    } catch (error) {
+      if (error instanceof MemoryPolicyError && error.code === 'MEMORY_SENSITIVE_CONTENT') {
+        return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_SENSIVEL' });
+      }
+      if (error instanceof MemoryPolicyError || error instanceof MemoryServiceError) {
+        if (error.code === 'MEMORY_DUPLICATE_INACTIVE_OR_EXPIRED') {
+          return finish({ status: 'IGNORADA', motivo: 'DUPLICATA_INDISPONIVEL' });
+        }
+        if (error instanceof MemoryServiceError && error.code === 'MEMORY_PERSISTENCE_FAILED') {
+          return finish({ status: 'FALHA', motivo: 'PERSISTENCIA' });
+        }
+        return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_INVALIDO' });
+      }
+      return finish({ status: 'FALHA', motivo: 'PERSISTENCIA' });
+    }
+  }
+
   async consider(input: {
     usuario_id: number;
     historico_id: number;
@@ -106,34 +262,67 @@ export class AutomaticMemoryService {
     provider?: AutomaticMemoryProvider;
     explicitWriteIntent?: boolean;
   }): Promise<AutomaticMemoryResult> {
-    if (!memoryIdSchema.safeParse(input.usuario_id).success || !memoryIdSchema.safeParse(input.historico_id).success) {
-      return { status: 'FALHA', motivo: 'CONTEUDO_INVALIDO' };
-    }
-
-    if (hasMemoryWriteOptOut(input.mensagem)) return { status: 'OPTOUT' };
-    if (input.explicitWriteIntent) return { status: 'EXPLICITA_DELEGADA' };
-    if (sensitiveMemoryInputPattern.test(input.mensagem)) {
-      return { status: 'IGNORADA', motivo: 'CONTEUDO_SENSIVEL' };
-    }
-
+    const startedAt = Date.now();
     const enabled = this.settings.enabled ?? env.aiMemoryAutomaticEnabled;
-    if (!enabled) return { status: 'DESABILITADA' };
+    let consentimento: 'NAO_AVALIADO' | 'ATIVO' | 'INATIVO' = 'NAO_AVALIADO';
+    let tentativaExterna = false;
+    const finish = (result: AutomaticMemoryResult): AutomaticMemoryResult => {
+      const details: Record<string, AutomaticMemoryLogValue> = {
+        resultado: result.status,
+        duracaoMs: Date.now() - startedAt,
+        habilitada: enabled,
+        providerSelecionado: env.aiProvider,
+        providerDisponivel: Boolean(input.provider),
+        consentimento,
+        tentativaExterna,
+      };
+      if ('motivo' in result) details.motivo = result.motivo;
+      logAutomaticMemory('final', details);
+      return result;
+    };
+
+    logAutomaticMemory('inicio', {
+      habilitada: enabled,
+      providerSelecionado: env.aiProvider,
+      providerDisponivel: Boolean(input.provider),
+    });
+
+    if (!memoryIdSchema.safeParse(input.usuario_id).success || !memoryIdSchema.safeParse(input.historico_id).success) {
+      return finish({ status: 'FALHA', motivo: 'CONTEUDO_INVALIDO' });
+    }
+
+    if (hasMemoryWriteOptOut(input.mensagem)) return finish({ status: 'OPTOUT' });
+    if (input.explicitWriteIntent) return finish({ status: 'EXPLICITA_DELEGADA' });
+    if (sensitiveMemoryInputPattern.test(input.mensagem)) {
+      return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_SENSIVEL' });
+    }
+
+    if (!enabled) return finish({ status: 'DESABILITADA' });
 
     let authorization: MemoryAuthorizationContext;
     try {
       authorization = await this.resolveAuthorization(input.usuario_id);
     } catch {
-      return { status: 'CONSENTIMENTO_INATIVO' };
+      consentimento = 'INATIVO';
+      logAutomaticMemory('consentimento', { autorizado: false, motivo: 'AUTORIZACAO_INDISPONIVEL' });
+      return finish({ status: 'CONSENTIMENTO_INATIVO' });
     }
     if (!authorization.consentimento_memoria_ativo || !authorization.pode_escrever) {
-      return { status: 'CONSENTIMENTO_INATIVO' };
+      consentimento = 'INATIVO';
+      logAutomaticMemory('consentimento', { autorizado: false, motivo: 'CONSENTIMENTO_INATIVO' });
+      return finish({ status: 'CONSENTIMENTO_INATIVO' });
     }
-    if (!input.provider) return { status: 'PROVIDER_INDISPONIVEL' };
+    consentimento = 'ATIVO';
+    logAutomaticMemory('consentimento', { autorizado: true });
+    if (!input.provider) return finish({ status: 'PROVIDER_INDISPONIVEL' });
 
     const message = input.mensagem.trim().slice(0, this.settings.maxContextChars ?? env.aiMemoryAutomaticMaxContextChars);
-    if (!message) return { status: 'SEM_CANDIDATO' };
+    if (!message) return finish({ status: 'SEM_CANDIDATO' });
 
-    let decision: AutomaticMemoryDecision | null;
+    let parsedDecision: ParsedAutomaticMemoryDecision;
+    const timeoutMs = this.settings.timeoutMs ?? env.aiMemoryAutomaticTimeoutMs;
+    tentativaExterna = true;
+    logAutomaticMemory('tentativa_externa', { timeoutMs });
     try {
       const raw = await withTimeout(input.provider.chat([
         {
@@ -147,14 +336,22 @@ export class AutomaticMemoryService {
           ].join(' '),
         },
         { role: 'user', content: message },
-      ]), this.settings.timeoutMs ?? env.aiMemoryAutomaticTimeoutMs);
-      decision = parseDecision(raw);
+      ]), timeoutMs);
+      parsedDecision = parseDecision(raw);
     } catch (error) {
-      return { status: 'FALHA', motivo: error instanceof Error && error.message === 'AUTOMATIC_MEMORY_TIMEOUT' ? 'TIMEOUT' : 'PROVIDER' };
+      const motivo = error instanceof Error && error.message === 'AUTOMATIC_MEMORY_TIMEOUT' ? 'TIMEOUT' : 'PROVIDER';
+      logAutomaticMemory('analise', { resultado: 'FALHA', motivo });
+      return finish({ status: 'FALHA', motivo });
     }
 
-    if (!decision) return { status: 'RESPOSTA_INVALIDA' };
-    if (!decision.salvar) return { status: 'SEM_CANDIDATO' };
+    if ('motivo' in parsedDecision) {
+      logAutomaticMemory('analise', { resultado: 'RESPOSTA_INVALIDA', motivo: parsedDecision.motivo });
+      return finish({ status: 'RESPOSTA_INVALIDA', motivo: parsedDecision.motivo });
+    }
+
+    const decision = parsedDecision.decision;
+    logAutomaticMemory('analise', { resultado: decision.salvar ? 'CANDIDATO' : 'SEM_CANDIDATO' });
+    if (!decision.salvar) return finish({ status: 'SEM_CANDIDATO' });
 
     // A autorização é reconsultada depois da análise. O modelo não controla
     // consentimento, usuário, histórico ou a modalidade de escrita.
@@ -162,10 +359,14 @@ export class AutomaticMemoryService {
     try {
       currentAuthorization = await this.resolveAuthorization(input.usuario_id);
     } catch {
-      return { status: 'CONSENTIMENTO_REVOGADO_DURANTE_ANALISE' };
+      consentimento = 'INATIVO';
+      logAutomaticMemory('consentimento', { autorizado: false, motivo: 'REVOGADO_DURANTE_ANALISE' });
+      return finish({ status: 'CONSENTIMENTO_REVOGADO_DURANTE_ANALISE' });
     }
     if (!currentAuthorization.consentimento_memoria_ativo || !currentAuthorization.pode_escrever) {
-      return { status: 'CONSENTIMENTO_REVOGADO_DURANTE_ANALISE' };
+      consentimento = 'INATIVO';
+      logAutomaticMemory('consentimento', { autorizado: false, motivo: 'REVOGADO_DURANTE_ANALISE' });
+      return finish({ status: 'CONSENTIMENTO_REVOGADO_DURANTE_ANALISE' });
     }
 
     try {
@@ -178,20 +379,25 @@ export class AutomaticMemoryService {
           historico_id: input.historico_id,
         },
       );
-      return result.deduplicada
+      return finish(result.deduplicada
         ? { status: 'DUPLICADA', memoria: result.memoria }
-        : { status: 'SALVA', memoria: result.memoria };
+        : { status: 'SALVA', memoria: result.memoria });
     } catch (error) {
       if (error instanceof MemoryPolicyError && error.code === 'MEMORY_SENSITIVE_CONTENT') {
-        return { status: 'IGNORADA', motivo: 'CONTEUDO_SENSIVEL' };
+        return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_SENSIVEL' });
       }
       if (error instanceof MemoryPolicyError || error instanceof MemoryServiceError) {
         if (error.code === 'MEMORY_DUPLICATE_INACTIVE_OR_EXPIRED') {
-          return { status: 'IGNORADA', motivo: 'DUPLICATA_INDISPONIVEL' };
+          return finish({ status: 'IGNORADA', motivo: 'DUPLICATA_INDISPONIVEL' });
         }
-        return { status: 'IGNORADA', motivo: 'CONTEUDO_INVALIDO' };
+        if (error instanceof MemoryServiceError && error.code === 'MEMORY_PERSISTENCE_FAILED') {
+          logAutomaticMemory('analise', { resultado: 'FALHA', motivo: 'PERSISTENCIA' });
+          return finish({ status: 'FALHA', motivo: 'PERSISTENCIA' });
+        }
+        return finish({ status: 'IGNORADA', motivo: 'CONTEUDO_INVALIDO' });
       }
-      return { status: 'FALHA', motivo: 'PERSISTENCIA' };
+      logAutomaticMemory('analise', { resultado: 'FALHA', motivo: 'PERSISTENCIA' });
+      return finish({ status: 'FALHA', motivo: 'PERSISTENCIA' });
     }
   }
 }
