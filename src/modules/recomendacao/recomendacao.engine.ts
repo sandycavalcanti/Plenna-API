@@ -43,10 +43,10 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     if (financeiro.estadoOrcamento === 'EXCEDIDO' && orcamento.estadoNoUniversoObservado === 'EXCEDIDO' && orcamento.disponibilidade !== 'INDISPONIVEL' && financeiro.orcamentoMensal !== null && financeiro.orcamentoMensal > 0 && financeiro.comprasComValor > 0 && budgetEvidence && knownEvidence.length > 0) {
       const current = orcamento.vigencia === 'ATUAL_SEM_HISTORICO';
       recommendations.push({
-        codigo: 'ACOMPANHAR_ORCAMENTO_EXCEDIDO', prioridade: 1, titulo: 'Acompanhe seu orçamento',
+        codigo: 'ACOMPANHAR_ORCAMENTO_EXCEDIDO', prioridade: 1, titulo: 'Observe seu orçamento',
         mensagem: current
-          ? 'O total conhecido das compras registradas supera o orçamento mensal atualmente informado. Revise o planejamento; isso não comprova qual orçamento estava vigente nas compras.'
-          : 'O total conhecido das compras registradas supera o orçamento informado para o período. Revise o planejamento para os próximos gastos.',
+          ? 'O total conhecido dos gastos registrados já ultrapassou o orçamento mensal atualmente informado. Talvez seja um bom momento para olhar as despesas recentes e identificar onde economizar nas próximas compras. Quer analisar isso comigo?'
+          : 'O total conhecido dos gastos do período ultrapassou o orçamento informado para essa janela. Vale olhar as despesas recentes e pensar em prioridades para as próximas compras. Quer analisar isso comigo?',
         referencias: sorted([...budgetEvidence.referencias, ...knownEvidence.flatMap(e => e.referencias)]),
         limitacoes: sorted([...input.limitacoes, ...(financeiro.qualidade === 'PARCIAL' || orcamento.disponibilidade === 'PARCIAL' ? ['TOTAL_CONHECIDO_NAO_REPRESENTA_CONSUMO_COMPLETO'] : [])]),
       });
@@ -55,10 +55,10 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     const excessEvidence = limiteIndividual.desvios.filter(d => d.excessoCentavos > 0).map(d => purchaseEvidence(d.compraId)).filter(e => e !== undefined);
     if (limiteIndividual.disponibilidade !== 'INDISPONIVEL' && limiteIndividual.limiteCentavos !== null && limiteIndividual.limiteCentavos > 0 && limitEvidence && excessEvidence.length > 0) {
       recommendations.push({
-        codigo: 'REVISAR_LIMITE_INDIVIDUAL', prioridade: 2, titulo: 'Revise seu limite por compra',
+        codigo: 'REVISAR_LIMITE_INDIVIDUAL', prioridade: 2, titulo: 'Observe gastos acima do limite',
         mensagem: limiteIndividual.vigencia === 'ATUAL_SEM_HISTORICO'
-          ? 'Há compras registradas com valor conhecido acima do limite individual atualmente informado. Confira se esse limite corresponde ao seu planejamento atual.'
-          : 'Há compras registradas com valor conhecido acima do limite individual informado para o período. Confira seu planejamento antes de novas compras.',
+          ? 'Há compras registradas com valor conhecido acima do limite por compra atualmente informado. Que tal analisarmos esses gastos e pensarmos em maneiras de evitar novos excessos? Pequenas decisões podem ajudar a manter seu planejamento.'
+          : 'Há compras registradas com valor conhecido acima do limite por compra informado para o período. Vale analisar esses gastos e pensar em alternativas para as próximas compras.',
         referencias: sorted([...limitEvidence.referencias, ...excessEvidence.flatMap(e => e.referencias)]),
         limitacoes: sorted([...input.limitacoes, ...(limiteIndividual.disponibilidade === 'PARCIAL' ? ['COMPARACAO_RESTRITA_A_COMPRAS_COM_EVIDENCIA'] : [])]),
       });
@@ -67,8 +67,8 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
       .sort((a, b) => b.participacao - a.participacao || a.categoriaId - b.categoriaId)[0];
     if (expanded && category && input.indicadores.categorias.disponibilidade !== 'INDISPONIVEL' && category.compras >= 3 && category.participacao >= 0.6) {
       recommendations.push({
-        codigo: 'CONCENTRACAO_CATEGORIA', prioridade: 3, titulo: 'Revise a categoria mais frequente',
-        mensagem: 'Uma categoria concentra boa parte das compras registradas no período. Vale revisar se esse volume está alinhado ao seu planejamento.',
+        codigo: 'CONCENTRACAO_CATEGORIA', prioridade: 3, titulo: 'Observe a categoria mais frequente',
+        mensagem: 'Uma categoria concentra boa parte das compras registradas no período. Vale observar se essas despesas estão alinhadas às prioridades do momento e pensar em alternativas para as próximas compras.',
         referencias: [`categoria:${category.categoriaId}`, `compras:${category.compras}`],
         limitacoes: sorted([...input.limitacoes, ...(input.indicadores.categorias.disponibilidade === 'PARCIAL' ? ['CATEGORIAS_COM_COBERTURA_PARCIAL'] : [])]),
       });
@@ -89,8 +89,8 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     }
     if (expanded && context.comprasImpulsivas && context.comprasImpulsivas.quantidade > 0) {
       recommendations.push({
-        codigo: 'REVISAR_COMPRAS_IMPULSIVAS', prioridade: 2, titulo: 'Revise compras marcadas como impulsivas',
-        mensagem: 'Há compras marcadas como impulsivas no período. Antes de novas compras, considere uma pausa e confira o planejamento.',
+        codigo: 'REVISAR_COMPRAS_IMPULSIVAS', prioridade: 2, titulo: 'Reflita sobre compras marcadas como impulsivas',
+        mensagem: 'Há compras classificadas como impulsivas no período. Antes de novas compras, uma pausa e a revisão das prioridades podem ajudar a decidir com mais calma.',
         referencias: [`compras-impulsivas:${context.comprasImpulsivas.quantidade}`], limitacoes: sorted([...input.limitacoes, 'CLASSIFICACAO_FORNECIDA_PELO_USUARIO_OU_FLUXO_EXISTENTE']),
       });
     }
@@ -98,7 +98,7 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     if (expanded && openGoal) {
       recommendations.push({
         codigo: 'ATENCAO_META', prioridade: 4, titulo: 'Mantenha sua meta no radar',
-        mensagem: `A meta "${openGoal.titulo.slice(0, 60)}" continua aberta. Revise o próximo passo e o prazo informado no seu planejamento.`,
+        mensagem: `A meta "${openGoal.titulo.slice(0, 60)}" continua em andamento. Que tal vermos como os próximos gastos podem se encaixar melhor no seu planejamento para ajudar você a avançar?`,
         referencias: [`meta:${openGoal.id}`], limitacoes: sorted([...input.limitacoes, 'PROGRESSO_MONETARIO_DA_META_NAO_DISPONIVEL_NESTE_CONTRATO']),
       });
     }
@@ -106,7 +106,7 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     if (expanded && recurring) {
       recommendations.push({
         codigo: 'COMPROMISSO_RECORRENTE', prioridade: 4, titulo: 'Confira seus compromissos recorrentes',
-        mensagem: 'Há um compromisso recorrente com próxima ocorrência registrada. Reserve esse valor no planejamento do período.',
+        mensagem: 'Há um compromisso recorrente com próxima ocorrência registrada. Vale reservar esse valor no planejamento do período e pensar em como encaixá-lo nos próximos gastos.',
         referencias: [`recorrencia:${recurring.id}`], limitacoes: sorted([...input.limitacoes, 'VALOR_RECORRENTE_ESTIMADO_PELOS_ITENS_ATIVOS']),
       });
     }
@@ -115,8 +115,8 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     // Per-purchase v1 embeds the limit reference in purchase evidence, without
     // a structured validity field: wording conservatively always says current.
     if (input.elegivel && input.disponibilidadeValor === 'DISPONIVEL' && input.valorLiquidoCentavos !== null && input.excessoLimiteCentavos !== null && input.excessoLimiteCentavos > 0 && evidence && evidence.referencias.some(r => r !== `compra:${input.compraId}`)) {
-      recommendations.push({ codigo: 'REVISAR_LIMITE_INDIVIDUAL', prioridade: 2, titulo: 'Revise seu limite por compra',
-        mensagem: 'Esta compra registrada tem valor conhecido acima do limite usado na análise. Confira o limite atualmente informado e seu planejamento atual.',
+      recommendations.push({ codigo: 'REVISAR_LIMITE_INDIVIDUAL', prioridade: 2, titulo: 'Observe este gasto acima do limite',
+        mensagem: 'Esta compra registrada ficou acima do limite usado na análise. Vale analisar esse gasto e pensar em alternativas para evitar novos excessos, sem presumir qual limite estava vigente na data.',
         referencias: sorted(evidence.referencias), limitacoes: sorted([...input.limitacoes, 'VIGENCIA_DO_LIMITE_NAO_COMPROVADA_NESTE_CONTRATO']) });
     }
   }

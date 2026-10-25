@@ -308,10 +308,15 @@ export const memoryAuthorizationContextSchema = z
     pode_ler: z.boolean(),
     pode_escrever: z.boolean(),
     pode_excluir: z.boolean(),
+    // Somente o fluxo backend de memória automática pode elevar esta
+    // permissão. Ela nunca é recebida como argumento de uma tool.
+    pode_escrever_automaticamente: z.boolean().optional(),
   })
   .strict();
 
-export type MemoryAuthorizationContext = z.infer<typeof memoryAuthorizationContextSchema>;
+// O campo automático é opcional na entrada para preservar os contextos
+// explícitos existentes; o schema aplica false quando ele não é fornecido.
+export type MemoryAuthorizationContext = z.input<typeof memoryAuthorizationContextSchema>;
 
 export type MemoryPolicyErrorCode =
   | 'MEMORY_AUTHORIZATION_INVALID'

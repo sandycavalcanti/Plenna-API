@@ -70,7 +70,7 @@ export class RecommendationTextService {
       .slice(0, this.settings.maxContextChars ?? env.recommendationMaxContextChars);
     try {
       const raw = await withTimeout(this.provider.chat([
-        { role: 'system', content: 'Redija uma recomendação financeira acolhedora, factual e curta em português brasileiro. Responda somente JSON com titulo e texto. Não invente valores, causas ou fatos.' },
+        { role: 'system', content: 'Redija uma recomendação financeira acolhedora, preventiva, prática e curta em português brasileiro. Ajude o usuário a pensar em prioridades, gastos não essenciais e próximas decisões sem julgamentos. Não sugira alterar ou aumentar limites como solução automática. Responda somente JSON com titulo e texto. Não invente valores, tendências, causas ou fatos e preserve as limitações das evidências.' },
         { role: 'user', content: JSON.stringify({ codigo: draft.codigo, tituloBase: draft.titulo, mensagemBase: draft.mensagem, evidencias: limitedEvidence }) },
       ]), this.settings.timeoutMs ?? env.recommendationTimeoutMs);
       return safeProviderText(raw, draft);

@@ -86,7 +86,13 @@ function errorReason(error: unknown): ProactiveFallbackReason {
 }
 
 function deterministic(facts: ProactiveFacts, fonte: ProactiveText['fonte'] = 'DETERMINISTICA'): ProactiveText {
-  const text = `Quero compartilhar uma observação baseada em dados registrados: ${facts.titulo}. ${facts.texto}`;
+  const guidance: string = {
+    ACOMPANHAR_ORCAMENTO_EXCEDIDO: 'Vale olhar as despesas recentes e pensar em onde economizar nas próximas compras. Quer analisar isso comigo?',
+    REVISAR_LIMITE_INDIVIDUAL: 'Que tal analisarmos esses gastos e pensarmos em maneiras de evitar novos excessos? Pequenas decisões podem ajudar a manter seu planejamento.',
+    ATENCAO_META: 'Que tal vermos como os próximos gastos podem se encaixar melhor no seu planejamento para ajudar você a avançar?',
+    REVISAR_COMPRAS_IMPULSIVAS: 'Uma pausa antes das próximas compras pode ajudar você a revisar prioridades e decidir com mais calma.',
+  }[facts.tipo] ?? 'Se quiser, podemos conversar sobre próximos passos a partir desses dados.';
+  const text = `${facts.texto} ${guidance}`;
   return { ...proactiveTextSchema.parse({ titulo: facts.titulo, texto: text.slice(0, 600) }), fonte };
 }
 
@@ -210,7 +216,7 @@ export class ProactiveMessageService {
       logRedaction('tentativa_externa', { iaHabilitada: aiEnabled, tentativa: attempt, maxTentativas: maxAttempts });
       try {
       const raw = await withTimeout(this.provider.chat([
-        { role: 'system', content: 'Redija uma mensagem proativa curta em português brasileiro. Responda somente JSON com titulo e texto. Reescreva apenas os fatos fornecidos; não invente números, causas, emoções, diagnósticos ou dados pessoais.' },
+        { role: 'system', content: 'Redija uma mensagem proativa curta, acolhedora e preventiva em português brasileiro. Ofereça uma orientação prática de consumo consciente e convide o usuário a conversar. Responda somente JSON com titulo e texto. Reescreva apenas os fatos fornecidos; não invente números, causas, emoções, diagnósticos ou dados pessoais. Não sugira alterar ou aumentar limites como solução automática.' },
         { role: 'user', content: limitedFacts },
       ]), this.settings.timeoutMs ?? env.proactivityTimeoutMs);
       const validation = groundedOutput(raw, facts);

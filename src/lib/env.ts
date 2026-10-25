@@ -39,6 +39,9 @@ const requestyChatModel = process.env.REQUESTY_CHAT_MODEL ?? process.env.REQUEST
 const chatMaxMessageCharsRaw = process.env.CHAT_MAX_MESSAGE_CHARS ?? "4000";
 const chatContextMaxMessagesRaw = process.env.CHAT_CONTEXT_MAX_MESSAGES ?? "30";
 const chatContextMaxCharsRaw = process.env.CHAT_CONTEXT_MAX_CHARS ?? "12000";
+const aiMemoryAutomaticEnabledRaw = process.env.AI_MEMORY_AUTOMATIC_ENABLED ?? "false";
+const aiMemoryAutomaticMaxContextCharsRaw = process.env.AI_MEMORY_AUTOMATIC_MAX_CONTEXT_CHARS ?? "1200";
+const aiMemoryAutomaticTimeoutMsRaw = process.env.AI_MEMORY_AUTOMATIC_TIMEOUT_MS ?? "3000";
 const aiToolMaxCallsRaw = process.env.AI_TOOL_MAX_CALLS ?? "8";
 const aiToolMaxRoundsRaw = process.env.AI_TOOL_MAX_ROUNDS ?? "4";
 const aiToolTimeoutMsRaw = process.env.AI_TOOL_TIMEOUT_MS ?? "20000";
@@ -205,6 +208,9 @@ export const env = {
   chatMaxMessageChars: requireBoundedPositiveInteger("CHAT_MAX_MESSAGE_CHARS", chatMaxMessageCharsRaw, 4_000),
   chatContextMaxMessages: requirePositiveInteger("CHAT_CONTEXT_MAX_MESSAGES", chatContextMaxMessagesRaw),
   chatContextMaxChars: requirePositiveInteger("CHAT_CONTEXT_MAX_CHARS", chatContextMaxCharsRaw),
+  aiMemoryAutomaticEnabled: parseStrictBoolean("AI_MEMORY_AUTOMATIC_ENABLED", aiMemoryAutomaticEnabledRaw),
+  aiMemoryAutomaticMaxContextChars: requireBoundedPositiveInteger("AI_MEMORY_AUTOMATIC_MAX_CONTEXT_CHARS", aiMemoryAutomaticMaxContextCharsRaw, 4_000),
+  aiMemoryAutomaticTimeoutMs: requireBoundedPositiveInteger("AI_MEMORY_AUTOMATIC_TIMEOUT_MS", aiMemoryAutomaticTimeoutMsRaw, 10_000),
   aiToolMaxCalls: requireBoundedPositiveInteger("AI_TOOL_MAX_CALLS", aiToolMaxCallsRaw, 32),
   aiToolMaxRounds: requireBoundedPositiveInteger("AI_TOOL_MAX_ROUNDS", aiToolMaxRoundsRaw, 12),
   aiToolTimeoutMs: requirePositiveInteger("AI_TOOL_TIMEOUT_MS", aiToolTimeoutMsRaw),

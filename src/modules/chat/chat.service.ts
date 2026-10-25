@@ -7,7 +7,9 @@ import { CodexLocalError } from '../email/codex-local.provider.js';
 import { AIOrchestrationError } from '../ai/ai.errors.js';
 import { AIOrchestrator } from '../ai/ai.orchestrator.js';
 import { aiToolRegistry } from '../ai/ai.registry.js';
-import '../ai/memory.runtime.js';
+import { memoryService } from '../ai/memory.runtime.js';
+import { resolveMemoryAuthorization } from '../ai/memory.authorization.js';
+import { AutomaticMemoryService, hasMemoryWriteOptOut } from '../ai/memory.automatic.js';
 import { MESSAGE_SENDER, DEFAULT_HISTORY_NAME, type ChatDatabase, type PublicHistoryWithMessages } from './chat.contracts.js';
 import { buildChatContext } from './chat.context.js';
 import { createMessageSchema, historyIdSchema, type CreateMessageDTO } from './chat.schemas.js';
@@ -28,6 +30,11 @@ const messageSelect = {
   mensagem_texto: true,
   mensagem_data_criacao: true,
 } as const;
+
+const automaticMemoryService = new AutomaticMemoryService(
+  memoryService,
+  resolveMemoryAuthorization,
+);
 
 function assertUserId(userId: number) {
   if (!Number.isInteger(userId) || userId <= 0) {
@@ -113,14 +120,14 @@ export function hasExplicitMemoryWriteIntent(text: string) {
   );
   if (isRecallQuestion) return false;
 
-  if (/\b(?:nao|nunca|jamais)\s+(?:precisa\s+)?(?:salvar|guardar|registrar|anotar|memorizar|lembrar)\b/.test(normalized)) {
+  if (hasMemoryWriteOptOut(normalized)) {
     return false;
   }
 
-  const directWrite = /^(?:por favor\s*,?\s*)?(?:registre|anote|salve|guarde|memorize|atualize|corrija|adicione|remova|esqueca)\b/.test(normalized);
-  const directRemember = /^(?:por favor\s*,?\s*)?lembre-se\b[\s\S]{0,120}\b(?:que|isso|isto|minha memoria|na memoria)\b/.test(normalized);
+  const directWrite = /^(?:plenna\s*[,;:]?\s*)?(?:por favor\s*,?\s*)?(?:registre|anote|salve|guarde|memorize|atualize|corrija|adicione|remova)\b/.test(normalized);
+  const directRemember = /^(?:plenna\s*[,;:]?\s*)?(?:por favor\s*,?\s*)?(?:lembre-se|lembre)\b[\s\S]{0,160}\b(?:que|isso|isto|minha memoria|na memoria|nas proximas conversas)\b/.test(normalized);
   const requestedWrite = /\b(?:quero|gostaria|preciso)\s+que\s+(?:voce\s+)?(?:registre|anote|salve|guarde|memorize|lembre(?:-se)?|atualize|corrija|adicione|remova|esqueca)\b/.test(normalized);
-  const politeWrite = /\b(?:voce|vc)\s+(?:pode|poderia)\s+(?:por favor\s+)?(?:salvar|guardar|registrar|anotar|memorizar|atualizar|corrigir|adicionar|remover|esquecer)\b[^?]{0,120}(?:\bque\b|\b(?:na|em)\s+(?:minha\s+)?memoria\b|\b(?:minha|esta)\s+memoria\b)/.test(normalized);
+  const politeWrite = /\b(?:voce|vc)\s+(?:pode|poderia)\s+(?:por favor\s+)?(?:salvar|guardar|registrar|anotar|memorizar|atualizar|corrigir|adicionar|remover)\b[^?]{0,160}(?:\bque\b|\b(?:na|em)\s+(?:minha\s+)?memoria\b|\b(?:minha|esta)\s+memoria\b|\bisso\b|\bessa preferencia\b)/.test(normalized);
 
   return directWrite || directRemember || requestedWrite || politeWrite;
 }
@@ -454,6 +461,7 @@ export class ChatService {
     }
 
     const context = buildChatContext(after.mensagens, persistedCurrent);
+    const explicitMemoryWriteIntent = hasExplicitMemoryWriteIntent(persistedCurrent.texto);
     let assistantText: string;
     try {
       const orchestration = await new AIOrchestrator(aiToolRegistry).run(
@@ -461,7 +469,7 @@ export class ChatService {
         context,
         {
           usuario_id: userId,
-          memory_write_intent: hasExplicitMemoryWriteIntent(persistedCurrent.texto),
+          memory_write_intent: explicitMemoryWriteIntent,
         },
       );
       assistantText = orchestration.text;
@@ -479,6 +487,16 @@ export class ChatService {
       assistantText,
       db,
     );
+
+    // A avaliação automática é secundária: falhas não invalidam a resposta
+    // já persistida e o serviço revalida consentimento antes de escrever.
+    await automaticMemoryService.consider({
+      usuario_id: userId,
+      historico_id: historyId,
+      mensagem: persistedCurrent.texto,
+      provider,
+      explicitWriteIntent: explicitMemoryWriteIntent,
+    });
 
     if (shouldGenerateTitle) {
       await this.generateHistoryTitle(
