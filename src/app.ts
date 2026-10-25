@@ -20,6 +20,8 @@ import { homeRouter } from './modules/home/home.routes.js';
 import { recorrenciaRouter } from './modules/recorrencia/recorrencia.routes.js';
 import { RecorrenciaCronController } from './modules/recorrencia/recorrencia.cron.controller.js';
 
+import { contextoRouter } from './modules/rf018/contexto.routes.js';
+
 const app = express();
 
 app.use(cors());
@@ -34,6 +36,7 @@ app.use('/tempo-uso', tempoUsoRouter);
 app.use('/email', emailRouter);
 app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);
+app.use('/v2/compras', contextoRouter);
 app.get('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
 app.post('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
 app.use('/recorrencias', recorrenciaRouter);
