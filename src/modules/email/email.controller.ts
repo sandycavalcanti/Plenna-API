@@ -1,4 +1,4 @@
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { AuthRequest } from '../auth/auth.middleware.js';
 import { EmailService } from './email.service.js';
 import { EmailSyncService } from './email-sync.service.js';
