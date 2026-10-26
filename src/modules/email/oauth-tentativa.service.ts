@@ -3,10 +3,13 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
 import { ConsentimentoService } from '../consentimento/consentimento.service.js';
-import type { FinalizarEmailDTO } from './email.schemas.js';
 
 export const hashOAuth = (valor: string) => createHash('sha256').update(valor).digest('hex');
-type CredenciaisTentativa = Pick<FinalizarEmailDTO, 'tentativa' | 'state' | 'segredo'>;
+type CredenciaisTentativa = {
+  tentativa: string;
+  state: string;
+  segredo: string;
+};
 export class OAuthTentativaService {
   static async iniciar(userId: number) {
     const state = randomBytes(32).toString('base64url');

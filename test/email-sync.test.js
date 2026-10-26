@@ -34,6 +34,9 @@ function fakeResponse() {
       this.statusCode = code;
       return this;
     },
+    set() {
+      return this;
+    },
     json(payload) {
       this.body = payload;
       return this;
