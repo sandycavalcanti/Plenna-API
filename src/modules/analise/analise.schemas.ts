@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const estadosAvaliacao = z.enum(['DADOS_INSUFICIENTES', 'AGUARDANDO_CONTEXTO', 'POSSIVEL_IMPULSIVA', 'SEM_SINAIS_RELEVANTES', 'NAO_AVALIAVEL']);
 export const disponibilidade = z.enum(['DISPONIVEL', 'PARCIAL', 'INDISPONIVEL']);
 const id = z.number().int().positive();
-// Decimal strings preserve money at the boundary; financeiro.ts owns rounding.
+
 const money = z.union([z.number().finite().nonnegative(), z.string().regex(/^\d+(?:\.\d+)?$/)]).nullable();
 const instant = z.string().datetime({ offset: true });
 const compra = z.object({
@@ -20,27 +20,22 @@ const janela = z.object({
   cobertura: z.enum(['COMPLETA', 'PARCIAL', 'DESCONHECIDA']),
 }).strict();
 const limit = z.object({ valor: money, vigencia: z.enum(['DO_PERIODO', 'ATUAL_SEM_HISTORICO']), referencia: z.string().min(1) }).strict();
-// Optional extension only: no Android ingestion, permission checks or correlation here.
-const rf017 = z.object({
-  versaoContrato: z.literal(1), utilizavel: z.literal(false),
-  disponibilidade: z.enum(['NAO_FORNECIDA', 'SEM_AUTORIZACAO', 'DESCONHECIDA', 'PARCIAL']),
-}).strict();
+
 const common = {
   versaoContrato: z.literal(1), usuarioId: id, janela,
   compras: z.array(compra), limiteIndividual: limit, orcamentoMensal: limit,
   anterior: z.object({ janela, coberturaComparavel: z.boolean(), compras: z.array(compra) }).strict().optional(),
-  rf017: rf017.optional(),
 };
 export const entradaPeriodoSchema = z.object(common).strict();
 export const entradaCompraSchema = z.object({ ...common, compraId: id }).strict();
 export type EntradaPeriodo = z.infer<typeof entradaPeriodoSchema>;
-export type CompraRF018 = z.infer<typeof compra>;
+export type CompraAnalise = z.infer<typeof compra>;
 
 const evidence = z.object({ codigo: z.string(), natureza: z.enum(['OBSERVADO', 'DECLARADO', 'INFERIDO', 'DESCONHECIDO']), referencias: z.array(z.string()) }).strict();
 export const saidaPeriodoSchema = z.object({
   versaoContrato: z.literal(1), versaoIndicadores: z.literal('descritivos-1'), escopo: z.literal('PERIODO'),
-  periodo: z.string(), timezone: z.literal('UTC'), observadoAte: instant,
-  avaliacao: z.object({ estado: estadosAvaliacao, regrasAplicadas: z.array(z.string()).length(0), justificativas: z.array(z.string()) }).strict(),
+  periodo: z.string(), timezone: z.literal('America/Sao_Paulo'), observadoAte: instant,
+  avaliacao: z.object({ estado: estadosAvaliacao, regrasAplicadas: z.array(z.string().min(1)).max(10), justificativas: z.array(z.string().min(1)) }).strict(),
   qualidade: z.object({ cobertura: janela.shape.cobertura, comprasSemHorario: z.number().int().nonnegative(), horariosImprecisos: z.number().int().nonnegative() }).strict(),
   indicadores: z.object({
     frequencia: z.object({ disponibilidade, compras: z.number().int().nonnegative(), diasObservados: z.number().positive(), comprasPorDia: z.number().nonnegative() }).strict(),

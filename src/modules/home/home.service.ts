@@ -1,11 +1,11 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
-import { cents, parseMonth } from '../compra/financeiro.js';
-import { RF018Service } from '../rf018/rf018.service.js';
+import { businessPeriod, cents, parseMonth } from '../compra/financeiro.js';
+import { AnaliseComportamentalService } from '../analise/comportamento.service.js';
 import { homeResumoSchema } from './home.schemas.js';
 
-const month = (date: Date) => date.toISOString().slice(0, 7);
+const month = (date: Date) => businessPeriod(date);
 
 export class HomeService {
   static async consultar(userId: number, periodo: string, now = new Date()) {
@@ -25,8 +25,8 @@ export class HomeService {
       let reason: 'CRIACAO_CONTA' | 'COMPRA_RETROATIVA' | 'DATA_CRIACAO_INDISPONIVEL' = validCreated ? 'CRIACAO_CONTA' : 'DATA_CRIACAO_INDISPONIVEL';
       if (first && month(first.compra_horario) < minimum) { minimum = month(first.compra_horario); reason = 'COMPRA_RETROATIVA'; }
       if (periodo < minimum) throw new AppError('Periodo anterior ao historico disponivel', 400);
-      // Both metadata and RF018 purchases are read from the same consistent snapshot.
-      const snapshot = await RF018Service.consultarSnapshot(tx, userId, periodo, now);
+      // Both metadata and ANALISE purchases are read from the same consistent snapshot.
+      const snapshot = await AnaliseComportamentalService.consultarSnapshot(tx, userId, periodo, now);
       const f = snapshot.analise.indicadores.financeiro;
       const coverage = snapshot.analise.qualidade.cobertura;
       const historical = periodo !== current;
@@ -38,7 +38,7 @@ export class HomeService {
         if (known > budget!) state = 'VERMELHO';
         else if (f.qualidade !== 'PARCIAL' && coverage === 'COMPLETA') state = known * 100 < budget! * 50 ? 'VERDE' : known * 100 < budget! * 75 ? 'AMARELO' : 'LARANJA';
       }
-      return homeResumoSchema.parse({ versaoContrato: 1, periodo, referenciaTemporal: 'UTC',
+      return homeResumoSchema.parse({ versaoContrato: 1, periodo, referenciaTemporal: 'America/Sao_Paulo',
         perspectivas: {
           categorias: { disponibilidade: 'INDISPONIVEL', motivo: 'POLITICA_DE_PRIVACIDADE_NAO_VERIFICAVEL' },
           pagamentos: { disponibilidade: 'INDISPONIVEL', motivo: 'POLITICA_DE_PRIVACIDADE_NAO_VERIFICAVEL' },

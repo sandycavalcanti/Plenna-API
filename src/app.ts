@@ -15,10 +15,17 @@ import { consentimentoRouter } from './modules/consentimento/consentimento.route
 import { deviceRouter, notificationRouter } from './modules/notification/notification.routes.js';
 import { chatRouter } from './modules/chat/chat.routes.js';
 
-import { analisesRouter } from './modules/rf018/rf018.routes.js';
+import { analisesRouter } from './modules/analise/analise.routes.js';
 import { homeRouter } from './modules/home/home.routes.js';
 import { recorrenciaRouter } from './modules/recorrencia/recorrencia.routes.js';
 import { RecorrenciaCronController } from './modules/recorrencia/recorrencia.cron.controller.js';
+import './modules/ai/memory.runtime.js';
+import { memoryRouter } from './modules/ai/memory.routes.js';
+import { recomendacaoRouter } from './modules/recomendacao/recomendacao.routes.js';
+import { AutomationController } from './modules/automacao/automacao.controller.js';
+
+import { contextoRouter } from './modules/analise/contexto.routes.js';
+import { eventosCompraRouter } from './modules/compra/eventos.routes.js';
 
 const app = express();
 
@@ -34,8 +41,12 @@ app.use('/tempo-uso', tempoUsoRouter);
 app.use('/email', emailRouter);
 app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);
+app.use('/v2/compras', eventosCompraRouter);
+app.use('/v2/compras', contextoRouter);
 app.get('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
 app.post('/recorrencias/cron', (req, res) => RecorrenciaCronController.process(req, res));
+app.get('/ai/automation/cron', (req, res) => AutomationController.process(req, res));
+app.post('/ai/automation/cron', (req, res) => AutomationController.process(req, res));
 app.use('/recorrencias', recorrenciaRouter);
 app.use('/dashboard', dashboardRouter);
 app.use('/consentimento', consentimentoRouter);
@@ -44,6 +55,8 @@ app.use('/devices', deviceRouter);
 app.use('/historicos', chatRouter);
 app.use('/analises', analisesRouter);
 app.use('/home', homeRouter);
+app.use('/memorias', memoryRouter);
+app.use('/recomendacoes', recomendacaoRouter);
 
 app.get('/', (_req, res) => {
   res.json({

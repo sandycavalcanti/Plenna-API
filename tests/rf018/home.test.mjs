@@ -5,7 +5,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 process.env.DOTENV_CONFIG_PATH = fileURLToPath(new URL('./.absent', import.meta.url));
 Object.assign(process.env, { NODE_ENV: 'test', DATABASE_URL: 'postgresql://localhost:1/offline', DIRECT_URL: 'postgresql://localhost:1/offline', JWT_SECRET: 'offline-home-only' });
-delete process.env.RF018_LOCAL; delete process.env.VERCEL;
+delete process.env.ANALISE_LOCAL; delete process.env.VERCEL;
 Object.assign(process.env, { GOOGLE_CLIENT_ID: 'offline', GOOGLE_CLIENT_SECRET: 'offline', GOOGLE_REDIRECT_URI: 'https://example.invalid' });
 let rows, created, budget, active, fail, queries, transactions;
 const now = new Date('2026-10-12T12:00:00Z');
@@ -38,7 +38,7 @@ test('only eligible own purchases count; items never double the total',async()=>
 test('legitimate old purchase extends selector; unrelated data cannot',async()=>{rows=[row({compra_horario:new Date('2026-08-05Z')}),row({usuario_id:2,compra_horario:new Date('2020-01-01Z')})];const b=await read('2026-08');assert.equal(b.seletor.periodoMinimo,'2026-08');assert.equal(b.seletor.motivoLimiteInicial,'COMPRA_RETROATIVA');});
 test('selector rejects earlier and future periods',async()=>{await assert.rejects(read('2026-08'));await assert.rejects(read('2026-11'));});
 test('missing creation metadata is conservative',async()=>{created=null;assert.equal((await read()).seletor.periodoMinimo,'2026-10');});
-test('UTC half-open cutoff excludes next month and unobserved purchases',async()=>{rows=[row({compra_horario:new Date('2026-10-01T00:00:00Z')}),row({compra_id:2,compra_horario:new Date('2026-11-01T00:00:00Z')}),row({compra_id:3,compra_horario:now})];assert.equal((await read()).financeiro.comprasConfirmadas,1);});
+test('business-month half-open cutoff excludes the prior local day, next month and unobserved purchases',async()=>{rows=[row({compra_horario:new Date('2026-10-01T04:00:00Z')}),row({compra_id:2,compra_horario:new Date('2026-11-01T04:00:00Z')}),row({compra_id:3,compra_horario:now})];assert.equal((await read()).financeiro.comprasConfirmadas,1);});
 test('HTTP requires actual JWT and active user',async()=>{for(const token of [null,'bad',jwt.sign({userId:1},process.env.JWT_SECRET,{expiresIn:-1})])assert.equal((await request(undefined,token)).status,401);active=false;assert.equal((await request()).status,401);assert.equal(queries.length,0);});
 test('HTTP validates missing duplicate extra malformed and future periods',async()=>{for(const q of ['','?periodo=2026-13','?periodo=2026-10&periodo=2026-09','?periodo=2026-10&usuarioId=2','?periodo=9999-10'])assert.equal((await request(q)).status,400);});
 test('HTTP success is noncacheable and errors sanitized',async()=>{assert.equal((await request()).status,200);assert.equal((await request()).headers.get('cache-control'),'no-store');fail=true;const res=await request();assert.equal(res.status,500);assert.doesNotMatch(await res.text(),/private-db-secret/);});

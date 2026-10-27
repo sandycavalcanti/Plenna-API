@@ -19,6 +19,7 @@ export type PublicHistory = {
   historico_nome: string;
   historico_data_criacao: Date;
   historico_data_modificacao: Date;
+  historico_origem: 'MANUAL' | 'PROATIVO';
 };
 
 export type PublicMessage = {
@@ -42,7 +43,7 @@ export type ChatDatabase = Pick<PrismaClient, 'tb_historico' | 'tb_mensagem' | '
 
 export const defaultChatDatabase: ChatDatabase = prisma;
 
-export type HistoryRow = PublicHistory;
+export type HistoryRow = Omit<PublicHistory, 'historico_origem'> & { historico_origem?: string | null };
 
 export type MessageRow = {
   mensagem_id: number;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analisarPeriodo, analisarCompra } from '../../src/modules/rf018/rf018.engine.ts';
+import { analisarPeriodo, analisarCompra } from '../../src/modules/analise/comportamento.engine.ts';
 import { recomendar } from '../../src/modules/recomendacao/recomendacao.engine.ts';
 const row = (extra={})=>({id:1,usuarioId:1,ativa:true,status:'CONFIRMADA',horario:'2026-10-05T12:00:00Z',precisaoHorario:'APROXIMADO',valorLiquido:100,categorias:[2],origem:'MANUAL',referencias:['manual:1'],...extra});
 const snapshot=(extra={})=>({versaoContrato:1,usuarioId:1,janela:{periodo:'2026-10',observadoAte:'2026-10-11T00:00:00Z',cobertura:'COMPLETA'},compras:[row()],limiteIndividual:{valor:80,vigencia:'ATUAL_SEM_HISTORICO',referencia:'limite:atual'},orcamentoMensal:{valor:200,vigencia:'ATUAL_SEM_HISTORICO',referencia:'orcamento:atual'},...extra});

@@ -104,6 +104,9 @@ function makeClient() {
         return sorted[0] ? pick(sorted[0], select) : null;
       },
     },
+    tb_consentimento: {
+      findFirst: async () => ({ consentimento_id: 1 }),
+    },
   };
 
   client.$transaction = async (callback: (transaction: any) => Promise<unknown>) => callback(client);
@@ -113,14 +116,16 @@ function makeClient() {
 const client = makeClient();
 (globalThis as any).prismaRuntime = { client, pool: { end: async () => {} } };
 
-const { ChatFirstMessageError, ChatService } = await import('../../src/modules/chat/chat.service.js');
+const { ChatFirstMessageError, ChatService, hasExplicitMemoryWriteIntent } = await import('../../src/modules/chat/chat.service.js');
+const { DescobertasService } = await import('../../src/modules/analise/descobertas.service.js');
 const { buildChatContext } = await import('../../src/modules/chat/chat.context.js');
 const { PLENNA_CHAT_SYSTEM_PROMPT } = await import('../../src/modules/chat/chat.prompt.js');
 const { AIProviderError } = await import('../../src/modules/email/ai-provider.js');
 const { RequestyProvider } = await import('../../src/modules/email/requesty.provider.js');
 const { CodexLocalError, CodexLocalProvider } = await import('../../src/modules/email/codex-local.provider.js');
 const { env } = await import('../../src/lib/env.js');
-const { ZodError } = await import('zod');
+const { ZodError, z } = await import('zod');
+const { aiToolRegistry } = await import('../../src/modules/ai/ai.registry.js');
 const { ChatController } = await import('../../src/modules/chat/chat.controller.js');
 const { AppError } = await import('../../src/errors/AppError.js');
 const { handleError } = await import('../../src/utils/handleError.js');
@@ -207,6 +212,93 @@ test('envia, preserva contexto autorizado e persiste user e assistant sem duplic
   assert.ok(histories[0].historico_data_modificacao >= histories[0].historico_data_criacao);
 });
 
+test('intenção de memória distingue escrita explícita de perguntas de lembrança', () => {
+  const positives = [
+    'Registre na minha memória que prefiro economizar para viajar.',
+    'Quero que você memorize que minha meta é montar uma reserva.',
+    'Atualize minha memória: agora quero reduzir gastos com delivery.',
+    'Você pode salvar isso na memória, por favor?',
+    'Você pode atualizar minha memória?',
+    'Lembre-se de que eu quero acompanhar meu limite mensal.',
+  ];
+  const negatives = [
+    'Você lembra do meu objetivo?',
+    'O que você lembra sobre mim?',
+    'Você pode me lembrar do meu objetivo?',
+    'Você pode guardar isso?',
+    'Não precisa guardar isso.',
+  ];
+
+  for (const text of positives) assert.equal(hasExplicitMemoryWriteIntent(text), true, text);
+  for (const text of negatives) assert.equal(hasExplicitMemoryWriteIntent(text), false, text);
+});
+
+test('ChatService integra registry, executor e tool calling sem persistir eventos internos', async () => {
+  if (!aiToolRegistry.has('test_chat_echo')) {
+    aiToolRegistry.register({
+      name: 'test_chat_echo',
+      description: 'Tool de teste do fluxo de chat.',
+      argsSchema: z.object({ valor: z.string() }).strict(),
+      resultSchema: z.object({ resposta: z.string() }).strict(),
+      execute: async (args, context) => ({ resposta: `${args.valor}:${context.usuario_id}` }),
+    });
+  }
+
+  const providerCalls: any[] = [];
+  let round = 0;
+  const provider = {
+    ...providerReturning('não usado'),
+    chatWithTools: async (messages: any[], tools: any[]) => {
+      providerCalls.push({ messages, tools });
+      round += 1;
+      return round === 1
+        ? { content: '', tool_calls: [{ id: 'chat-call-1', type: 'function', function: { name: 'test_chat_echo', arguments: '{"valor":"real"}' } }] }
+        : { content: 'Resposta baseada em dados consultados.', tool_calls: [] };
+    },
+  };
+
+  const history = await ChatService.createHistory(1, client);
+  const result = await ChatService.sendMessage(1, history.historico_id, { texto: 'Consulte isso' }, client, () => provider as any);
+
+  assert.equal(result.mensagemIA.texto, 'Resposta baseada em dados consultados.');
+  assert.equal(providerCalls[0].tools.some((tool: any) => tool.function.name === 'test_chat_echo'), true);
+  assert.equal(providerCalls[1].messages.at(-1).tool_call_id, 'chat-call-1');
+  assert.equal(messages.filter((message) => message.mensagem_remetente === true).length, 1);
+  assert.equal(messages.some((message) => message.mensagem_texto.includes('tool_call_id')), false);
+});
+
+test('oferece memória automática na rodada principal sem fazer uma segunda chamada externa', async () => {
+  const previousEnabled = env.aiMemoryAutomaticEnabled;
+  env.aiMemoryAutomaticEnabled = true;
+  try {
+    const providerCalls: any[] = [];
+    const provider = {
+      ...providerReturning('Resposta principal'),
+      chatWithTools: async (messages: any[], tools: any[]) => {
+        providerCalls.push({ messages, tools });
+        return { content: 'Resposta principal', tool_calls: [] };
+      },
+    };
+
+    const history = await ChatService.createHistory(1, client);
+    await ChatService.sendMessage(
+      1,
+      history.historico_id,
+      { texto: 'Eu espero dois dias antes de comprar roupas para evitar excessos.' },
+      client,
+      () => provider as any,
+    );
+
+    assert.equal(providerCalls.length, 1);
+    assert.equal(
+      providerCalls[0].tools.some((tool: any) => tool.function.name === 'memory_automatic_candidate'),
+      true,
+    );
+  } finally {
+    env.aiMemoryAutomaticEnabled = previousEnabled;
+  }
+});
+
 test('deriva titulo da primeira mensagem, normaliza espacos e respeita 45 caracteres', async () => {
   const history = await ChatService.createHistory(1, client);
   const text = '  Uma   conversa muito longa para caber no titulo do historico sem exceder 45  ';
@@ -215,6 +307,19 @@ test('deriva titulo da primeira mensagem, normaliza espacos e respeita 45 caract
   assert.equal(histories[0].historico_nome, 'Uma conversa muito longa para caber no titulo');
   await ChatService.createUserMessage(1, history.historico_id, { texto: 'Segundo texto' }, client);
   assert.equal(histories[0].historico_nome, 'Uma conversa muito longa para caber no titulo');
+});
+
+test('indicadores são consultados pelo usuário da conversa e respondidos sem envio a IA externa',async()=>{
+  const history=await ChatService.createHistory(1,client);
+  const original=DescobertasService.consultar;const calls:unknown[]=[];
+  DescobertasService.consultar=async(userId,periodo)=>{calls.push({userId,periodo});return {versaoContrato:1,periodo,referenciaTemporal:'UTC',financeiro:null,historico:null,descobertas:[],indisponiveis:['FINANCEIRO','HISTORICO']};};
+  try{
+    const result=await ChatService.sendMessage(1,history.historico_id,{texto:'Estou comprando mais do que antes em 2026-09?'},client,()=>{throw Error('EXTERNAL_AI_MUST_NOT_RUN');});
+    assert.deepEqual(calls,[{userId:1,periodo:'2026-09'}]);assert.match(result.mensagemIA.texto,/não há períodos comparáveis/);
+    assert.equal(messages.filter(m=>m.historico_id===history.historico_id).length,2);
+    await assert.rejects(ChatService.sendMessage(2,history.historico_id,{texto:'Tenho comprado por impulso?'},client), (error:any)=>error.statusCode===404);
+    assert.equal(calls.length,1);
+  }finally{DescobertasService.consultar=original;}
 });
 
 test('gera titulo com o provider apenas na primeira mensagem e preserva fallback quando falha', async () => {
@@ -303,6 +408,7 @@ test('falha de persistencia da resposta nao retorna sucesso e preserva somente u
 test('handleError preserva contratos 400, 404 e 500 e controller responde 401', async () => {
   function response() {
     const result: any = { statusCode: 200, body: undefined };
+    result.send = () => result;
     result.status = (code: number) => { result.statusCode = code; return result; };
     result.json = (body: unknown) => { result.body = body; return result; };
     return result;
@@ -471,6 +577,34 @@ test('CodexLocal conversacional converte timeout sem depender de schema', async 
     );
   } finally {
     env.codexLocalTimeoutMs = originalTimeout;
+  }
+});
+
+test('Requesty conversacional preserva tool calls e envia definições OpenAI-compatíveis', async () => {
+  const axios = (await import('axios')).default as any;
+  const originalPost = axios.post;
+  const calls: any[] = [];
+  env.requestyApiKey = 'mock-key';
+  env.requestyChatModel = 'mock-tool-model';
+  axios.post = async (...args: any[]) => {
+    calls.push(args);
+    return { data: { choices: [{ message: { content: '', tool_calls: [{ id: 'call-9', type: 'function', function: { name: 'finance_summary', arguments: '{"periodo":"2026-10"}' } }] } }] } };
+  };
+
+  try {
+    const result = await new RequestyProvider().chatWithTools!([
+      { role: 'system', content: 'Sistema' },
+      { role: 'user', content: 'Quanto gastei?' },
+    ], [{
+      type: 'function',
+      function: { name: 'finance_summary', description: 'Resumo', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+    }]);
+    assert.equal(result.tool_calls[0].id, 'call-9');
+    assert.equal(calls[0][1].model, 'mock-tool-model');
+    assert.equal(calls[0][1].tool_choice, 'auto');
+    assert.equal(calls[0][1].tools[0].function.name, 'finance_summary');
+  } finally {
+    axios.post = originalPost;
   }
 });
 

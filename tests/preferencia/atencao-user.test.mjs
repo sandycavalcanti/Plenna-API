@@ -8,6 +8,12 @@ import jwt from 'jsonwebtoken';
 let user, writes, fail;
 const forbidden = new Proxy({}, { get() { return () => { throw new Error('UNEXPECTED_HISTORY_WRITE'); }; } });
 const client = {
+  async $transaction(callback){const before=structuredClone(user),count=writes.length;try{return await callback(client);}catch(e){user=before;writes.splice(count);throw e;}},
+  async $queryRaw(){ return []; },
+  tb_referencia_financeira: {
+    async findFirst(){ return null; },
+    async create({ data }){ return { referencia_id: 1, ...data }; },
+  },
   tb_usuario: {
     async findFirst({ where }) {
       return where.usuario_id === user.usuario_id && user.usuario_status ? { ...user } : null;

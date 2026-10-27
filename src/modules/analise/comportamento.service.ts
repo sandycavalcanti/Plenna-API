@@ -2,19 +2,19 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
 import { parseMonth, financialWhere } from '../compra/financeiro.js';
-import { analisarPeriodo } from './rf018.engine.js';
+import { analisarPeriodo } from './comportamento.engine.js';
 import { recomendar } from '../recomendacao/recomendacao.engine.js';
 
-export class RF018Service {
+export class AnaliseComportamentalService {
   static async consultar(userId: number, periodo: string, now = new Date()) {
     const { start } = parseMonth(periodo);
     if (now <= start) throw new AppError('Período ainda não observado', 400);
     return prisma.$transaction(async tx => {
-      return RF018Service.consultarSnapshot(tx, userId, periodo, now);
+      return AnaliseComportamentalService.consultarSnapshot(tx, userId, periodo, now);
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
-  /** Shared read snapshot; caller owns the transaction. No persistence. */
+
   static async consultarSnapshot(tx: Prisma.TransactionClient, userId: number, periodo: string, now = new Date()) {
       const { start, end } = parseMonth(periodo);
       if (now <= start) throw new AppError('Periodo ainda nao observado', 400);

@@ -49,11 +49,37 @@ export interface AIPurchaseExtractionProvider {
   extractPurchase(prompt: string): Promise<AIExtractedPurchase>;
 }
 
-export type AIMessageRole = 'system' | 'user' | 'assistant';
+export type AIMessageRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export type AIChatToolCall = {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+export type AIChatToolDefinition = {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+export type AIChatToolResponse = {
+  content: string;
+  tool_calls: AIChatToolCall[];
+};
 
 export interface AIMessage {
   role: AIMessageRole;
   content: string;
+  tool_call_id?: string;
+  name?: string;
+  tool_calls?: AIChatToolCall[];
 }
 
 export type AIProviderFailureCode = 'timeout' | 'empty' | 'unavailable' | 'failure';
@@ -93,6 +119,8 @@ export interface AIProvider {
   classifyEmail(prompt: string): Promise<AIEmailClassificationResult>;
   suggestCategory(prompt: string, categories: AICategoryOption[]): Promise<AICategorySuggestionResult>;
   chat(messages: AIMessage[]): Promise<string>;
+  /** Capacidade opcional; providers sem ela permanecem no chat textual legado. */
+  chatWithTools?(messages: AIMessage[], tools: AIChatToolDefinition[]): Promise<AIChatToolResponse>;
   /** Capacidade opcional usada somente para nomear a primeira conversa. */
   generateTitle?(firstMessage: string): Promise<string>;
 }

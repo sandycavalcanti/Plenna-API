@@ -4,8 +4,15 @@ import { env } from '../../lib/env.js';
 import { createAIProvider } from '../email/ai-provider.factory.js';
 import { AIProviderError, type AIProvider } from '../email/ai-provider.js';
 import { CodexLocalError } from '../email/codex-local.provider.js';
+import { AIOrchestrationError } from '../ai/ai.errors.js';
+import { AIOrchestrator } from '../ai/ai.orchestrator.js';
+import { aiToolRegistry, ToolRegistry } from '../ai/ai.registry.js';
+import { automaticMemoryToolDefinition } from '../ai/memory.runtime.js';
+import { resolveMemoryAuthorization } from '../ai/memory.authorization.js';
+import { hasMemoryWriteOptOut } from '../ai/memory.automatic.js';
 import { MESSAGE_SENDER, DEFAULT_HISTORY_NAME, type ChatDatabase, type PublicHistoryWithMessages } from './chat.contracts.js';
 import { buildChatContext } from './chat.context.js';
+import { consultarRespostaIndicadores } from './chat.indicadores.js';
 import { createMessageSchema, historyIdSchema, type CreateMessageDTO } from './chat.schemas.js';
 import { serializeHistory, serializeMessage } from './chat.serializers.js';
 
@@ -14,6 +21,7 @@ const historySelect = {
   historico_nome: true,
   historico_data_criacao: true,
   historico_data_modificacao: true,
+  historico_origem: true,
 } as const;
 
 const messageSelect = {
@@ -23,6 +31,36 @@ const messageSelect = {
   mensagem_texto: true,
   mensagem_data_criacao: true,
 } as const;
+
+function buildChatToolRegistry(includeAutomaticMemory: boolean): ToolRegistry {
+  if (!includeAutomaticMemory) return aiToolRegistry;
+
+  const registry = new ToolRegistry();
+  for (const definition of aiToolRegistry.definitions()) registry.register(definition);
+  registry.register(automaticMemoryToolDefinition);
+  return registry;
+}
+
+async function canOfferAutomaticMemory(
+  userId: number,
+  message: string,
+  explicitWriteIntent: boolean,
+  provider: AIProvider,
+): Promise<boolean> {
+  if (
+    !env.aiMemoryAutomaticEnabled
+    || explicitWriteIntent
+    || hasMemoryWriteOptOut(message)
+    || typeof provider.chatWithTools !== 'function'
+  ) return false;
+
+  try {
+    const authorization = await resolveMemoryAuthorization(userId);
+    return authorization.consentimento_memoria_ativo && authorization.pode_escrever;
+  } catch {
+    return false;
+  }
+}
 
 function assertUserId(userId: number) {
   if (!Number.isInteger(userId) || userId <= 0) {
@@ -62,6 +100,10 @@ function sanitizeGeneratedHistoryName(value: unknown) {
 function providerFailure(error: unknown) {
   if (error instanceof AppError) return error;
 
+  if (error instanceof AIOrchestrationError) {
+    return new AppError(error.message, error.code === 'AI_TOOL_TIMEOUT' ? 504 : 502);
+  }
+
   if (error instanceof AIProviderError) {
     return new AppError(
       error.code === 'timeout' ? 'Tempo limite ao consultar a IA' : 'Falha ao consultar a IA',
@@ -82,6 +124,44 @@ function providerFailure(error: unknown) {
   }
 
   return new AppError('Falha ao consultar a IA', 502);
+}
+
+/**
+ * A intenção de escrita é derivada somente da mensagem autenticada do usuário.
+ * Perguntas de recuperação de memória e frases ambíguas permanecem somente leitura.
+ */
+export function hasExplicitMemoryWriteIntent(text: string) {
+  const normalized = text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('pt-BR')
+    .trim();
+
+  if (!normalized) return false;
+
+  const isRecallQuestion = /\?/.test(normalized) && (
+    /\b(?:voce|vc)\s+(?:se\s+)?(?:lembra|recorda)\b/.test(normalized)
+    || /\b(?:o que|qual|quais)\b[^?]{0,80}\b(?:lembra|recorda)\b/.test(normalized)
+    || /\b(?:voce|vc)\s+(?:pode|poderia|consegue)\s+me\s+(?:lembrar|recordar)\b/.test(normalized)
+  );
+  if (isRecallQuestion) return false;
+
+  if (hasMemoryWriteOptOut(normalized)) {
+    return false;
+  }
+
+  // "Guardar isso" sem indicar memória, destinatário ou conteúdo é ambíguo;
+  // não deve transformar uma pergunta/conversa em autorização de escrita.
+  if (/^(?:voce|vc)\s+(?:pode|poderia)\s+(?:guardar|salvar|registrar|anotar|memorizar)\s+isso\??$/.test(normalized)) {
+    return false;
+  }
+
+  const directWrite = /^(?:plenna\s*[,;:]?\s*)?(?:por favor\s*,?\s*)?(?:registre|anote|salve|guarde|memorize|atualize|corrija|adicione|remova)\b/.test(normalized);
+  const directRemember = /^(?:plenna\s*[,;:]?\s*)?(?:por favor\s*,?\s*)?(?:lembre-se|lembre)\b[\s\S]{0,160}\b(?:que|isso|isto|minha memoria|na memoria|nas proximas conversas)\b/.test(normalized);
+  const requestedWrite = /\b(?:quero|gostaria|preciso)\s+que\s+(?:voce\s+)?(?:registre|anote|salve|guarde|memorize|lembre(?:-se)?|atualize|corrija|adicione|remova|esqueca)\b/.test(normalized);
+  const politeWrite = /\b(?:voce|vc)\s+(?:pode|poderia)\s+(?:por favor\s+)?(?:salvar|guardar|registrar|anotar|memorizar|atualizar|corrigir|adicionar|remover)\b[^?]{0,160}(?:\bque\b|\b(?:na|em)\s+(?:minha\s+)?memoria\b|\b(?:minha|esta)\s+memoria\b|\bisso\b|\bessa preferencia\b)/.test(normalized);
+
+  return directWrite || directRemember || requestedWrite || politeWrite;
 }
 
 export class ChatFirstMessageError extends AppError {
@@ -402,6 +482,12 @@ export class ChatService {
       throw new AppError('Mensagem do usuario nao foi recuperada apos persistencia', 500);
     }
 
+    const respostaIndicadores = db === prisma ? await consultarRespostaIndicadores(userId,persistedCurrent.texto) : null;
+    if(respostaIndicadores!==null){
+      const assistantMessage=await this.createAssistantMessage(userId,historyId,respostaIndicadores,db);
+      const finalHistory=await this.getHistory(userId,historyId,db);
+      return {historico:finalHistory.historico,mensagemUsuario:userMessage,mensagemIA:assistantMessage};
+    }
     let provider: AIProvider | null;
     try {
       provider = providerFactory();
@@ -413,9 +499,28 @@ export class ChatService {
     }
 
     const context = buildChatContext(after.mensagens, persistedCurrent);
+    const explicitMemoryWriteIntent = hasExplicitMemoryWriteIntent(persistedCurrent.texto);
+    const automaticMemoryInMainRound = await canOfferAutomaticMemory(
+      userId,
+      persistedCurrent.texto,
+      explicitMemoryWriteIntent,
+      provider,
+    );
+    const chatToolRegistry = buildChatToolRegistry(automaticMemoryInMainRound);
     let assistantText: string;
     try {
-      assistantText = await provider.chat(context);
+      const orchestration = await new AIOrchestrator(chatToolRegistry).run(
+        provider,
+        context,
+        {
+          usuario_id: userId,
+          memory_write_intent: explicitMemoryWriteIntent,
+          historico_id: historyId,
+          mensagem_atual: persistedCurrent.texto,
+          memory_automatic_enabled: automaticMemoryInMainRound,
+        },
+      );
+      assistantText = orchestration.text;
     } catch (error) {
       throw providerFailure(error);
     }

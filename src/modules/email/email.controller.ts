@@ -43,19 +43,22 @@ export class EmailController {
       return handleError(res, 500, error);
     }
   }
-  static async callback(req: Request, res: Response) {
+  static async callback(req: Request, res: Response): Promise<void> {
     semCache(res);
     try {
       const { code, state } = req.query;
-      if (!code || !state) return res.status(400).json({ error: 'Código e state são obrigatórios' });
+      if (!code || !state) {
+        res.status(400).json({ error: 'Código e state são obrigatórios' });
+        return;
+      }
 
       const tokens = await EmailService.exchangeCodeForTokens(String(code));
       const email = await EmailService.getGoogleUserEmail(tokens.access_token);
       await EmailService.saveIntegration(Number(state), email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
 
-      return res.redirect(`${env.apiBaseUrl}/oauth-success.html`);
+      res.redirect(`${env.apiBaseUrl}/oauth-success.html`);
     } catch {
-      return res.redirect('plenna://oauth-error');
+      res.redirect('plenna://oauth-error');
     }
   }
 

@@ -4,6 +4,8 @@ import { env } from '../../lib/env.js';
 import {
   AIRateLimitError,
   AIProviderError,
+  type AIChatToolDefinition,
+  type AIChatToolResponse,
   type AIMessage,
   type AIEmailClassificationResult,
   type AICategorySuggestionResult,
@@ -83,6 +85,20 @@ function extractAssistantContent(data: unknown) {
   }
 
   return '';
+}
+
+function extractAssistantToolResponse(data: unknown): AIChatToolResponse {
+  const message = (data as { choices?: Array<{ message?: { content?: unknown; tool_calls?: unknown } }> })?.choices?.[0]?.message;
+  const content = typeof message?.content === 'string'
+    ? message.content.trim()
+    : Array.isArray(message?.content)
+      ? (message.content as Array<{ type?: string; text?: string }>).filter((part) => part?.type === 'text').map((part) => part.text ?? '').join('\n').trim()
+      : '';
+
+  return {
+    content,
+    tool_calls: Array.isArray(message?.tool_calls) ? message.tool_calls as AIChatToolResponse['tool_calls'] : [],
+  };
 }
 
 function getRetryAfterMs(error: any) {
@@ -353,6 +369,40 @@ export class RequestyProvider implements AIProvider, AIPurchaseExtractionProvide
         throw new AIProviderError('empty', 'Requesty retornou uma resposta vazia');
       }
       return text;
+    } catch (error: any) {
+      if (error instanceof AIProviderError) throw error;
+      if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'AbortError') {
+        throw new AIProviderError('timeout', 'Timeout ao consultar o Requesty');
+      }
+      throw new AIProviderError('failure', 'Falha ao consultar o Requesty');
+    }
+  }
+
+  async chatWithTools(messages: AIMessage[], tools: AIChatToolDefinition[]): Promise<AIChatToolResponse> {
+    if (!env.requestyApiKey) {
+      throw new AIProviderError('unavailable', 'Requesty nao esta configurado');
+    }
+
+    try {
+      const response = await axios.post(
+        'https://router.requesty.ai/v1/chat/completions',
+        {
+          model: env.requestyChatModel,
+          messages,
+          tools,
+          tool_choice: 'auto',
+          temperature: 0.2,
+        },
+        {
+          timeout: env.requestyTimeoutMs,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${env.requestyApiKey}`,
+          },
+        },
+      );
+
+      return extractAssistantToolResponse(response.data);
     } catch (error: any) {
       if (error instanceof AIProviderError) throw error;
       if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'AbortError') {

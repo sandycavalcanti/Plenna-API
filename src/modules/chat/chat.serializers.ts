@@ -6,6 +6,7 @@ export function serializeHistory(history: HistoryRow): PublicHistory {
     historico_nome: history.historico_nome,
     historico_data_criacao: history.historico_data_criacao,
     historico_data_modificacao: history.historico_data_modificacao,
+    historico_origem: history.historico_origem === 'PROATIVO' ? 'PROATIVO' : 'MANUAL',
   };
 }
 

@@ -11,6 +11,7 @@ const DEFAULT_PUSH_BODY = 'Você tem uma nova atualização no seu planejamento.
 export type PushNotificationCandidate = {
   notificationId: number;
   type: notificacao_tipo_enum | string;
+  body?: string;
 };
 
 export type PushDispatchResult = {
@@ -189,7 +190,7 @@ export class PushService {
     const messages = batch.map(({ device, notification }) => ({
       to: device.dispositivo_push_token,
       title: 'Plenna',
-      body: DEFAULT_PUSH_BODY,
+      body: notification.body ?? DEFAULT_PUSH_BODY,
       data: {
         notificationId: notification.notificationId,
         type: notification.type,

@@ -6,6 +6,7 @@ import { metricPeriods } from './financeiro.js';
 import { evaluateConfirmedPurchaseLimits, itemTotalCents } from './limite.service.js';
 import { AppError } from '../../errors/AppError.js';
 import { dispatchPushAfterCommit, type PushNotificationCandidate } from '../notification/push.service.js';
+import { registrarClassificacao, registrarEventoInterno, validarSaldoAposEdicao } from './eventos.ledger.js';
 
 const publicPurchaseSelect = {
   compra_id: true,
@@ -159,7 +160,7 @@ async function applyCompraConfirmation(
  * item é removido. Assim, ambas as entradas preservam os registros, gravam o
  * mesmo instante de exclusão e recalculam métricas de forma consistente.
  */
-async function softDeleteCompra(tx: any, userId: number, compraId: number) {
+export async function softDeleteCompra(tx: any, userId: number, compraId: number, auditar=true) {
   // A combinação do ID com o usuário e com compra_ativo impede operar sobre
   // compra de terceiro ou sobre compra já excluída, sem revelar sua existência.
   const existing = await tx.tb_compra.findFirst({
@@ -170,6 +171,7 @@ async function softDeleteCompra(tx: any, userId: number, compraId: number) {
   if (!existing) throw new AppError('Compra não encontrada', 404);
 
   const excludedAt = new Date();
+  if(auditar)await registrarEventoInterno(tx,userId,compraId,'EXCLUSAO_REGISTRO',{motivo:'NAO_INFORMADO'});
 
   // Os itens ativos são inativados antes da compra, mantendo todo o histórico
   // e garantindo que nenhum deles continue aparecendo nas listagens.
@@ -257,6 +259,13 @@ export class CompraService {
         });
       }
 
+      await registrarClassificacao(
+        tx,
+        userId,
+        compra.compra_id,
+        data.compraClassificacao,
+      );
+
       const limitEvaluation = await evaluateConfirmedPurchaseLimits(compra.compra_id, tx);
       const compraFinal = limitEvaluation.eligible
         ? { ...compra, compra_acima_limite: limitEvaluation.purchaseAboveLimit }
@@ -278,17 +287,22 @@ export class CompraService {
     const transactionResult = await prisma.$transaction(async (tx) => {
       const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
+      const previousHorario = existing.compra_horario;
+      const previousStatus = existing.compra_status;
+      const previousClassificacao = existing.compra_classificacao;
       const result = await applyCompraConfirmation(tx, userId, compraId, data, existing);
+      await validarSaldoAposEdicao(tx,userId,compraId,result.compraValor===null?null:toCents(result.compraValor));
+      if(data.compraClassificacao!==undefined&&data.compraClassificacao!==previousClassificacao)await registrarClassificacao(tx,userId,compraId,data.compraClassificacao,true);
       let createdNotifications: PushNotificationCandidate[] = [];
 
-      if (existing.compra_status === 'CONFIRMADA' && result.compraValor === null) {
+      if (previousStatus === 'CONFIRMADA' && result.compraValor === null) {
         throw new AppError('Compra confirmada deve possuir valor', 400);
       }
 
-      if (existing.compra_status === 'CONFIRMADA') {
+      if (previousStatus === 'CONFIRMADA') {
         const limitEvaluation = await evaluateConfirmedPurchaseLimits(compraId, tx);
         createdNotifications = createdPushNotifications(limitEvaluation);
-        const metricPeriods = resolveMetricPeriods(existing.compra_horario, result.compraHorario);
+        const metricPeriods = resolveMetricPeriods(previousHorario, result.compraHorario);
         for (const period of metricPeriods) {
           await MetricasService.recalculateMonthlyMetrics(userId, period, tx);
         }
@@ -332,6 +346,19 @@ export class CompraService {
         where: { compra_id: compraId },
         data: { compra_status: 'CONFIRMADA' },
       });
+
+      if (
+        data?.compraClassificacao !== undefined &&
+        data.compraClassificacao !== existing.compra_classificacao
+      ) {
+        await registrarClassificacao(
+          tx,
+          userId,
+          compraId,
+          data.compraClassificacao,
+          true,
+        );
+      }
 
       const limitEvaluation = await evaluateConfirmedPurchaseLimits(compraId, tx);
       await MetricasService.recalculateMonthlyMetrics(userId, result.compraHorario, tx);
@@ -421,8 +448,8 @@ export class CompraService {
    * item, proteção contra remoção do último item, delete, novo total, limite,
    * compra atualizada e métricas. Assim não existe estado parcial persistido.
    */
-  static async deleteItem(userId: number, compraId: number, compraItemId: number) {
-    const transactionResult = await prisma.$transaction(async (tx) => {
+  static async deleteItem(userId: number, compraId: number, compraItemId: number, db?:Prisma.TransactionClient) {
+    const execute = async (tx:Prisma.TransactionClient) => {
       // Combinar compra_id e usuario_id faz com que compras de terceiros sejam
       // tratadas como inexistentes, sem revelar sua existência ao solicitante.
       const existing = await tx.tb_compra.findFirst({
@@ -447,7 +474,7 @@ export class CompraService {
         // A exclusão do único item representa, para o usuário, a exclusão da
         // compra inteira. O front normalmente usa o DELETE da compra, mas este
         // caminho defensivo mantém a regra correta se a rota de item for chamada diretamente.
-        await softDeleteCompra(tx, userId, compraId);
+        await softDeleteCompra(tx, userId, compraId,!db);
 
         // Não existe compra atualizada para retornar depois da remoção total.
         return { response: null, createdNotifications: [] as PushNotificationCandidate[] };
@@ -459,6 +486,7 @@ export class CompraService {
         where: { compra_item_id: compraItemId },
         data: { compra_item_ativo: 0, compra_item_excluido_em: new Date() },
       });
+      if(!db)await registrarEventoInterno(tx,userId,compraId,'EXCLUSAO_REGISTRO',{motivo:'NAO_INFORMADO'},compraItemId);
 
       // Recalculamos o total somente com os itens restantes, usando centavos
       // para manter a mesma precisão monetária das demais operações do service.
@@ -471,6 +499,7 @@ export class CompraService {
       // original, limitado a zero para impedir valores financeiros negativos.
       const descontoCents = Math.max(0, toCents(existing.compra_desconto ?? 0));
       const compraValor = fromCents(Math.max(0, totalCents - descontoCents));
+      await validarSaldoAposEdicao(tx,userId,compraId,toCents(compraValor),compraItemId);
 
       // A avaliação central recalcula compra_acima_limite depois do novo total.
       await tx.tb_compra.update({
@@ -495,8 +524,9 @@ export class CompraService {
         }),
         createdNotifications,
       };
-    });
-    await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+    };
+    const transactionResult=db?await execute(db):await prisma.$transaction(execute);
+    if(!db)await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
     return transactionResult.response;
   }
 }

@@ -39,6 +39,29 @@ const requestyChatModel = process.env.REQUESTY_CHAT_MODEL ?? process.env.REQUEST
 const chatMaxMessageCharsRaw = process.env.CHAT_MAX_MESSAGE_CHARS ?? "4000";
 const chatContextMaxMessagesRaw = process.env.CHAT_CONTEXT_MAX_MESSAGES ?? "30";
 const chatContextMaxCharsRaw = process.env.CHAT_CONTEXT_MAX_CHARS ?? "12000";
+const aiMemoryAutomaticEnabledRaw = process.env.AI_MEMORY_AUTOMATIC_ENABLED ?? "false";
+const aiMemoryAutomaticMaxContextCharsRaw = process.env.AI_MEMORY_AUTOMATIC_MAX_CONTEXT_CHARS ?? "1200";
+const aiMemoryAutomaticTimeoutMsRaw = process.env.AI_MEMORY_AUTOMATIC_TIMEOUT_MS ?? "3000";
+const aiToolMaxCallsRaw = process.env.AI_TOOL_MAX_CALLS ?? "8";
+const aiToolMaxRoundsRaw = process.env.AI_TOOL_MAX_ROUNDS ?? "4";
+const aiToolTimeoutMsRaw = process.env.AI_TOOL_TIMEOUT_MS ?? "20000";
+const aiToolExecutionTimeoutMsRaw = process.env.AI_TOOL_EXECUTION_TIMEOUT_MS ?? "5000";
+const aiToolResultMaxCharsRaw = process.env.AI_TOOL_RESULT_MAX_CHARS ?? "12000";
+const recommendationAiEnabledRaw = process.env.AI_RECOMMENDATIONS_AI_ENABLED ?? "false";
+const recommendationMaxCandidatesRaw = process.env.AI_RECOMMENDATIONS_MAX_CANDIDATES ?? "3";
+const recommendationMaxContextCharsRaw = process.env.AI_RECOMMENDATIONS_MAX_CONTEXT_CHARS ?? "6000";
+const recommendationTimeoutMsRaw = process.env.AI_RECOMMENDATIONS_TIMEOUT_MS ?? "5000";
+const proactivityAiEnabledRaw = process.env.AI_PROACTIVITY_AI_ENABLED ?? "false";
+const proactivityExternalApprovedRaw = process.env.AI_PROACTIVITY_EXTERNAL_APPROVED ?? "false";
+const proactivityEnabledRaw = process.env.AI_PROACTIVITY_ENABLED ?? "false";
+const proactivityCooldownDaysRaw = process.env.AI_PROACTIVITY_COOLDOWN_DAYS ?? "7";
+const proactivityMaxCandidatesRaw = process.env.AI_PROACTIVITY_MAX_CANDIDATES ?? "3";
+const proactivityMaxAttemptsRaw = process.env.AI_PROACTIVITY_MAX_ATTEMPTS ?? "1";
+const proactivityMaxContextCharsRaw = process.env.AI_PROACTIVITY_MAX_CONTEXT_CHARS ?? "4000";
+const proactivityTimeoutMsRaw = process.env.AI_PROACTIVITY_TIMEOUT_MS ?? "5000";
+const proactivityQuietStartRaw = process.env.AI_PROACTIVITY_QUIET_START ?? "21:00";
+const proactivityQuietEndRaw = process.env.AI_PROACTIVITY_QUIET_END ?? "08:00";
+const proactivityTimezoneRaw = process.env.AI_PROACTIVITY_TIMEZONE ?? "America/Sao_Paulo";
 const emailSyncEnabledRaw = process.env.EMAIL_SYNC_ENABLED ?? "true";
 const expoPushEnabledRaw = process.env.EXPO_PUSH_ENABLED ?? "false";
 const expoPushTimeoutMsRaw = process.env.EXPO_PUSH_TIMEOUT_MS ?? "5000";
@@ -50,6 +73,14 @@ const recurrenceCronEnabledRaw = process.env.RECURRENCE_CRON_ENABLED ?? "false";
 const recurrenceProcessingBatchSizeRaw = process.env.RECURRENCE_PROCESSING_BATCH_SIZE ?? "25";
 const recurrenceProcessingMaxOccurrencesPerRunRaw = process.env.RECURRENCE_PROCESSING_MAX_OCCURRENCES_PER_RUN ?? "25";
 const recurrenceProcessingTransactionTimeoutMsRaw = process.env.RECURRENCE_PROCESSING_TRANSACTION_TIMEOUT_MS ?? "10000";
+const aiAutomationEnabledRaw = process.env.AI_AUTOMATION_ENABLED ?? "false";
+const aiAutomationBatchSizeRaw = process.env.AI_AUTOMATION_BATCH_SIZE ?? "5";
+const aiAutomationMaxUsersRaw = process.env.AI_AUTOMATION_MAX_USERS ?? "25";
+const aiAutomationTimeoutMsRaw = process.env.AI_AUTOMATION_TIMEOUT_MS ?? "50000";
+const aiAutomationMaxErrorsRaw = process.env.AI_AUTOMATION_MAX_ERRORS ?? "5";
+const aiAutomationMaxRecommendationCallsRaw = process.env.AI_AUTOMATION_MAX_RECOMMENDATION_CALLS ?? "25";
+const aiAutomationMaxProactivityCallsRaw = process.env.AI_AUTOMATION_MAX_PROACTIVITY_CALLS ?? "25";
+const aiAutomationTimezoneRaw = process.env.AI_AUTOMATION_TIMEZONE ?? "America/Sao_Paulo";
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   throw new Error(`Invalid PORT value: ${portRaw}`);
@@ -91,6 +122,20 @@ function parseStrictBoolean(name: string, raw: string): boolean {
   if (normalized === 'true') return true;
   if (normalized === 'false') return false;
   throw new Error(`Invalid ${name} value: ${raw}`);
+}
+
+function parseClock(name: string, raw: string): string {
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(raw)) throw new Error(`Invalid ${name} value: ${raw}`);
+  return raw;
+}
+
+function parseTimezone(name: string, raw: string): string {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: raw }).format();
+  } catch {
+    throw new Error(`Invalid ${name} value: ${raw}`);
+  }
+  return raw;
 }
 /**
  * Centraliza as configurações da aplicação.
@@ -144,6 +189,14 @@ export const env = {
     "RECURRENCE_PROCESSING_TRANSACTION_TIMEOUT_MS",
     recurrenceProcessingTransactionTimeoutMsRaw,
   ),
+  aiAutomationEnabled: parseStrictBoolean("AI_AUTOMATION_ENABLED", aiAutomationEnabledRaw),
+  aiAutomationBatchSize: requireBoundedPositiveInteger("AI_AUTOMATION_BATCH_SIZE", aiAutomationBatchSizeRaw, 100),
+  aiAutomationMaxUsers: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_USERS", aiAutomationMaxUsersRaw, 1000),
+  aiAutomationTimeoutMs: requireBoundedPositiveInteger("AI_AUTOMATION_TIMEOUT_MS", aiAutomationTimeoutMsRaw, 300_000),
+  aiAutomationMaxErrors: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_ERRORS", aiAutomationMaxErrorsRaw, 100),
+  aiAutomationMaxRecommendationCalls: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_RECOMMENDATION_CALLS", aiAutomationMaxRecommendationCallsRaw, 1000),
+  aiAutomationMaxProactivityCalls: requireBoundedPositiveInteger("AI_AUTOMATION_MAX_PROACTIVITY_CALLS", aiAutomationMaxProactivityCallsRaw, 1000),
+  aiAutomationTimezone: parseTimezone("AI_AUTOMATION_TIMEZONE", aiAutomationTimezoneRaw),
   cronSecret: process.env.CRON_SECRET ?? "",
   requestyApiKey: process.env.REQUESTY_API_KEY ?? "",
   requestyEmailModel: process.env.REQUESTY_EMAIL_MODEL ?? "nvidia/nemotron-3-nano-30b-a3b",
@@ -155,6 +208,29 @@ export const env = {
   chatMaxMessageChars: requireBoundedPositiveInteger("CHAT_MAX_MESSAGE_CHARS", chatMaxMessageCharsRaw, 4_000),
   chatContextMaxMessages: requirePositiveInteger("CHAT_CONTEXT_MAX_MESSAGES", chatContextMaxMessagesRaw),
   chatContextMaxChars: requirePositiveInteger("CHAT_CONTEXT_MAX_CHARS", chatContextMaxCharsRaw),
+  aiMemoryAutomaticEnabled: parseStrictBoolean("AI_MEMORY_AUTOMATIC_ENABLED", aiMemoryAutomaticEnabledRaw),
+  aiMemoryAutomaticMaxContextChars: requireBoundedPositiveInteger("AI_MEMORY_AUTOMATIC_MAX_CONTEXT_CHARS", aiMemoryAutomaticMaxContextCharsRaw, 4_000),
+  aiMemoryAutomaticTimeoutMs: requireBoundedPositiveInteger("AI_MEMORY_AUTOMATIC_TIMEOUT_MS", aiMemoryAutomaticTimeoutMsRaw, 10_000),
+  aiToolMaxCalls: requireBoundedPositiveInteger("AI_TOOL_MAX_CALLS", aiToolMaxCallsRaw, 32),
+  aiToolMaxRounds: requireBoundedPositiveInteger("AI_TOOL_MAX_ROUNDS", aiToolMaxRoundsRaw, 12),
+  aiToolTimeoutMs: requirePositiveInteger("AI_TOOL_TIMEOUT_MS", aiToolTimeoutMsRaw),
+  aiToolExecutionTimeoutMs: requirePositiveInteger("AI_TOOL_EXECUTION_TIMEOUT_MS", aiToolExecutionTimeoutMsRaw),
+  aiToolResultMaxChars: requireBoundedPositiveInteger("AI_TOOL_RESULT_MAX_CHARS", aiToolResultMaxCharsRaw, 50_000),
+  recommendationAiEnabled: parseStrictBoolean("AI_RECOMMENDATIONS_AI_ENABLED", recommendationAiEnabledRaw),
+  recommendationMaxCandidates: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_MAX_CANDIDATES", recommendationMaxCandidatesRaw, 10),
+  recommendationMaxContextChars: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_MAX_CONTEXT_CHARS", recommendationMaxContextCharsRaw, 20_000),
+  recommendationTimeoutMs: requireBoundedPositiveInteger("AI_RECOMMENDATIONS_TIMEOUT_MS", recommendationTimeoutMsRaw, 30_000),
+  proactivityEnabled: parseStrictBoolean("AI_PROACTIVITY_ENABLED", proactivityEnabledRaw),
+  proactivityAiEnabled: parseStrictBoolean("AI_PROACTIVITY_AI_ENABLED", proactivityAiEnabledRaw),
+  proactivityExternalApproved: parseStrictBoolean("AI_PROACTIVITY_EXTERNAL_APPROVED", proactivityExternalApprovedRaw),
+  proactivityCooldownDays: requireBoundedPositiveInteger("AI_PROACTIVITY_COOLDOWN_DAYS", proactivityCooldownDaysRaw, 365),
+  proactivityMaxCandidates: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_CANDIDATES", proactivityMaxCandidatesRaw, 10),
+  proactivityMaxAttempts: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_ATTEMPTS", proactivityMaxAttemptsRaw, 3),
+  proactivityMaxContextChars: requireBoundedPositiveInteger("AI_PROACTIVITY_MAX_CONTEXT_CHARS", proactivityMaxContextCharsRaw, 20_000),
+  proactivityTimeoutMs: requireBoundedPositiveInteger("AI_PROACTIVITY_TIMEOUT_MS", proactivityTimeoutMsRaw, 30_000),
+  proactivityQuietStart: parseClock("AI_PROACTIVITY_QUIET_START", proactivityQuietStartRaw),
+  proactivityQuietEnd: parseClock("AI_PROACTIVITY_QUIET_END", proactivityQuietEndRaw),
+  proactivityTimezone: parseTimezone("AI_PROACTIVITY_TIMEZONE", proactivityTimezoneRaw),
   smtp: {
     host: process.env.SMTP_HOST,
     port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,
