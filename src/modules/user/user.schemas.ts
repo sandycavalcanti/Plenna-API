@@ -12,6 +12,7 @@ export const updateUserSchema = z.object({
   dataNascimento: z.string().optional(),
   limiteCompra: z.number().optional(),
   metaValorMensal: z.number().positive().optional(),
+  orcamentoVigencia:z.literal('MES_INTEIRO').optional(),
   // Ausente preserva; null desativa; zero mantém a indisponibilidade legada.
   metaValorCompra: z.number().nonnegative().nullable().optional(),
   metaTempo: z.number().int().optional(),

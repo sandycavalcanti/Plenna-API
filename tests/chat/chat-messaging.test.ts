@@ -117,6 +117,7 @@ const client = makeClient();
 (globalThis as any).prismaRuntime = { client, pool: { end: async () => {} } };
 
 const { ChatFirstMessageError, ChatService, hasExplicitMemoryWriteIntent } = await import('../../src/modules/chat/chat.service.js');
+const { DescobertasService } = await import('../../src/modules/analise/descobertas.service.js');
 const { buildChatContext } = await import('../../src/modules/chat/chat.context.js');
 const { PLENNA_CHAT_SYSTEM_PROMPT } = await import('../../src/modules/chat/chat.prompt.js');
 const { AIProviderError } = await import('../../src/modules/email/ai-provider.js');
@@ -308,6 +309,19 @@ test('deriva titulo da primeira mensagem, normaliza espacos e respeita 45 caract
   assert.equal(histories[0].historico_nome, 'Uma conversa muito longa para caber no titulo');
 });
 
+test('indicadores são consultados pelo usuário da conversa e respondidos sem envio a IA externa',async()=>{
+  const history=await ChatService.createHistory(1,client);
+  const original=DescobertasService.consultar;const calls:unknown[]=[];
+  DescobertasService.consultar=async(userId,periodo)=>{calls.push({userId,periodo});return {versaoContrato:1,periodo,referenciaTemporal:'UTC',financeiro:null,historico:null,descobertas:[],indisponiveis:['FINANCEIRO','HISTORICO']};};
+  try{
+    const result=await ChatService.sendMessage(1,history.historico_id,{texto:'Estou comprando mais do que antes em 2026-09?'},client,()=>{throw Error('EXTERNAL_AI_MUST_NOT_RUN');});
+    assert.deepEqual(calls,[{userId:1,periodo:'2026-09'}]);assert.match(result.mensagemIA.texto,/não há períodos comparáveis/);
+    assert.equal(messages.filter(m=>m.historico_id===history.historico_id).length,2);
+    await assert.rejects(ChatService.sendMessage(2,history.historico_id,{texto:'Tenho comprado por impulso?'},client), (error:any)=>error.statusCode===404);
+    assert.equal(calls.length,1);
+  }finally{DescobertasService.consultar=original;}
+});
+
 test('gera titulo com o provider apenas na primeira mensagem e preserva fallback quando falha', async () => {
   const history = await ChatService.createHistory(1, client);
   let titleCalls = 0;
@@ -394,6 +408,7 @@ test('falha de persistencia da resposta nao retorna sucesso e preserva somente u
 test('handleError preserva contratos 400, 404 e 500 e controller responde 401', async () => {
   function response() {
     const result: any = { statusCode: 200, body: undefined };
+    result.send = () => result;
     result.status = (code: number) => { result.statusCode = code; return result; };
     result.json = (body: unknown) => { result.body = body; return result; };
     return result;

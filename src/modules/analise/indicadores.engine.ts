@@ -1,14 +1,15 @@
 import { cents, financialWhere, parseMonth, summarizeValues } from '../compra/financeiro.js';
-import type { EntradaPeriodo, CompraRF018 } from './rf018.schemas.js';
+import type { EntradaPeriodo, CompraAnalise } from './analise.schemas.js';
+import { comparacaoTemporal } from './politica-temporal.js';
 
 export function observedWindow(window: EntradaPeriodo['janela']) {
   const { start, end } = parseMonth(window.periodo);
   const cutoff = new Date(window.observadoAte);
-  if (cutoff <= start || cutoff > end) throw new Error('RF018_INVALID_OBSERVATION_WINDOW');
+  if (cutoff <= start || cutoff > end) throw new Error('ANALISE_INVALID_OBSERVATION_WINDOW');
   return { start, end, cutoff, days: (cutoff.getTime() - start.getTime()) / 86400000 };
 }
 
-export function eligible(purchase: CompraRF018, userId: number, window: ReturnType<typeof observedWindow>) {
+export function eligible(purchase: CompraAnalise, userId: number, window: ReturnType<typeof observedWindow>) {
   const criteria = financialWhere(userId, window.start);
   if (purchase.usuarioId !== criteria.usuario_id || !purchase.ativa || purchase.status !== criteria.compra_status || purchase.horario === null) return false;
   const date = new Date(purchase.horario);
@@ -35,11 +36,13 @@ export function descriptiveIndicators(input: EntradaPeriodo) {
   };
   if (input.anterior) {
     const previous = observedWindow(input.anterior.janela);
-    if (previous.cutoff > window.start) throw new Error('RF018_OVERLAPPING_PERIODS');
+    if (previous.cutoff > window.start) throw new Error('ANALISE_OVERLAPPING_PERIODS');
     const sameDuration = previous.cutoff.getTime() - previous.start.getTime() === window.cutoff.getTime() - window.start.getTime();
     const missingDates = input.anterior.compras.some(row => row.ativa && row.status === 'CONFIRMADA' && row.horario === null);
     comparison.periodoAnterior = input.anterior.janela.periodo;
-    comparison.motivo = !sameDuration ? 'JANELAS_NAO_EQUIVALENTES' : partial || missingDates || input.anterior.janela.cobertura !== 'COMPLETA' || !input.anterior.coberturaComparavel ? 'COBERTURA_NAO_COMPARAVEL' : null;
+    const coverage = !partial && !missingDates && input.anterior.janela.cobertura === 'COMPLETA' && input.anterior.coberturaComparavel ? 'COMPLETA' : 'DESCONHECIDA';
+    const temporal = comparacaoTemporal(window.cutoff.getTime() - window.start.getTime(), coverage);
+    comparison.motivo = !sameDuration ? 'JANELAS_NAO_EQUIVALENTES' : !temporal.elegivel ? 'COBERTURA_NAO_COMPARAVEL' : null;
     if (!comparison.motivo) {
       const count = input.anterior.compras.filter(row => eligible(row, input.usuarioId, previous)).length;
       comparison = { disponibilidade: 'DISPONIVEL', motivo: null, periodoAnterior: input.anterior.janela.periodo, comprasAnterior: count, diferenca: rows.length - count, variacaoRelativa: count === 0 ? null : (rows.length - count) / count };

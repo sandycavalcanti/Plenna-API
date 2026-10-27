@@ -4,10 +4,11 @@ import { after, beforeEach, afterEach, mock, test } from 'node:test';
 // Nunca usa o Neon: destino local inválido e todos os delegates utilizados são simulados.
 process.env.DIRECT_URL = 'postgresql://localhost:1/reconciliacao_offline';
 process.env.DATABASE_URL = process.env.DIRECT_URL;
-const methods = ['findFirst', 'findUnique', 'findMany', 'groupBy', 'count', 'create', 'createMany', 'update', 'delete', 'deleteMany'];
+const methods = ['findFirst', 'findUnique', 'findMany', 'groupBy', 'count', 'create', 'createMany', 'update', 'updateMany', 'delete', 'deleteMany'];
 const client = Object.fromEntries(['tb_compra', 'tb_compra_item', 'tb_usuario', 'tb_metricas',
-  'tb_tempo_uso', 'tb_categoria', 'tb_forma_pagamento'].map((name) => [name,
+  'tb_tempo_uso', 'tb_categoria', 'tb_forma_pagamento', 'tb_compra_evento'].map((name) => [name,
   Object.fromEntries(methods.map((method) => [method, async () => { throw new Error('Consulta não simulada'); }]))]));
+client.$queryRaw = async () => [];
 client.$transaction = async (callback) => callback(client);
 client.$disconnect = async () => {};
 // Injeta o runtime em memória antes dos imports. Nenhum Pool real é criado.
@@ -20,11 +21,16 @@ const responses = await import('../../src/modules/dashboard/dashboard.schemas.ts
 
 beforeEach(() => {
   for (const delegate of [prisma.tb_compra, prisma.tb_compra_item, prisma.tb_usuario,
-    prisma.tb_metricas, prisma.tb_tempo_uso, prisma.tb_categoria, prisma.tb_forma_pagamento]) {
+    prisma.tb_metricas, prisma.tb_tempo_uso, prisma.tb_categoria, prisma.tb_forma_pagamento,
+    prisma.tb_compra_evento]) {
     for (const method of methods) {
       mock.method(delegate, method, async () => { throw new Error(`Consulta não simulada: ${method}`); });
     }
   }
+  mock.method(prisma.tb_compra_evento, 'findMany', async () => []);
+  mock.method(prisma.tb_compra_evento, 'findFirst', async () => null);
+  mock.method(prisma.tb_compra_evento, 'create', async ({ data }) => ({ evento_id: 1, ...data }));
+  mock.method(prisma.tb_compra_item, 'updateMany', async () => ({ count: 0 }));
   mock.method(prisma, '$transaction', async (callback) => callback(prisma));
   mock.method(console, 'info', () => {});
 });

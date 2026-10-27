@@ -10,7 +10,12 @@
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "postinstall": "prisma generate",
-    "db": "npx.cmd prisma db pull && npx.cmd prisma generate"
+    "db": "npx.cmd prisma db pull && npx.cmd prisma generate",
+    "test:offline": "node scripts/test-offline.mjs",
+    "test:rf018": "node scripts/test-rf018.mjs",
+    "prisma:validate:offline": "prisma validate --config scripts/prisma-offline.config.mjs",
+    "prisma:generate:offline": "prisma generate --config scripts/prisma-offline.config.mjs",
+    "test:gmail:offline": "node --import tsx --import ./tests/saneamento/offline-regression.mjs --loader ./tests/saneamento/source-loader.mjs --test test/ai-provider.test.js test/email-classification.test.js test/email-classification.intent.test.js test/email-propaganda-category.test.js test/email-purchase-auto-confirmation.test.js test/email-sync.test.js test/email-normalizer.test.js test/email-purchase-extractor.test.js test/email-purchase-enrichment.test.js test/payment-method.test.js test/purchase-reconciliation.test.js test/purchase-items.persistence.test.js test/gmail-attachment.test.js test/nfe-parser.test.js test/danfe-pdf-parser.test.js test/purchase-source.merge.test.js test/fiscal-link.test.js"
   },
   "repository": {
     "type": "git",

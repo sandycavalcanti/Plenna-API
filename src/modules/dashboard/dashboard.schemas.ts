@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const resumoMensalResponseSchema = z.object({
-  periodo: z.string().regex(/^\d{4}-\d{2}$/), timezone: z.literal('UTC'), inicio: z.string(), fimExclusivo: z.string(),
+  periodo: z.string().regex(/^\d{4}-\d{2}$/), timezone: z.literal('America/Sao_Paulo'), inicio: z.string(), fimExclusivo: z.string(),
   totalConhecido: z.number().nonnegative(), total: z.number().nonnegative().nullable(),
   qualidade: z.enum(['COMPLETO','PARCIAL','INSUFICIENTE','SEM_COMPRAS']),
   comprasConfirmadas: z.number().int().nonnegative(), comprasComValor: z.number().int().nonnegative(), comprasSemValor: z.number().int().nonnegative(),

@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const homeQuerySchema = z.object({ periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/) }).strict();
 const amount = z.number().int().nonnegative().nullable();
 export const homeResumoSchema = z.object({
-  versaoContrato: z.literal(1), periodo: homeQuerySchema.shape.periodo, referenciaTemporal: z.literal('UTC'),
+  versaoContrato: z.literal(1), periodo: homeQuerySchema.shape.periodo, referenciaTemporal: z.literal('America/Sao_Paulo'),
   seletor: z.object({ periodoMinimo: homeQuerySchema.shape.periodo, periodoMaximo: homeQuerySchema.shape.periodo,
     motivoLimiteInicial: z.enum(['CRIACAO_CONTA', 'COMPRA_RETROATIVA', 'DATA_CRIACAO_INDISPONIVEL']) }).strict(),
   financeiro: z.object({ comprasConfirmadas: z.number().int().nonnegative(), comprasComValor: z.number().int().nonnegative(),

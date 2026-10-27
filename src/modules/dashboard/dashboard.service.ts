@@ -1,7 +1,7 @@
 import { segundosDoRegistro } from '../tempo-uso/tempo-uso.duracao.js';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { getMonthBounds, financialWhere, parseMonth, summarizeValues, cents } from '../compra/financeiro.js';
+import { BUSINESS_TIMEZONE, getMonthBounds, financialWhere, parseMonth, summarizeValues, cents } from '../compra/financeiro.js';
 import { AppError } from '../../errors/AppError.js';
 import type {
   AnalyticsCategoryDTO,
@@ -18,7 +18,7 @@ import type {
   TempoVsGastoDTO,
 } from './dashboard.schemas.js';
 
-export const ANALYTICS_TIMEZONE = 'America/Sao_Paulo' as const;
+export const ANALYTICS_TIMEZONE = BUSINESS_TIMEZONE;
 
 type AnalyticsPeriodDefinition = {
   key: string;
@@ -457,7 +457,7 @@ export class DashboardService {
       const compras = await tx.tb_compra.findMany({ where: financialWhere(userId, start), select: { compra_valor: true } });
       const summary = summarizeValues(compras.map(c => c.compra_valor), user.usuario_meta_valor_mensal ?? null);
       const limite = user.usuario_meta_valor_compra == null || cents(user.usuario_meta_valor_compra) === 0 ? null : cents(user.usuario_meta_valor_compra);
-      return { periodo: start.toISOString().slice(0,7), timezone: 'UTC', inicio: start.toISOString(), fimExclusivo: end.toISOString(),
+      return { periodo: start.toISOString().slice(0,7), timezone: BUSINESS_TIMEZONE, inicio: start.toISOString(), fimExclusivo: end.toISOString(),
         ...summary, limitePorCompra: limite === null ? null : limite / 100,
         comprasAcimaLimiteIndividual: limite === null ? null : compras.filter(c => c.compra_valor !== null && cents(c.compra_valor) > limite).length };
     }, { isolationLevel: 'RepeatableRead' });

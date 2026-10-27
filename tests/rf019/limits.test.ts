@@ -20,10 +20,12 @@ let state: {
   items: Row[];
   preferences: Row[];
   notifications: Row[];
+  events: Row[];
   metrics: Row[];
   nextPurchaseId: number;
   nextItemId: number;
   nextNotificationId: number;
+  nextEventId: number;
   nextMetricId: number;
 } = createState();
 let transactionOpen = false;
@@ -40,10 +42,12 @@ function createState() {
     items: [],
     preferences: [],
     notifications: [],
+    events: [],
     metrics: [],
     nextPurchaseId: 1,
     nextItemId: 1,
     nextNotificationId: 1,
+    nextEventId: 1,
     nextMetricId: 1,
   };
 }
@@ -168,6 +172,17 @@ function makeClient() {
         return { count: rows.length };
       },
     },
+    tb_compra_evento: {
+      findMany: async ({ where }: Row) => state.events.filter((event) => matches(event, where)),
+      findFirst: async ({ where }: Row) => state.events
+        .filter((event) => matches(event, where))
+        .sort((left, right) => right.revisao - left.revisao)[0] ?? null,
+      create: async ({ data }: Row) => {
+        const event = { evento_id: state.nextEventId++, ...data };
+        state.events.push(event);
+        return event;
+      },
+    },
     tb_notificacao: {
       findMany: async ({ where, select }: Row) => {
         const rows = state.notifications
@@ -213,7 +228,9 @@ function makeClient() {
         return notification;
       },
     },
-    $queryRaw: async (_query: unknown, ...values: any[]) => {
+    $queryRaw: async (query: unknown, ...values: any[]) => {
+      const text = Array.isArray(query) ? query.join('?') : String(query);
+      if (text.includes('tb_compra') && text.includes('FOR UPDATE')) return [];
       const [usuario_id, notificacao_tipo, notificacao_titulo, notificacao_mensagem,
         notificacao_chave_idempotencia, compra_id, categoria_id, notificacao_evento] = values;
       if (state.notifications.some((notification) => notification.notificacao_chave_idempotencia === notificacao_chave_idempotencia)) {
@@ -646,7 +663,7 @@ test('virada de mês não mistura compras do mês anterior', async () => {
   configureLimits(1000, 100, 50);
   const previous = addPurchase({ compra_valor: 200, compra_horario: new Date('2026-01-31T23:00:00Z') });
   addItem(previous.compra_id, 1, 200);
-  const current = addPurchase({ compra_valor: 40, compra_horario: new Date('2026-02-01T00:00:00Z') });
+  const current = addPurchase({ compra_valor: 40, compra_horario: new Date('2026-02-01T03:00:00Z') });
   addItem(current.compra_id, 1, 40);
   const result = await evaluateConfirmedPurchaseLimits(current.compra_id);
   assert.deepEqual(result.alerts, []);
@@ -656,7 +673,7 @@ test('categoria do mês anterior não contamina o mês atual', async () => {
   configureLimits(1000, null, 50);
   const previous = addPurchase({ compra_valor: 200, compra_horario: new Date('2026-01-31T23:00:00Z') });
   addItem(previous.compra_id, 1, 200);
-  const current = addPurchase({ compra_valor: 40, compra_horario: new Date('2026-02-01T00:00:00Z') });
+  const current = addPurchase({ compra_valor: 40, compra_horario: new Date('2026-02-01T03:00:00Z') });
   addItem(current.compra_id, 1, 40);
   const result = await evaluateConfirmedPurchaseLimits(current.compra_id);
   assert.equal(result.alerts.length, 0);

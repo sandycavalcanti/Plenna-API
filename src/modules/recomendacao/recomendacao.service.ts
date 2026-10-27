@@ -7,7 +7,7 @@ import { AppError } from '../../errors/AppError.js';
 import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 import { CONSENTIMENTO_CODIGOS } from '../consentimento/consentimento.constants.js';
 import { parseMonth } from '../compra/financeiro.js';
-import { RF018Service } from '../rf018/rf018.service.js';
+import { AnaliseComportamentalService } from '../analise/comportamento.service.js';
 import { recomendar, type RecommendationContext } from './recomendacao.engine.js';
 import { RecommendationTextService, type RecommendationTextProvider } from './recomendacao.text.js';
 import { proactiveCandidateSchema, type ProactiveCandidate } from '../proatividade/proatividade.contracts.js';
@@ -120,7 +120,7 @@ function validateGenerationInput(userId: number, periodo: string) {
 
 async function defaultAnalysis(userId: number, periodo: string, now: Date) {
   return prisma.$transaction(async (tx) => {
-    const snapshot = await RF018Service.consultarSnapshot(tx, userId, periodo, now);
+    const snapshot = await AnaliseComportamentalService.consultarSnapshot(tx, userId, periodo, now);
     const { start, end } = parseMonth(periodo);
     const [impulsive, impulsiveValue, metas, recurrences] = await Promise.all([
       tx.tb_compra.count({ where: { usuario_id: userId, compra_ativo: 1, compra_status: 'CONFIRMADA', compra_classificacao: 'IMPULSIVA', compra_horario: { gte: start, lt: end } } }),

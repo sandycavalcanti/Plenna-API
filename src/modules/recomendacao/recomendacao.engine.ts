@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { saidaPeriodoSchema, saidaCompraSchema } from '../rf018/rf018.schemas.js';
+import { saidaPeriodoSchema, saidaCompraSchema } from '../analise/analise.schemas.js';
 
 const recommendationSchema = z.object({
   codigo: z.enum([
@@ -26,7 +26,7 @@ export type RecommendationContext = {
 };
 const sorted = (values: string[]) => [...new Set(values)].sort();
 
-/** Pure consumer of RF018 v1. Invalid contracts throw; empty success is explicit.
+/** Pure consumer of ANALISE v1. Invalid contracts throw; empty success is explicit.
  * No money calculation, behavioral evaluation, clock, I/O or Android dependency.
  */
 export function recomendar(raw: unknown, context: RecommendationContext = {}) {

@@ -9,13 +9,14 @@ datasource db {
 }
 
 model tb_categoria {
-  categoria_id           Int              @id @default(autoincrement())
-  categoria_nome         String           @db.VarChar(45)
-  categoria_data_criacao DateTime         @default(now()) @db.Timestamp(6)
+  categoria_id           Int                        @id @default(autoincrement())
+  categoria_nome         String                     @db.VarChar(45)
+  categoria_data_criacao DateTime                   @default(now()) @db.Timestamp(6)
   tb_compra_item         tb_compra_item[]
   tb_notificacao         tb_notificacao[]
   tb_preferencia         tb_preferencia[]
   tb_propaganda          tb_propaganda[]
+  referencias_historicas tb_referencia_financeira[]
 
   @@schema("public")
 }
@@ -24,6 +25,13 @@ model tb_compra {
   compra_id                        Int                       @id @default(autoincrement())
   usuario_id                       Int
   forma_pagamento_id               Int?
+  // The PostgreSQL CHECK requires the recurrence id and planned date to be
+  // both NULL or both populated. It remains database-managed because Prisma
+  // cannot express that CHECK constraint.
+  compra_recorrencia_id            Int?
+  // The partial unique index for recurring purchases is maintained by
+  // PostgreSQL and intentionally has no Prisma @@unique equivalent.
+  compra_recorrencia_data_prevista DateTime?                   @db.Date
   compra_valor                     Decimal?                  @db.Decimal(10, 2)
   compra_horario                   DateTime                  @db.Timestamp(6)
   compra_fonte                     String?                   @db.VarChar(45)
@@ -39,8 +47,6 @@ model tb_compra {
   compra_ativo                     Int                       @default(1) @db.SmallInt
   compra_excluido_em               DateTime?                 @db.Timestamp(6)
   compra_desconto                  Decimal                   @default(0) @db.Decimal(10, 2)
-  compra_recorrencia_id            Int?
-  compra_recorrencia_data_prevista DateTime?                 @db.Date
   tb_compra_recorrencia            tb_compra_recorrencia?    @relation(fields: [compra_recorrencia_id], references: [compra_recorrencia_id], onDelete: NoAction, onUpdate: NoAction)
   tb_forma_pagamento               tb_forma_pagamento?       @relation(fields: [forma_pagamento_id], references: [forma_pagamento_id], onDelete: NoAction, onUpdate: NoAction)
   tb_usuario                       tb_usuario                @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
@@ -49,6 +55,11 @@ model tb_compra {
 
   @@unique([usuario_id, compra_email_mensagem_id])
   @@unique([compra_recorrencia_id, compra_recorrencia_data_prevista], map: "uq_compra_recorrencia_data_prevista", where: raw("(compra_recorrencia_id IS NOT NULL)"))
+  contexto_compra_revisao        contexto_compra_revisao[]
+  avaliacao_compra               avaliacao_compra[]
+  eventos                          tb_compra_evento[]
+
+  @@unique([compra_id, usuario_id])
   @@index([usuario_id, compra_ativo], map: "idx_compra_usuario_ativo")
   @@index([usuario_id, compra_pedido_externo_id], map: "idx_compra_usuario_pedido_externo")
   @@schema("public")
@@ -56,6 +67,9 @@ model tb_compra {
 
 model tb_compra_item {
   compra_item_id             Int                    @id @default(autoincrement())
+  // PostgreSQL enforces that exactly one of compra_id and
+  // compra_recorrencia_id is populated. The CHECK is intentionally not
+  // duplicated as a Prisma constraint.
   compra_id                  Int?
   categoria_id               Int?
   compra_item_nome           String                 @db.VarChar(45)
@@ -69,7 +83,10 @@ model tb_compra_item {
   tb_categoria               tb_categoria?          @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra                  tb_compra?             @relation(fields: [compra_id], references: [compra_id], onDelete: NoAction, onUpdate: NoAction)
   tb_compra_recorrencia      tb_compra_recorrencia? @relation(fields: [compra_recorrencia_id], references: [compra_recorrencia_id], onDelete: NoAction, onUpdate: NoAction)
+  contexto_compra_item     contexto_compra_item[]
+  eventos                    tb_compra_evento[]
 
+  @@unique([compra_item_id, compra_id])
   @@index([compra_id, compra_item_ativo], map: "idx_compra_item_compra_ativo")
   @@index([compra_recorrencia_id], map: "idx_compra_item_recorrencia", where: raw("(compra_recorrencia_id IS NOT NULL)"))
   @@schema("public")
@@ -178,6 +195,7 @@ model tb_usuario {
   tb_propaganda             tb_propaganda[]
   tb_redefinicao_senha      tb_redefinicao_senha[]
   tb_tempo_uso              tb_tempo_uso[]
+  referencias_historicas    tb_referencia_financeira[]
 
   @@schema("public")
 }
@@ -503,5 +521,107 @@ enum oauth_status_enum {
   CANCELADA
   FALHOU
 
+  @@schema("public")
+}
+
+model contexto_compra_revisao {
+  contexto_id     Int                      @id @default(autoincrement())
+  compra_id       Int
+  usuario_id      Int
+  revisao         Int
+  versao_schema   Int                      @default(1)
+  operacao_id     String                   @db.Uuid
+  requisicao_hash String                   @db.VarChar(64)
+  respostas       Json                     @db.JsonB
+  criada_em       DateTime                 @default(now()) @db.Timestamptz(3)
+  tb_compra       tb_compra                @relation(fields: [compra_id, usuario_id], references: [compra_id, usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  itens           contexto_compra_item[]
+  avaliacoes      avaliacao_compra[]
+
+  @@unique([compra_id, revisao])
+  @@unique([compra_id, operacao_id])
+  @@unique([contexto_id, compra_id])
+  @@map("tb_rf018_contexto_revisao")
+  @@schema("public")
+}
+
+model contexto_compra_item {
+  contexto_id    Int
+  compra_id      Int
+  compra_item_id Int
+  planejamento   String                    @db.VarChar(32)
+  contexto       contexto_compra_revisao @relation(fields: [contexto_id, compra_id], references: [contexto_id, compra_id], onDelete: Cascade, onUpdate: NoAction)
+  item           tb_compra_item            @relation(fields: [compra_item_id, compra_id], references: [compra_item_id, compra_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([contexto_id, compra_item_id])
+  @@map("tb_rf018_item_contexto")
+  @@schema("public")
+}
+
+model avaliacao_compra {
+  avaliacao_id     Int                        @id @default(autoincrement())
+  compra_id        Int
+  usuario_id       Int
+  contexto_id      Int?
+  contexto_revisao Int
+  versao_contrato  Int                        @default(1)
+  versao_motor     String                     @db.VarChar(40)
+  fontes_hash      String                     @db.VarChar(64)
+  dados_utilizados Json                       @db.JsonB
+  resultado        Json                       @db.JsonB
+  criada_em        DateTime                   @default(now()) @db.Timestamptz(3)
+  compra           tb_compra                  @relation(fields: [compra_id, usuario_id], references: [compra_id, usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  contexto         contexto_compra_revisao? @relation(fields: [contexto_id, compra_id], references: [contexto_id, compra_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([compra_id, versao_motor, fontes_hash])
+  @@index([compra_id, avaliacao_id])
+  @@map("tb_rf018_avaliacao")
+  @@schema("public")
+}
+
+model tb_compra_evento {
+  evento_id         Int                @id @default(autoincrement())
+  compra_id         Int
+  usuario_id        Int
+  compra_item_id    Int?
+  revisao           Int
+  operacao_id       String             @db.Uuid
+  requisicao_hash   String             @db.VarChar(64)
+  tipo              String             @db.VarChar(32)
+  dados             Json               @db.JsonB
+  efetiva_em        DateTime?          @db.Date
+  registrada_em     DateTime           @default(now()) @db.Timestamptz(3)
+  origem            String             @default("DECLARADO") @db.VarChar(32)
+  corrige_evento_id Int?               @unique
+  anulado           Boolean            @default(false)
+  compra            tb_compra          @relation(fields: [compra_id, usuario_id], references: [compra_id, usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  item              tb_compra_item?    @relation(fields: [compra_item_id, compra_id], references: [compra_item_id, compra_id], onDelete: NoAction, onUpdate: NoAction)
+  corrigido         tb_compra_evento?  @relation("correcoes", fields: [corrige_evento_id, compra_id], references: [evento_id, compra_id], onDelete: NoAction, onUpdate: NoAction)
+  correcoes         tb_compra_evento[] @relation("correcoes")
+
+  @@unique([evento_id, compra_id])
+  @@unique([compra_id, revisao])
+  @@unique([compra_id, operacao_id])
+  @@index([usuario_id, efetiva_em])
+  @@schema("public")
+}
+
+model tb_referencia_financeira {
+  referencia_id Int           @id @default(autoincrement())
+  usuario_id    Int
+  categoria_id  Int?
+  tipo          String        @db.VarChar(32)
+  valor         Decimal?      @db.Decimal(12, 2)
+  vigente_desde DateTime      @db.Timestamptz(3)
+  registrada_em DateTime      @default(now()) @db.Timestamptz(3)
+  periodo       String?       @db.VarChar(7)
+  aplicacao     String        @db.VarChar(32)
+  origem        String        @db.VarChar(32)
+  operacao_id   String        @db.Uuid
+  usuario       tb_usuario    @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  categoria     tb_categoria? @relation(fields: [categoria_id], references: [categoria_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([usuario_id, operacao_id])
+  @@index([usuario_id, tipo, vigente_desde])
   @@schema("public")
 }

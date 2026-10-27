@@ -1,15 +1,90 @@
 import { Prisma } from '@prisma/client';
 import { AppError } from '../../errors/AppError.js';
 
+export const BUSINESS_TIMEZONE = 'America/Sao_Paulo' as const;
+
+function zonedParts(date: Date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: BUSINESS_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  return Object.fromEntries(
+    parts
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, Number(part.value)]),
+  ) as Record<'year' | 'month' | 'day' | 'hour' | 'minute' | 'second', number>;
+}
+
+function timezoneOffsetMs(date: Date) {
+  const parts = zonedParts(date);
+  const localAsUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+  return localAsUtc - date.getTime();
+}
+
+function localMidnightUtc(year: number, monthIndex: number, day: number) {
+  const localTimestamp = Date.UTC(year, monthIndex, day);
+  let candidate = localTimestamp;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const next = localTimestamp - timezoneOffsetMs(new Date(candidate));
+    if (next === candidate) return new Date(candidate);
+    candidate = next;
+  }
+  return new Date(candidate);
+}
+
+export function businessMonthBounds(year: number, monthIndex: number) {
+  return {
+    start: localMidnightUtc(year, monthIndex, 1),
+    end: localMidnightUtc(year, monthIndex + 1, 1),
+  };
+}
+
+export function businessDayBounds(date: Date) {
+  if (!Number.isFinite(date.getTime())) throw new AppError('Data inválida', 400);
+  const parts = zonedParts(date);
+  return {
+    start: localMidnightUtc(parts.year, parts.month - 1, parts.day),
+    end: localMidnightUtc(parts.year, parts.month - 1, parts.day + 1),
+  };
+}
+
+export function businessDayStart(date: Date) {
+  return businessDayBounds(date).start;
+}
+
+export function businessDateKey(date: Date) {
+  const parts = zonedParts(date);
+  return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+}
+
+export function businessPeriod(date: Date) {
+  const parts = zonedParts(date);
+  return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}`;
+}
+
 export function getMonthBounds(referenceDate: Date = new Date()) {
   if (!Number.isFinite(referenceDate.getTime())) throw new AppError('Período inválido', 400);
-  return { start: new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1)),
-    end: new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth() + 1, 1)) };
+  const parts = zonedParts(referenceDate);
+  return businessMonthBounds(parts.year, parts.month - 1);
 }
 export function parseMonth(periodo: unknown, now = new Date()) {
   if (periodo === undefined) return getMonthBounds(now);
   if (typeof periodo !== 'string' || !/^[1-9]\d{3}-(0[1-9]|1[0-2])$/.test(periodo)) throw new AppError('Use período AAAA-MM', 400);
-  return getMonthBounds(new Date(`${periodo}-01T00:00:00.000Z`));
+  const [year, month] = periodo.split('-').map(Number);
+  return businessMonthBounds(year!, month! - 1);
 }
 export function financialWhere(userId: number, referenceDate: Date) {
   const { start, end } = getMonthBounds(referenceDate);

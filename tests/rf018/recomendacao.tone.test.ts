@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { analisarPeriodo } from '../../src/modules/rf018/rf018.engine.js';
+import { analisarPeriodo } from '../../src/modules/analise/comportamento.engine.js';
 import { recomendar } from '../../src/modules/recomendacao/recomendacao.engine.js';
 import { ProactiveMessageService } from '../../src/modules/proatividade/proatividade.text.js';
 
