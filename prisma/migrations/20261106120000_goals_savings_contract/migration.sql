@@ -8,11 +8,11 @@
 
 DO $$
 DECLARE
-  column_type text;
-  column_nullable text;
-  column_default text;
-  column_precision integer;
-  column_scale integer;
+  v_column_type text;
+  v_column_nullable text;
+  v_column_default text;
+  v_column_precision integer;
+  v_column_scale integer;
   constraint_definition text;
   normalized_definition text;
 BEGIN
@@ -20,22 +20,22 @@ BEGIN
     RAISE EXCEPTION 'GOALS_SCHEMA_DRIFT: public.tb_meta nao existe';
   END IF;
 
-  SELECT data_type, is_nullable, column_default, numeric_precision, numeric_scale
-    INTO column_type, column_nullable, column_default, column_precision, column_scale
-  FROM information_schema.columns
-  WHERE table_schema = 'public'
-    AND table_name = 'tb_meta'
-    AND column_name = 'meta_valor_reservado';
+  SELECT c.data_type, c.is_nullable, c.column_default, c.numeric_precision, c.numeric_scale
+    INTO v_column_type, v_column_nullable, v_column_default, v_column_precision, v_column_scale
+  FROM information_schema.columns AS c
+  WHERE c.table_schema = 'public'
+    AND c.table_name = 'tb_meta'
+    AND c.column_name = 'meta_valor_reservado';
 
   IF NOT FOUND THEN
     ALTER TABLE public.tb_meta
       ADD COLUMN meta_valor_reservado NUMERIC(10,2) NOT NULL DEFAULT 0;
-  ELSIF column_type <> 'numeric'
-     OR column_nullable <> 'NO'
-     OR column_precision <> 10
-     OR column_scale <> 2
-     OR column_default IS NULL
-     OR btrim(column_default) NOT IN ('0', '0.00') THEN
+  ELSIF v_column_type <> 'numeric'
+     OR v_column_nullable <> 'NO'
+     OR v_column_precision <> 10
+     OR v_column_scale <> 2
+     OR v_column_default IS NULL
+     OR btrim(v_column_default) NOT IN ('0', '0.00') THEN
     RAISE EXCEPTION 'GOALS_SCHEMA_DRIFT: tb_meta.meta_valor_reservado possui definicao incompatível';
   END IF;
 
@@ -63,11 +63,6 @@ END $$;
 DO $$
 DECLARE
   movement_count bigint;
-  column_type text;
-  column_nullable text;
-  column_default text;
-  column_precision integer;
-  column_scale integer;
   constraint_definition text;
   index_definition text;
   normalized_definition text;
@@ -95,10 +90,10 @@ BEGIN
   ELSE
     IF NOT EXISTS (
       SELECT 1
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'tb_meta_movimentacao'
-        AND column_name = 'meta_movimentacao_operacao_id'
+      FROM information_schema.columns AS c
+      WHERE c.table_schema = 'public'
+        AND c.table_name = 'tb_meta_movimentacao'
+        AND c.column_name = 'meta_movimentacao_operacao_id'
     ) THEN
       SELECT count(*) INTO movement_count FROM public.tb_meta_movimentacao;
       IF movement_count > 0 THEN
@@ -117,13 +112,13 @@ BEGIN
         ('meta_movimentacao_tipo'),
         ('meta_movimentacao_valor'),
         ('meta_movimentacao_data')
-      ) AS required(column_name)
+      ) AS required_columns(column_name)
       WHERE NOT EXISTS (
         SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'tb_meta_movimentacao'
-          AND column_name = required.column_name
+        FROM information_schema.columns AS c
+        WHERE c.table_schema = 'public'
+          AND c.table_name = 'tb_meta_movimentacao'
+          AND c.column_name = required_columns.column_name
       )
     ) THEN
       RAISE EXCEPTION 'GOALS_SCHEMA_DRIFT: tb_meta_movimentacao possui coluna obrigatoria ausente';
@@ -146,16 +141,16 @@ BEGIN
 
     IF EXISTS (
       SELECT 1
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'tb_meta_movimentacao'
+      FROM information_schema.columns AS c
+      WHERE c.table_schema = 'public'
+        AND c.table_name = 'tb_meta_movimentacao'
         AND (
-          (column_name = 'meta_movimentacao_id' AND (data_type <> 'integer' OR is_nullable <> 'NO')) OR
-          (column_name = 'meta_id' AND (data_type <> 'integer' OR is_nullable <> 'NO')) OR
-          (column_name = 'meta_movimentacao_operacao_id' AND (udt_name <> 'uuid' OR is_nullable <> 'NO')) OR
-          (column_name = 'meta_movimentacao_tipo' AND (data_type <> 'character varying' OR character_maximum_length <> 10 OR is_nullable <> 'NO')) OR
-          (column_name = 'meta_movimentacao_valor' AND (data_type <> 'numeric' OR numeric_precision <> 10 OR numeric_scale <> 2 OR is_nullable <> 'NO')) OR
-          (column_name = 'meta_movimentacao_data' AND (udt_name <> 'timestamptz' OR is_nullable <> 'NO' OR column_default IS NULL))
+          (c.column_name = 'meta_movimentacao_id' AND (c.data_type <> 'integer' OR c.is_nullable <> 'NO')) OR
+          (c.column_name = 'meta_id' AND (c.data_type <> 'integer' OR c.is_nullable <> 'NO')) OR
+          (c.column_name = 'meta_movimentacao_operacao_id' AND (c.udt_name <> 'uuid' OR c.is_nullable <> 'NO')) OR
+          (c.column_name = 'meta_movimentacao_tipo' AND (c.data_type <> 'character varying' OR c.character_maximum_length <> 10 OR c.is_nullable <> 'NO')) OR
+          (c.column_name = 'meta_movimentacao_valor' AND (c.data_type <> 'numeric' OR c.numeric_precision <> 10 OR c.numeric_scale <> 2 OR c.is_nullable <> 'NO')) OR
+          (c.column_name = 'meta_movimentacao_data' AND (c.udt_name <> 'timestamptz' OR c.is_nullable <> 'NO' OR c.column_default IS NULL))
         )
     ) THEN
       RAISE EXCEPTION 'GOALS_SCHEMA_DRIFT: tb_meta_movimentacao possui coluna incompatível';
@@ -243,12 +238,12 @@ BEGIN
     END IF;
   END IF;
 
-  SELECT indexdef
+  SELECT idx.indexdef
     INTO index_definition
-  FROM pg_indexes
-  WHERE schemaname = 'public'
-    AND tablename = 'tb_meta_movimentacao'
-    AND indexname = 'idx_meta_movimentacao_meta_data';
+  FROM pg_indexes AS idx
+  WHERE idx.schemaname = 'public'
+    AND idx.tablename = 'tb_meta_movimentacao'
+    AND idx.indexname = 'idx_meta_movimentacao_meta_data';
 
   IF NOT FOUND THEN
     CREATE INDEX idx_meta_movimentacao_meta_data
