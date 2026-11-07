@@ -20,7 +20,7 @@ function dependencies(calls: unknown[] = []): FinancialToolDependencies {
     impulsivity: async () => [],
     analytics: async () => ({ mode: 'month', timezone: 'America/Sao_Paulo', periodos: [], comparacao: null }),
     limits: async () => ({ periodo: '2026-10', orcamentoMensal: null, estadoOrcamento: 'SEM_ORCAMENTO', limitePorCompra: null, comprasAcimaLimiteIndividual: null, comprasAcimaLimite: 0, comprasDentroLimite: 0 }),
-    goals: async () => [],
+    metas: async () => [],
     recurrences: async () => [],
     upcoming: async () => ({ ocorrencias: [] }),
     usage: async () => ({ periodo: '2026-10', itens: [], autorizado: true }),
@@ -44,7 +44,8 @@ test('registra tools financeiras úteis e usa somente a identidade do contexto',
   assert.ok(registry.has('purchase_get'));
   assert.ok(registry.has('spending_by_category'));
   assert.ok(registry.has('finance_analytics'));
-  assert.ok(registry.has('goals_list'));
+  assert.ok(registry.has('listar_metas'));
+  assert.equal(registry.list().some((tool) => tool.name === 'listar_metas'), true);
   assert.ok(registry.has('recurrences_list'));
   assert.ok(registry.has('usage_summary'));
 

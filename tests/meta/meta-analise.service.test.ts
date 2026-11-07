@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Prisma } from '@prisma/client';
-import { GoalAnalyticsService } from '../../src/modules/goal/goal-analytics.service.js';
+import { MetaAnaliseService } from '../../src/modules/meta/meta-analise.service.js';
 
 const NOW = new Date('2026-11-15T12:00:00.000Z');
 
@@ -22,7 +22,7 @@ function movement(
 }
 
 function fakeDatabase() {
-  const goals = [
+  const metas = [
     {
       meta_id: 1,
       usuario_id: 7,
@@ -74,8 +74,8 @@ function fakeDatabase() {
   const movementQueries: any[] = [];
   const database = {
     tb_meta: {
-      findMany: async ({ where, take }: any) => goals
-        .filter((goal) => goal.usuario_id === where.usuario_id)
+      findMany: async ({ where, take }: any) => metas
+        .filter((meta) => meta.usuario_id === where.usuario_id)
         .sort((left, right) => right.meta_data_criacao.getTime() - left.meta_data_criacao.getTime())
         .slice(0, take),
     },
@@ -108,7 +108,7 @@ function fakeDatabase() {
 
 test('agrega indicadores por mes no fuso de Sao Paulo com Decimal', async () => {
   const database: any = fakeDatabase();
-  const result = await GoalAnalyticsService.analyze(7, {
+  const result = await MetaAnaliseService.analyze(7, {
     periodo: '2026-10',
     meses: 4,
     limite_metas: 10,
@@ -119,7 +119,7 @@ test('agrega indicadores por mes no fuso de Sao Paulo com Decimal', async () => 
   assert.equal(database.movementQueries[0].where.meta_movimentacao_data.gte.toISOString(), '2026-07-01T03:00:00.000Z');
   assert.equal(database.movementQueries[0].where.meta_movimentacao_data.lt.toISOString(), '2026-11-01T03:00:00.000Z');
   assert.equal(result.timezone, 'America/Sao_Paulo');
-  const viagem: any = result.metas.find((goal) => goal.id === 1);
+  const viagem: any = result.metas.find((meta) => meta.id === 1);
   assert.equal(viagem.valor_reservado, '65.00');
   assert.equal(viagem.valor_restante, '135.00');
   assert.equal(viagem.progresso_percentual, 32.5);
@@ -142,13 +142,13 @@ test('agrega indicadores por mes no fuso de Sao Paulo com Decimal', async () => 
 });
 
 test('nao trata meses anteriores a criacao como ausencia de economia e identifica excesso de progresso', async () => {
-  const result: any = await GoalAnalyticsService.analyze(7, {
+  const result: any = await MetaAnaliseService.analyze(7, {
     periodo: '2026-10',
     meses: 6,
     limite_metas: 10,
     limite_movimentacoes_recentes: 10,
   }, fakeDatabase(), NOW);
-  const course = result.metas.find((goal: any) => goal.id === 2);
+  const course = result.metas.find((meta: any) => meta.id === 2);
   assert.deepEqual(course.indicadores.periodos_mensais.map((period: any) => period.periodo), ['2026-08', '2026-09', '2026-10']);
   assert.deepEqual(course.indicadores.periodos_sem_movimentacoes, ['2026-08', '2026-09', '2026-10']);
   assert.equal(course.indicadores.atingiu_100_porcento, true);
@@ -157,14 +157,14 @@ test('nao trata meses anteriores a criacao como ausencia de economia e identific
 });
 
 test('retorna metas somente do usuario autenticado, limites e periodo atual incompleto', async () => {
-  const result: any = await GoalAnalyticsService.analyze(7, {
+  const result: any = await MetaAnaliseService.analyze(7, {
     periodo: '2026-11',
     meses: 12,
     limite_metas: 2,
     limite_movimentacoes_recentes: 1,
   }, fakeDatabase(), NOW);
   assert.equal(result.metas.length, 2);
-  assert.equal(result.metas.some((goal: any) => goal.id === 99), false);
+  assert.equal(result.metas.some((meta: any) => meta.id === 99), false);
   assert.equal(result.cobertura.metas_limitadas, true);
   assert.equal(result.cobertura.dados_suficientes, false);
   assert.equal(result.cobertura.saldo_historico_disponivel, false);
@@ -175,7 +175,7 @@ test('retorna metas somente do usuario autenticado, limites e periodo atual inco
 });
 
 test('nao transforma referencia futura em meses completos sem movimentacoes', async () => {
-  const result: any = await GoalAnalyticsService.analyze(7, {
+  const result: any = await MetaAnaliseService.analyze(7, {
     periodo: '2027-02',
     meses: 4,
     limite_metas: 10,
@@ -190,15 +190,15 @@ test('nao transforma referencia futura em meses completos sem movimentacoes', as
 });
 
 test('ajusta o retorno ao limite do orchestrator sem perder a distinÃ§Ã£o do saldo atual', async () => {
-  const source: any = await GoalAnalyticsService.analyze(7, {
+  const source: any = await MetaAnaliseService.analyze(7, {
     periodo: '2026-10',
     meses: 12,
     limite_metas: 10,
     limite_movimentacoes_recentes: 10,
   }, fakeDatabase(), NOW);
   assert.equal(JSON.stringify({ ok: true, result: source }).length <= 12_000, true);
-  const { fitGoalAnalysisResult } = await import('../../src/modules/goal/goal-analytics.service.js');
-  const bounded: any = fitGoalAnalysisResult(source, 4_000);
+  const { ajustarResultadoMeta } = await import('../../src/modules/meta/meta-analise.service.js');
+  const bounded: any = ajustarResultadoMeta(source, 4_000);
   assert.equal(JSON.stringify({ ok: true, result: bounded }).length <= 4_000, true);
   assert.equal(bounded.cobertura.saldo_historico_disponivel, false);
   assert.equal(bounded.limitacoes.some((item: string) => item.includes('limite de resposta')), true);
@@ -207,7 +207,7 @@ test('ajusta o retorno ao limite do orchestrator sem perder a distinÃ§Ã£o do
 test('resultado vazio informa ausencia sem executar escrita', async () => {
   const database: any = fakeDatabase();
   database.tb_meta.findMany = async () => [];
-  const result: any = await GoalAnalyticsService.analyze(7, { periodo: '2026-10' }, database, NOW);
+  const result: any = await MetaAnaliseService.analyze(7, { periodo: '2026-10' }, database, NOW);
   assert.deepEqual(result.metas, []);
   assert.equal(result.cobertura.sem_movimentacoes, true);
   assert.equal(result.cobertura.qualidade, 'SEM_METAS');
@@ -217,10 +217,10 @@ test('resultado vazio informa ausencia sem executar escrita', async () => {
 
 test('limites e argumentos desconhecidos sao rejeitados por Zod', async () => {
   await assert.rejects(
-    () => GoalAnalyticsService.analyze(7, { periodo: '2026-10', meses: 13 }, fakeDatabase(), NOW),
+    () => MetaAnaliseService.analyze(7, { periodo: '2026-10', meses: 13 }, fakeDatabase(), NOW),
   );
   await assert.rejects(
-    () => GoalAnalyticsService.analyze(7, { usuario_id: 8 }, fakeDatabase(), NOW),
+    () => MetaAnaliseService.analyze(7, { usuario_id: 8 }, fakeDatabase(), NOW),
   );
 });
 

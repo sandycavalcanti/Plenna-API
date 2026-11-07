@@ -6,12 +6,12 @@ import { ConsentimentoService } from '../consentimento/consentimento.service.js'
 import { CompraService } from '../compra/compra.service.js';
 import { DashboardService } from '../dashboard/dashboard.service.js';
 import { analyticsQuerySchema, analyticsResponseSchema } from '../dashboard/dashboard.schemas.js';
-import { GoalService } from '../goal/goal.service.js';
+import { MetaService } from '../meta/meta.service.js';
 import {
-  GoalAnalyticsService,
-  goalAnalysisInputSchema,
-  goalAnalysisResultSchema,
-} from '../goal/goal-analytics.service.js';
+  MetaAnaliseService,
+  metaAnaliseInputSchema,
+  metaAnaliseResultSchema,
+} from '../meta/meta-analise.service.js';
 import { RecorrenciaService } from '../recorrencia/recorrencia.service.js';
 import type { ToolDefinition } from './ai.contracts.js';
 
@@ -67,8 +67,8 @@ const limitsResultSchema = z.object({
   comprasAcimaLimiteIndividual: z.number().int().nonnegative().nullable(), comprasAcimaLimite: z.number().int().nonnegative(), comprasDentroLimite: z.number().int().nonnegative(),
 }).strict();
 
-const goalsInputSchema = z.object({ limite: boundedLimit }).strict();
-const goalResultSchema = z.object({ id: z.number().int().positive(), titulo: z.string(), descricao: z.string().nullable(), valor: z.number().nonnegative(), data: z.coerce.date().nullable(), completado: z.boolean() }).strict();
+const metasInputSchema = z.object({ limite: boundedLimit }).strict();
+const metaResultSchema = z.object({ id: z.number().int().positive(), titulo: z.string(), descricao: z.string().nullable(), valor: z.number().nonnegative(), data: z.coerce.date().nullable(), completado: z.boolean() }).strict();
 
 const recurrencesInputSchema = z.object({ status: z.enum(['ATIVA', 'PAUSADA', 'CANCELADA', 'FINALIZADA']).optional(), limite: boundedLimit }).strict();
 const recurrenceItemSchema = z.object({ id: z.number().int().positive(), nome: z.string(), valor: z.number().nonnegative(), categoriaId: z.number().int().positive().nullable() }).strict();
@@ -109,8 +109,9 @@ type FinancialToolDependencies = {
   impulsivity: (userId: number, periodo?: string) => Promise<unknown>;
   analytics: (userId: number, args: z.infer<typeof analyticsQuerySchema>) => Promise<unknown>;
   limits: (userId: number, periodo?: string) => Promise<unknown>;
-  goals: (userId: number) => Promise<any[]>;
-  analyzeGoals?: (userId: number, args: z.infer<typeof goalAnalysisInputSchema>) => Promise<unknown>;
+  metas: (userId: number) => Promise<any[]>;
+  analisarMetas?: (userId: number, args: z.infer<typeof metaAnaliseInputSchema>) => Promise<unknown>;
+  /** Compatibilidade temporária para adapters antigos. */
   recurrences: (userId: number, status?: string) => Promise<any[]>;
   upcoming: (userId: number, id: number, limit: number) => Promise<any>;
   usage: (userId: number, periodo?: string) => Promise<unknown>;
@@ -137,7 +138,7 @@ function serializePurchase(row: any) {
   };
 }
 
-function serializeGoal(row: any) {
+function serializeMeta(row: any) {
   return { id: row.meta_id, titulo: row.meta_titulo, descricao: row.meta_descricao ?? null, valor: Number(row.meta_valor), data: row.meta_data ?? null, completado: Boolean(row.meta_completado) };
 }
 
@@ -188,8 +189,8 @@ function defaultDependencies(): FinancialToolDependencies {
       const [summary, limits] = await Promise.all([DashboardService.resumoMensal(userId, periodo), DashboardService.findComprasAcimaLimite(userId, periodo)]);
       return { periodo: summary.periodo, orcamentoMensal: summary.orcamentoMensal, estadoOrcamento: summary.estadoOrcamento, limitePorCompra: summary.limitePorCompra, comprasAcimaLimiteIndividual: summary.comprasAcimaLimiteIndividual, comprasAcimaLimite: limits.acima_limite, comprasDentroLimite: limits.dentro_limite };
     },
-    goals: (userId) => GoalService.findAllByUserId(userId),
-    analyzeGoals: (userId, args) => GoalAnalyticsService.analyze(userId, args),
+    metas: (userId) => MetaService.findAllByUserId(userId),
+    analisarMetas: (userId, args) => MetaAnaliseService.analyze(userId, args),
     recurrences: (userId, status) => RecorrenciaService.findAll(userId, status as any),
     upcoming: (userId, id, limit) => RecorrenciaService.upcoming(userId, id, limit),
     usage: async (userId, periodo) => {
@@ -225,8 +226,8 @@ export function createFinancialToolDefinitions(dependencies: FinancialToolDepend
     { name: 'impulsive_purchase_summary', description: 'Consulta a classificação observada das compras, sem diagnóstico comportamental.', argsSchema: monthInputSchema, resultSchema: z.array(impulsiveResultSchema).max(10), execute: (args, context) => dependencies.impulsivity(context.usuario_id, args.periodo) },
     { name: 'finance_analytics', description: 'Consulta análises financeiras determinísticas por mês, evolução ou comparação.', argsSchema: analyticsQuerySchema, resultSchema: analyticsResponseSchema, execute: (args, context) => dependencies.analytics(context.usuario_id, args) },
     { name: 'limits_status', description: 'Consulta orçamento, limite por compra e contagens observadas.', argsSchema: monthInputSchema, resultSchema: limitsResultSchema, execute: (args, context) => dependencies.limits(context.usuario_id, args.periodo) },
-    { name: 'goals_list', description: 'Lista metas financeiras declaradas pelo usuário autenticado.', argsSchema: goalsInputSchema, resultSchema: z.object({ itens: z.array(goalResultSchema).max(50) }).strict(), execute: async (args, context) => ({ itens: (await dependencies.goals(context.usuario_id)).slice(0, args.limite).map(serializeGoal) }) },
-    { name: 'analisar_metas', description: 'Analisa metas e movimentacoes reais do usuario autenticado, somente para leitura.', argsSchema: goalAnalysisInputSchema, resultSchema: goalAnalysisResultSchema, execute: (args, context) => (dependencies.analyzeGoals ?? ((userId, input) => GoalAnalyticsService.analyze(userId, input)))(context.usuario_id, args) },
+    { name: 'listar_metas', description: 'Lista metas financeiras declaradas pelo usuario autenticado.', argsSchema: metasInputSchema, resultSchema: z.object({ itens: z.array(metaResultSchema).max(50) }).strict(), execute: async (args, context) => ({ itens: (await dependencies.metas(context.usuario_id)).slice(0, args.limite).map(serializeMeta) }) },
+    { name: 'analisar_metas', description: 'Analisa metas e movimentacoes reais do usuario autenticado, somente para leitura.', argsSchema: metaAnaliseInputSchema, resultSchema: metaAnaliseResultSchema, execute: (args, context) => (dependencies.analisarMetas ?? ((userId, input) => MetaAnaliseService.analyze(userId, input)))(context.usuario_id, args) },
     { name: 'recurrences_list', description: 'Lista compromissos recorrentes próprios e seus valores.', argsSchema: recurrencesInputSchema, resultSchema: recurrencesResultSchema, execute: async (args, context) => ({ itens: (await dependencies.recurrences(context.usuario_id, args.status)).slice(0, args.limite).map(serializeRecurrence) }) },
     { name: 'recurrence_commitments', description: 'Calcula compromissos recorrentes previstos em uma janela limitada.', argsSchema: commitmentsInputSchema, resultSchema: commitmentResultSchema, execute: async (rawArgs, context) => {
       const args = normalizeCommitmentArgs(rawArgs);

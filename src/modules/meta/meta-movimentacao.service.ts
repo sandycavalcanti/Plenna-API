@@ -2,24 +2,24 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
 import {
-  goalMovementInputSchema,
-  goalMovementListQuerySchema,
-  type GoalMovementInput,
-} from './goal.schemas.js';
+  metaMovimentacaoInputSchema,
+  metaMovimentacaoListQuerySchema,
+  type MetaMovimentacaoInput,
+} from './meta.schemas.js';
+import { MAX_META_MONEY, serializeMetaMoney } from './meta.money.js';
 
-const MAX_MONEY = new Prisma.Decimal('99999999.99');
 const ZERO = new Prisma.Decimal(0);
 
-export type GoalMovementErrorCode =
+export type MetaMovimentacaoErrorCode =
   | 'META_NAO_ENCONTRADA'
   | 'SALDO_INSUFICIENTE'
   | 'SALDO_LIMITE_EXCEDIDO'
   | 'OPERACAO_REUTILIZADA'
   | 'DADOS_INVALIDOS';
 
-export class GoalMovementError extends AppError {
+export class MetaMovimentacaoError extends AppError {
   constructor(
-    public readonly code: GoalMovementErrorCode,
+    public readonly code: MetaMovimentacaoErrorCode,
     message: string,
     statusCode: number,
   ) {
@@ -27,14 +27,19 @@ export class GoalMovementError extends AppError {
   }
 }
 
-type GoalMovementDatabase = any;
+type MetaMovimentacaoDatabase = any;
 
 function decimal(value: unknown) {
   return new Prisma.Decimal(value === null || value === undefined ? 0 : String(value));
 }
 
+function requiredDecimal(value: unknown) {
+  if (value === null || value === undefined) throw new TypeError('Valor monetário obrigatório ausente');
+  return new Prisma.Decimal(String(value));
+}
+
 function money(value: unknown) {
-  return decimal(value).toFixed(2);
+  return serializeMetaMoney(value);
 }
 
 function serializeMovement(row: any) {
@@ -48,9 +53,9 @@ function serializeMovement(row: any) {
   };
 }
 
-function buildSavingsSummary(goal: any, latest: any | null, lastDeposit: any | null) {
-  const target = decimal(goal.meta_valor);
-  const reserved = decimal(goal.meta_valor_reservado);
+function buildSavingsSummary(meta: any, latest: any | null, lastDeposit: any | null) {
+  const target = requiredDecimal(meta.meta_valor);
+  const reserved = requiredDecimal(meta.meta_valor_reservado);
   const safeReserved = reserved.isNegative() ? ZERO : reserved;
   const remaining = target.minus(safeReserved);
   const progress = target.greaterThan(0)
@@ -62,7 +67,7 @@ function buildSavingsSummary(goal: any, latest: any | null, lastDeposit: any | n
     : 0;
 
   return {
-    meta_id: goal.meta_id,
+    meta_id: meta.meta_id,
     meta_valor: money(target),
     meta_valor_reservado: money(safeReserved),
     progresso_percentual: progress,
@@ -72,9 +77,9 @@ function buildSavingsSummary(goal: any, latest: any | null, lastDeposit: any | n
   };
 }
 
-async function findLatestMovement(db: GoalMovementDatabase, goalId: number, type?: 'DEPOSITO' | 'RETIRADA') {
+async function findLatestMovement(db: MetaMovimentacaoDatabase, metaId: number, type?: 'DEPOSITO' | 'RETIRADA') {
   const where = {
-    meta_id: goalId,
+    meta_id: metaId,
     ...(type ? { meta_movimentacao_tipo: type } : {}),
   };
   if (typeof db.tb_meta_movimentacao.findFirst === 'function') {
@@ -86,27 +91,27 @@ async function findLatestMovement(db: GoalMovementDatabase, goalId: number, type
 
   // Fallback apenas para doubles de teste antigos que ainda nao implementam findFirst.
   const movements = await db.tb_meta_movimentacao.findMany({
-    where: { meta_id: goalId },
+    where: { meta_id: metaId },
     orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
   });
   return movements.find((movement: any) => !type || movement.meta_movimentacao_tipo === type) ?? null;
 }
 
-async function summaryForGoal(db: GoalMovementDatabase, goal: any) {
+async function summaryForMeta(db: MetaMovimentacaoDatabase, meta: any) {
   const [latest, lastDeposit] = await Promise.all([
-    findLatestMovement(db, goal.meta_id),
-    findLatestMovement(db, goal.meta_id, 'DEPOSITO'),
+    findLatestMovement(db, meta.meta_id),
+    findLatestMovement(db, meta.meta_id, 'DEPOSITO'),
   ]);
   return buildSavingsSummary(
-    goal,
+    meta,
     latest,
     lastDeposit,
   );
 }
 
-async function findLatestPerGoal(
-  db: GoalMovementDatabase,
-  goalIds: number[],
+async function findLatestPerMeta(
+  db: MetaMovimentacaoDatabase,
+  metaIds: number[],
   type?: 'DEPOSITO' | 'RETIRADA',
 ) {
   // DISTINCT ON consulta somente uma linha por meta no PostgreSQL, evitando
@@ -124,7 +129,7 @@ async function findLatestPerGoal(
         m.meta_movimentacao_valor,
         m.meta_movimentacao_data
       FROM public.tb_meta_movimentacao AS m
-      WHERE m.meta_id IN (${Prisma.join(goalIds)})
+      WHERE m.meta_id IN (${Prisma.join(metaIds)})
         ${typeFilter}
       ORDER BY m.meta_id ASC, m.meta_movimentacao_data DESC, m.meta_movimentacao_id DESC
     `);
@@ -132,7 +137,7 @@ async function findLatestPerGoal(
 
   // Fallback para doubles de teste sem suporte a queryRaw/first.
   const movements = await db.tb_meta_movimentacao.findMany({
-    where: { meta_id: { in: goalIds } },
+    where: { meta_id: { in: metaIds } },
     orderBy: [{ meta_id: 'asc' }, { meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
   });
   const result = new Map<number, any>();
@@ -174,7 +179,7 @@ function decodeCursor(raw: string, metaId: number) {
     }
     return parsed;
   } catch {
-    throw new GoalMovementError('DADOS_INVALIDOS', 'Cursor de movimentações inválido', 400);
+    throw new MetaMovimentacaoError('DADOS_INVALIDOS', 'Cursor de movimentações inválido', 400);
   }
 }
 
@@ -185,54 +190,54 @@ function assertUserId(userId: number) {
 }
 
 function notFound() {
-  return new GoalMovementError('META_NAO_ENCONTRADA', 'Meta não encontrada', 404);
+  return new MetaMovimentacaoError('META_NAO_ENCONTRADA', 'Meta não encontrada', 404);
 }
 
 function operationConflict() {
-  return new GoalMovementError(
+  return new MetaMovimentacaoError(
     'OPERACAO_REUTILIZADA',
     'Operação já utilizada com outros dados',
     409,
   );
 }
 
-function sameOperation(existing: any, input: GoalMovementInput) {
+function sameOperation(existing: any, input: MetaMovimentacaoInput) {
   return (
     existing.meta_movimentacao_tipo === input.tipo
     && decimal(existing.meta_movimentacao_valor).eq(decimal(input.valor))
   );
 }
 
-export class GoalMovementService {
+export class MetaMovimentacaoService {
   static async create(
     userId: number,
-    goalId: number,
+    metaId: number,
     rawInput: unknown,
-    database: GoalMovementDatabase = prisma,
+    database: MetaMovimentacaoDatabase = prisma,
   ) {
     assertUserId(userId);
-    if (!Number.isInteger(goalId) || goalId <= 0) throw notFound();
-    const input = goalMovementInputSchema.parse(rawInput);
+    if (!Number.isInteger(metaId) || metaId <= 0) throw notFound();
+    const input = metaMovimentacaoInputSchema.parse(rawInput);
     const value = decimal(input.valor);
 
     try {
-      return await database.$transaction(async (tx: GoalMovementDatabase) => {
+      return await database.$transaction(async (tx: MetaMovimentacaoDatabase) => {
         const locked = await tx.$queryRaw<Array<{ meta_id: number }>>`
           SELECT meta_id
           FROM public.tb_meta
-          WHERE meta_id = ${goalId}
+          WHERE meta_id = ${metaId}
             AND usuario_id = ${userId}
           FOR UPDATE
         `;
         if (!locked.length) throw notFound();
 
-        const goal = await tx.tb_meta.findUnique({ where: { meta_id: goalId } });
-        if (!goal || goal.usuario_id !== userId) throw notFound();
+        const meta = await tx.tb_meta.findUnique({ where: { meta_id: metaId } });
+        if (!meta || meta.usuario_id !== userId) throw notFound();
 
         const existing = await tx.tb_meta_movimentacao.findUnique({
           where: {
             meta_id_meta_movimentacao_operacao_id: {
-              meta_id: goalId,
+              meta_id: metaId,
               meta_movimentacao_operacao_id: input.operacao_id,
             },
           },
@@ -241,37 +246,37 @@ export class GoalMovementService {
           if (!sameOperation(existing, input)) throw operationConflict();
           return {
             movimentacao: serializeMovement(existing),
-            meta: await summaryForGoal(tx, goal),
+            meta: await summaryForMeta(tx, meta),
           };
         }
 
-        const current = decimal(goal.meta_valor_reservado);
+        const current = decimal(meta.meta_valor_reservado);
         const next = input.tipo === 'DEPOSITO'
           ? current.plus(value)
           : current.minus(value);
 
         if (next.isNegative()) {
-          throw new GoalMovementError(
+          throw new MetaMovimentacaoError(
             'SALDO_INSUFICIENTE',
             'O valor da retirada supera o saldo reservado',
             422,
           );
         }
-        if (next.greaterThan(MAX_MONEY)) {
-          throw new GoalMovementError(
+        if (next.greaterThan(MAX_META_MONEY)) {
+          throw new MetaMovimentacaoError(
             'SALDO_LIMITE_EXCEDIDO',
             'O saldo reservado supera a capacidade monetária permitida',
             422,
           );
         }
 
-        const updatedGoal = await tx.tb_meta.update({
-          where: { meta_id: goalId },
+        const updatedMeta = await tx.tb_meta.update({
+          where: { meta_id: metaId },
           data: { meta_valor_reservado: next },
         });
         const movement = await tx.tb_meta_movimentacao.create({
           data: {
-            meta_id: goalId,
+            meta_id: metaId,
             meta_movimentacao_operacao_id: input.operacao_id,
             meta_movimentacao_tipo: input.tipo,
             meta_movimentacao_valor: value,
@@ -280,7 +285,7 @@ export class GoalMovementService {
 
         return {
           movimentacao: serializeMovement(movement),
-          meta: await summaryForGoal(tx, updatedGoal),
+          meta: await summaryForMeta(tx, updatedMeta),
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
     } catch (error) {
@@ -293,23 +298,23 @@ export class GoalMovementService {
 
   static async list(
     userId: number,
-    goalId: number,
+    metaId: number,
     rawQuery: unknown,
-    database: GoalMovementDatabase = prisma,
+    database: MetaMovimentacaoDatabase = prisma,
   ) {
     assertUserId(userId);
-    if (!Number.isInteger(goalId) || goalId <= 0) throw notFound();
-    const query = goalMovementListQuerySchema.parse(rawQuery);
-    const goal = await database.tb_meta.findFirst({
-      where: { meta_id: goalId, usuario_id: userId },
+    if (!Number.isInteger(metaId) || metaId <= 0) throw notFound();
+    const query = metaMovimentacaoListQuerySchema.parse(rawQuery);
+    const meta = await database.tb_meta.findFirst({
+      where: { meta_id: metaId, usuario_id: userId },
       select: { meta_id: true },
     });
-    if (!goal) throw notFound();
+    if (!meta) throw notFound();
 
-    const cursor = query.cursor ? decodeCursor(query.cursor, goalId) : null;
+    const cursor = query.cursor ? decodeCursor(query.cursor, metaId) : null;
     const movements = await database.tb_meta_movimentacao.findMany({
       where: {
-        meta_id: goalId,
+        meta_id: metaId,
         ...(cursor
           ? {
               OR: [
@@ -331,27 +336,27 @@ export class GoalMovementService {
     return {
       itens: items.map(serializeMovement),
       nextCursor: hasNext && items.length > 0
-        ? encodeCursor(goalId, items[items.length - 1])
+        ? encodeCursor(metaId, items[items.length - 1])
         : null,
     };
   }
 
-  static async enrichGoals(goals: any[], database: GoalMovementDatabase = prisma) {
-    if (goals.length === 0) return goals;
-    const ids = goals.map((goal) => goal.meta_id);
+  static async enrichMetas(metas: any[], database: MetaMovimentacaoDatabase = prisma) {
+    if (metas.length === 0) return metas;
+    const ids = metas.map((meta) => meta.meta_id);
     const [latest, deposits] = await Promise.all([
-      findLatestPerGoal(database, ids),
-      findLatestPerGoal(database, ids, 'DEPOSITO'),
+      findLatestPerMeta(database, ids),
+      findLatestPerMeta(database, ids, 'DEPOSITO'),
     ]);
-    const latestByGoal = new Map(latest.map((movement: any) => [movement.meta_id, movement]));
-    const depositByGoal = new Map(deposits.map((movement: any) => [movement.meta_id, movement]));
-    return goals.map((goal) => {
+    const latestByMeta = new Map(latest.map((movement: any) => [movement.meta_id, movement]));
+    const depositByMeta = new Map(deposits.map((movement: any) => [movement.meta_id, movement]));
+    return metas.map((meta) => {
       return {
-        ...goal,
+        ...meta,
         ...buildSavingsSummary(
-          goal,
-          latestByGoal.get(goal.meta_id) ?? null,
-          depositByGoal.get(goal.meta_id) ?? null,
+          meta,
+          latestByMeta.get(meta.meta_id) ?? null,
+          depositByMeta.get(meta.meta_id) ?? null,
         ),
       };
     });

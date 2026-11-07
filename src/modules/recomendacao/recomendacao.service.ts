@@ -130,7 +130,7 @@ async function defaultAnalysis(userId: number, periodo: string, now: Date) {
     ]);
     const context: RecommendationContext = {
       comprasImpulsivas: { quantidade: impulsive, valorConhecido: impulsiveValue._sum.compra_valor === null ? null : Number(impulsiveValue._sum.compra_valor) },
-      metas: metas.map((goal) => ({ id: goal.meta_id, titulo: goal.meta_titulo, valor: Number(goal.meta_valor), concluida: goal.meta_completado, data: goal.meta_data })),
+      metas: metas.map((meta) => ({ id: meta.meta_id, titulo: meta.meta_titulo, valor: Number(meta.meta_valor), concluida: meta.meta_completado, data: meta.meta_data })),
       recorrencias: recurrences.map((row) => {
         const total = row.tb_compra_item.reduce((sum, item) => sum + Number(item.compra_item_valor) * Number(item.compra_item_quantidade ?? 1), 0);
         const factor = row.compra_recorrencia_frequencia === 'DIARIA' ? 30 : row.compra_recorrencia_frequencia === 'SEMANAL' ? 4.3 : row.compra_recorrencia_frequencia === 'ANUAL' ? 1 / 12 : 1;

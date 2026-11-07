@@ -2,28 +2,29 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
+import { serializeMetaMoney } from './meta.money.js';
 
-export const GOAL_ANALYSIS_TIMEZONE = 'America/Sao_Paulo';
+export const META_ANALISE_TIMEZONE = 'America/Sao_Paulo';
 
 const monthSchema = z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/, 'Use o periodo AAAA-MM');
 const moneySchema = z.string().regex(/^\d{1,8}\.\d{2}$/);
 const signedMoneySchema = z.string().regex(/^-?\d{1,8}\.\d{2}$/);
 
-export const goalAnalysisInputSchema = z.object({
+export const metaAnaliseInputSchema = z.object({
   periodo: monthSchema.optional(),
   meses: z.coerce.number().int().min(1).max(12).default(6),
   limite_metas: z.coerce.number().int().min(1).max(10).default(10),
   limite_movimentacoes_recentes: z.coerce.number().int().min(1).max(10).default(10),
 }).strict();
 
-const goalAnalysisMovementSchema = z.object({
+const metaAnaliseMovimentacaoSchema = z.object({
   id: z.number().int().positive(),
   tipo: z.enum(['DEPOSITO', 'RETIRADA']),
   valor: moneySchema,
   data: z.string().datetime({ offset: true }),
 }).strict();
 
-const goalAnalysisComparisonSchema = z.object({
+const metaAnaliseComparacaoSchema = z.object({
   periodo_anterior: monthSchema,
   periodo_atual: monthSchema,
   depositado_variacao: signedMoneySchema,
@@ -33,7 +34,7 @@ const goalAnalysisComparisonSchema = z.object({
   dados_anterior_disponiveis: z.boolean(),
 }).strict();
 
-const goalAnalysisMonthSchema = z.object({
+const metaAnaliseMesSchema = z.object({
   periodo: monthSchema,
   inicio: z.string().datetime({ offset: true }),
   fim_exclusivo: z.string().datetime({ offset: true }),
@@ -49,7 +50,7 @@ const goalAnalysisMonthSchema = z.object({
   saldo_liquido: signedMoneySchema,
   quantidade_depositos: z.number().int().nonnegative(),
   quantidade_retiradas: z.number().int().nonnegative(),
-  comparacao_com_mes_anterior: goalAnalysisComparisonSchema.nullable(),
+  comparacao_com_mes_anterior: metaAnaliseComparacaoSchema.nullable(),
 }).strict();
 
 const contributionFrequencySchema = z.object({
@@ -59,7 +60,7 @@ const contributionFrequencySchema = z.object({
   media_depositos_por_mes: z.number().nonnegative(),
 }).strict();
 
-const analyzedGoalSchema = z.object({
+const metaAnalisadaSchema = z.object({
   id: z.number().int().positive(),
   titulo: z.string(),
   valor_objetivo: moneySchema,
@@ -68,11 +69,11 @@ const analyzedGoalSchema = z.object({
   valor_restante: moneySchema,
   progresso_percentual: z.number().finite().nonnegative(),
   meta_completado: z.boolean(),
-  ultima_movimentacao: goalAnalysisMovementSchema.nullable(),
-  ultimo_deposito: goalAnalysisMovementSchema.nullable(),
-  movimentacoes_recentes: z.array(goalAnalysisMovementSchema).max(10),
+  ultima_movimentacao: metaAnaliseMovimentacaoSchema.nullable(),
+  ultimo_deposito: metaAnaliseMovimentacaoSchema.nullable(),
+  movimentacoes_recentes: z.array(metaAnaliseMovimentacaoSchema).max(10),
   indicadores: z.object({
-    periodos_mensais: z.array(goalAnalysisMonthSchema).max(12),
+    periodos_mensais: z.array(metaAnaliseMesSchema).max(12),
     total_depositado_no_periodo: moneySchema,
     total_retirado_no_periodo: moneySchema,
     saldo_liquido_no_periodo: signedMoneySchema,
@@ -87,10 +88,10 @@ const analyzedGoalSchema = z.object({
   }).strict(),
 }).strict();
 
-export const goalAnalysisResultSchema = z.object({
+export const metaAnaliseResultSchema = z.object({
   periodo_referencia: monthSchema,
   meses_solicitados: z.number().int().min(1).max(12),
-  timezone: z.literal(GOAL_ANALYSIS_TIMEZONE),
+  timezone: z.literal(META_ANALISE_TIMEZONE),
   cobertura: z.object({
     inicio: z.string().datetime({ offset: true }),
     fim_exclusivo: z.string().datetime({ offset: true }),
@@ -104,13 +105,13 @@ export const goalAnalysisResultSchema = z.object({
     qualidade: z.enum(['COMPLETA_NO_PERIODO', 'PARCIAL', 'SEM_METAS']),
   }).strict(),
   limitacoes: z.array(z.string().max(240)).max(10),
-  metas: z.array(analyzedGoalSchema).max(10),
+  metas: z.array(metaAnalisadaSchema).max(10),
 }).strict();
 
-export type GoalAnalysisInput = z.infer<typeof goalAnalysisInputSchema>;
-export type GoalAnalysisResult = z.infer<typeof goalAnalysisResultSchema>;
+export type MetaAnaliseInput = z.infer<typeof metaAnaliseInputSchema>;
+export type MetaAnaliseResult = z.infer<typeof metaAnaliseResultSchema>;
 
-type GoalAnalyticsDatabase = any;
+type MetaAnaliseDatabase = any;
 
 type LocalMonthParts = {
   year: number;
@@ -137,7 +138,7 @@ function decimal(value: unknown) {
 }
 
 function money(value: unknown) {
-  return decimal(value).toFixed(2);
+  return serializeMetaMoney(value);
 }
 
 function signedMoney(value: unknown) {
@@ -146,7 +147,7 @@ function signedMoney(value: unknown) {
 
 function localParts(date: Date): LocalMonthParts {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: GOAL_ANALYSIS_TIMEZONE,
+    timeZone: META_ANALISE_TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -225,7 +226,7 @@ function addLimitation(limitacoes: string[], message: string) {
   limitacoes.push(message);
 }
 
-function serializedResultSize(result: GoalAnalysisResult) {
+function serializedResultSize(result: MetaAnaliseResult) {
   return JSON.stringify({ ok: true, result }).length;
 }
 
@@ -234,14 +235,14 @@ function serializedResultSize(result: GoalAnalysisResult) {
  * A tool conserva o resultado estruturado, reduzindo apenas detalhes
  * opcionais quando o limite configurado for menor que a resposta solicitada.
  */
-export function fitGoalAnalysisResult(
-  source: GoalAnalysisResult,
+export function ajustarResultadoMeta(
+  source: MetaAnaliseResult,
   maxChars = env.aiToolResultMaxChars,
-): GoalAnalysisResult {
+): MetaAnaliseResult {
   if (serializedResultSize(source) <= maxChars) return source;
 
-  const result = JSON.parse(JSON.stringify(source)) as GoalAnalysisResult;
-  for (const goal of result.metas) goal.movimentacoes_recentes = [];
+  const result = JSON.parse(JSON.stringify(source)) as MetaAnaliseResult;
+  for (const meta of result.metas) meta.movimentacoes_recentes = [];
   addLimitation(result.limitacoes, 'Movimentacoes recentes foram omitidas para respeitar o limite de resposta da IA.');
 
   while (serializedResultSize(result) > maxChars && result.metas.length > 1) {
@@ -253,13 +254,13 @@ export function fitGoalAnalysisResult(
     addLimitation(result.limitacoes, 'A resposta foi limitada ao numero de metas que cabe no contexto da IA.');
   }
 
-  while (serializedResultSize(result) > maxChars && result.metas.some((goal) => goal.indicadores.periodos_mensais.length > 1)) {
-    for (const goal of result.metas) {
-      if (goal.indicadores.periodos_mensais.length <= 1) continue;
-      goal.indicadores.periodos_mensais.shift();
-      goal.indicadores.periodos_mensais[0].comparacao_com_mes_anterior = null;
-      if (goal.indicadores.periodos_sem_movimentacoes.length > 0) goal.indicadores.periodos_sem_movimentacoes.shift();
-      if (goal.indicadores.meses_com_movimentacoes_sem_deposito.length > 0) goal.indicadores.meses_com_movimentacoes_sem_deposito.shift();
+  while (serializedResultSize(result) > maxChars && result.metas.some((meta) => meta.indicadores.periodos_mensais.length > 1)) {
+    for (const meta of result.metas) {
+      if (meta.indicadores.periodos_mensais.length <= 1) continue;
+      meta.indicadores.periodos_mensais.shift();
+      meta.indicadores.periodos_mensais[0].comparacao_com_mes_anterior = null;
+      if (meta.indicadores.periodos_sem_movimentacoes.length > 0) meta.indicadores.periodos_sem_movimentacoes.shift();
+      if (meta.indicadores.meses_com_movimentacoes_sem_deposito.length > 0) meta.indicadores.meses_com_movimentacoes_sem_deposito.shift();
     }
     result.cobertura.dados_suficientes = false;
     addLimitation(result.limitacoes, 'Periodos mensais antigos foram omitidos para respeitar o limite de resposta da IA.');
@@ -358,13 +359,13 @@ function buildMonthlyResult(period: string, aggregate: MonthAggregate, previous:
   };
 }
 
-async function findLatestPerGoal(
-  database: GoalAnalyticsDatabase,
-  goalIds: number[],
+async function findLatestPerMeta(
+  database: MetaAnaliseDatabase,
+  metaIds: number[],
   before: Date,
   type?: 'DEPOSITO' | 'RETIRADA',
 ) {
-  if (goalIds.length === 0) return new Map<number, any>();
+  if (metaIds.length === 0) return new Map<number, any>();
 
   if (typeof database.$queryRaw === 'function') {
     const typeFilter = type
@@ -378,7 +379,7 @@ async function findLatestPerGoal(
         m.meta_movimentacao_valor,
         m.meta_movimentacao_data
       FROM public.tb_meta_movimentacao AS m
-      WHERE m.meta_id IN (${Prisma.join(goalIds)})
+      WHERE m.meta_id IN (${Prisma.join(metaIds)})
         AND m.meta_movimentacao_data < ${before}
         ${typeFilter}
       ORDER BY m.meta_id ASC, m.meta_movimentacao_data DESC, m.meta_movimentacao_id DESC
@@ -388,7 +389,7 @@ async function findLatestPerGoal(
 
   // Fallback para doubles de teste que nao expõem queryRaw.
   if (typeof database.tb_meta_movimentacao.findFirst === 'function') {
-    const rows = await Promise.all(goalIds.map((metaId) => database.tb_meta_movimentacao.findFirst({
+    const rows = await Promise.all(metaIds.map((metaId) => database.tb_meta_movimentacao.findFirst({
       where: {
         meta_id: metaId,
         meta_movimentacao_data: { lt: before },
@@ -401,7 +402,7 @@ async function findLatestPerGoal(
 
   const rows = await database.tb_meta_movimentacao.findMany({
     where: {
-      meta_id: { in: goalIds },
+      meta_id: { in: metaIds },
       meta_movimentacao_data: { lt: before },
     },
     orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
@@ -414,17 +415,20 @@ async function findLatestPerGoal(
   return latest;
 }
 
-function buildGoalResult(
-  goal: any,
+function buildMetaResult(
+  meta: any,
   monthlyMovements: any[],
   latestMovement: any | null,
   lastDeposit: any | null,
   keys: string[],
-  input: GoalAnalysisInput,
+  input: MetaAnaliseInput,
   now: Date,
 ) {
-  const target = decimal(goal.meta_valor);
-  const reserved = decimal(goal.meta_valor_reservado);
+  if (meta.meta_valor === null || meta.meta_valor === undefined || meta.meta_valor_reservado === null || meta.meta_valor_reservado === undefined) {
+    throw new TypeError('Valor monetário obrigatório de meta ausente');
+  }
+  const target = decimal(meta.meta_valor);
+  const reserved = decimal(meta.meta_valor_reservado);
   const safeReserved = reserved.isNegative() ? ZERO : reserved;
   const remaining = target.minus(safeReserved);
   const progress = target.greaterThan(0)
@@ -433,7 +437,7 @@ function buildGoalResult(
   const { aggregates } = aggregateMovements(
     monthlyMovements,
     keys,
-    goal.meta_data_criacao ? new Date(goal.meta_data_criacao) : null,
+    meta.meta_data_criacao ? new Date(meta.meta_data_criacao) : null,
     now,
   );
   const applicablePeriods = keys.filter((period) => aggregates.has(period));
@@ -453,14 +457,14 @@ function buildGoalResult(
   const periodCount = monthly.length;
 
   return {
-    id: goal.meta_id,
-    titulo: goal.meta_titulo,
+    id: meta.meta_id,
+    titulo: meta.meta_titulo,
     valor_objetivo: money(target),
     saldo_atual_reservado: money(safeReserved),
     valor_reservado: money(safeReserved),
     valor_restante: money(remaining.isNegative() ? ZERO : remaining),
     progresso_percentual: progress,
-    meta_completado: Boolean(goal.meta_completado),
+    meta_completado: Boolean(meta.meta_completado),
     ultima_movimentacao: latestMovement ? serializeMovement(latestMovement) : null,
     ultimo_deposito: lastDeposit ? serializeMovement(lastDeposit) : null,
     movimentacoes_recentes: monthlyMovements.slice(0, input.limite_movimentacoes_recentes).map(serializeMovement),
@@ -486,38 +490,38 @@ function buildGoalResult(
   };
 }
 
-export function currentGoalAnalysisPeriod(now = new Date()) {
+export function periodoAtualAnaliseMetas(now = new Date()) {
   return monthKey(now);
 }
 
-export class GoalAnalyticsService {
+export class MetaAnaliseService {
   static async analyze(
     userId: number,
     rawInput: unknown = {},
-    database: GoalAnalyticsDatabase = prisma,
+    database: MetaAnaliseDatabase = prisma,
     now = new Date(),
-  ): Promise<GoalAnalysisResult> {
+  ): Promise<MetaAnaliseResult> {
     if (!Number.isInteger(userId) || userId <= 0) throw new Error('INVALID_AUTHENTICATED_USER');
-    const parsed = goalAnalysisInputSchema.parse(rawInput);
-    const referencePeriod = parsed.periodo ?? currentGoalAnalysisPeriod(now);
-    const currentPeriod = currentGoalAnalysisPeriod(now);
+    const parsed = metaAnaliseInputSchema.parse(rawInput);
+    const referencePeriod = parsed.periodo ?? periodoAtualAnaliseMetas(now);
+    const currentPeriod = periodoAtualAnaliseMetas(now);
     const futureReference = monthNumber(referencePeriod) > monthNumber(currentPeriod);
     const effectiveReferencePeriod = futureReference ? currentPeriod : referencePeriod;
-    const input: GoalAnalysisInput = {
+    const input: MetaAnaliseInput = {
       ...parsed,
       periodo: referencePeriod,
     };
     const referenceBounds = monthBounds(effectiveReferencePeriod);
     const keys = periodKeys(effectiveReferencePeriod, input.meses);
     const analysisStart = monthBounds(keys[0]).start;
-    const rawGoals = await database.tb_meta.findMany({
+    const rawMetas = await database.tb_meta.findMany({
       where: { usuario_id: userId },
       orderBy: [{ meta_data_criacao: 'desc' }, { meta_id: 'desc' }],
       take: input.limite_metas + 1,
     });
-    const metasLimitadas = rawGoals.length > input.limite_metas;
-    const goals = rawGoals.slice(0, input.limite_metas);
-    const ids = goals.map((goal: any) => goal.meta_id);
+    const metasLimitadas = rawMetas.length > input.limite_metas;
+    const metas = rawMetas.slice(0, input.limite_metas);
+    const ids = metas.map((meta: any) => meta.meta_id);
     const monthlyMovements = ids.length === 0
       ? []
       : await database.tb_meta_movimentacao.findMany({
@@ -534,21 +538,21 @@ export class GoalAnalyticsService {
           },
           orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
         });
-    const [latestByGoal, depositByGoal] = await Promise.all([
-      findLatestPerGoal(database, ids, referenceBounds.end),
-      findLatestPerGoal(database, ids, referenceBounds.end, 'DEPOSITO'),
+    const [latestByMeta, depositByMeta] = await Promise.all([
+      findLatestPerMeta(database, ids, referenceBounds.end),
+      findLatestPerMeta(database, ids, referenceBounds.end, 'DEPOSITO'),
     ]);
-    const byGoal = new Map<number, any[]>();
+    const byMeta = new Map<number, any[]>();
     for (const movement of monthlyMovements) {
-      const list = byGoal.get(movement.meta_id) ?? [];
+      const list = byMeta.get(movement.meta_id) ?? [];
       list.push(movement);
-      byGoal.set(movement.meta_id, list);
+      byMeta.set(movement.meta_id, list);
     }
-    const analyzedGoals = goals.map((goal: any) => buildGoalResult(
-      goal,
-      byGoal.get(goal.meta_id) ?? [],
-      latestByGoal.get(goal.meta_id) ?? null,
-      depositByGoal.get(goal.meta_id) ?? null,
+    const metasAnalisadas = metas.map((meta: any) => buildMetaResult(
+      meta,
+      byMeta.get(meta.meta_id) ?? [],
+      latestByMeta.get(meta.meta_id) ?? null,
+      depositByMeta.get(meta.meta_id) ?? null,
       keys,
       input,
       now,
@@ -557,9 +561,9 @@ export class GoalAnalyticsService {
     if (metasLimitadas) addLimitation(limitacoes, `A analise foi limitada a ${input.limite_metas} metas.`);
     if (futureReference) addLimitation(limitacoes, `O periodo solicitado (${referencePeriod}) e futuro; a analise foi limitada ao mes observado (${effectiveReferencePeriod}).`);
     if (monthKey(now) === effectiveReferencePeriod) addLimitation(limitacoes, 'O mes de referencia observado ainda esta incompleto.');
-    if (goals.length === 0) addLimitation(limitacoes, 'Nao existem metas disponiveis para o usuario autenticado.');
+    if (metas.length === 0) addLimitation(limitacoes, 'Nao existem metas disponiveis para o usuario autenticado.');
     addLimitation(limitacoes, 'Saldo atual reservado nao e saldo historico: os indicadores mensais mostram movimentacoes e nao reconstituem saldos de meses anteriores.');
-    const qualidade = goals.length === 0
+    const qualidade = metas.length === 0
       ? 'SEM_METAS'
       : metasLimitadas || futureReference || monthKey(now) === effectiveReferencePeriod
         ? 'PARCIAL'
@@ -567,11 +571,11 @@ export class GoalAnalyticsService {
     const result = {
       periodo_referencia: referencePeriod,
       meses_solicitados: input.meses,
-      timezone: GOAL_ANALYSIS_TIMEZONE,
+      timezone: META_ANALISE_TIMEZONE,
       cobertura: {
         inicio: monthBounds(keys[0]).start.toISOString(),
         fim_exclusivo: referenceBounds.end.toISOString(),
-        metas_retornadas: analyzedGoals.length,
+        metas_retornadas: metasAnalisadas.length,
         metas_limitadas: metasLimitadas,
         dados_suficientes: !metasLimitadas && !futureReference,
         saldo_historico_disponivel: false,
@@ -581,9 +585,9 @@ export class GoalAnalyticsService {
         qualidade,
       },
       limitacoes,
-      metas: analyzedGoals,
-    } as GoalAnalysisResult;
-    return fitGoalAnalysisResult(result);
+      metas: metasAnalisadas,
+    } as MetaAnaliseResult;
+    return ajustarResultadoMeta(result);
   }
 }
 

@@ -5,7 +5,7 @@ import { ToolRegistry } from '../../src/modules/ai/ai.registry.js';
 import { createFinancialToolDefinitions, type FinancialToolDependencies } from '../../src/modules/ai/financial.tools.js';
 import { PLENNA_CHAT_SYSTEM_PROMPT } from '../../src/modules/chat/chat.prompt.js';
 
-function dependencies(calls: unknown[]): FinancialToolDependencies {
+function dependencies(calls: unknown[], metaRows: unknown[] = []): FinancialToolDependencies {
   return {
     financeSummary: async () => ({}),
     listPurchases: async () => ({ itens: [], totalRetornado: 0 }),
@@ -15,8 +15,8 @@ function dependencies(calls: unknown[]): FinancialToolDependencies {
     impulsivity: async () => [],
     analytics: async () => ({ mode: 'month', timezone: 'America/Sao_Paulo', periodos: [], comparacao: null }),
     limits: async () => ({}),
-    goals: async () => [],
-    analyzeGoals: async (userId, args) => {
+    metas: async () => metaRows,
+    analisarMetas: async (userId, args) => {
       calls.push({ userId, args });
       return {
         periodo_referencia: '2026-10',
@@ -52,7 +52,7 @@ test('registra analisar_metas e usa somente identidade autenticada', async () =>
   const registry = new ToolRegistry();
   for (const definition of createFinancialToolDefinitions(dependencies(calls))) registry.register(definition);
   assert.equal(registry.has('analisar_metas'), true);
-  assert.equal(registry.has('goals_list'), true);
+  assert.equal(registry.has('listar_metas'), true);
 
   const result = await executeTool(registry, {
     name: 'analisar_metas',
@@ -63,6 +63,23 @@ test('registra analisar_metas e usa somente identidade autenticada', async () =>
     userId: 42,
     args: { periodo: '2026-10', meses: 6, limite_metas: 10, limite_movimentacoes_recentes: 10 },
   }]);
+});
+
+test('listar_metas expõe o objetivo na mesma unidade real do contrato da API', async () => {
+  const registry = new ToolRegistry();
+  for (const definition of createFinancialToolDefinitions(dependencies([], [{
+    meta_id: 2,
+    meta_titulo: 'Cadeira Gamer',
+    meta_descricao: null,
+    meta_valor: '500.00',
+    meta_data: null,
+    meta_completado: false,
+  }]))) registry.register(definition);
+
+  const result: any = await executeTool(registry, { name: 'listar_metas', arguments: {} }, { usuario_id: 1 });
+  assert.deepEqual(result.result, {
+    itens: [{ id: 2, titulo: 'Cadeira Gamer', descricao: null, valor: 500, data: null, completado: false }],
+  });
 });
 
 test('rejeita usuario_id enviado pelo modelo e nao oferece operacao de escrita', async () => {
