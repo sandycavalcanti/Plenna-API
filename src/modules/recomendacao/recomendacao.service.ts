@@ -6,7 +6,7 @@ import { env } from '../../lib/env.js';
 import { AppError } from '../../errors/AppError.js';
 import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 import { CONSENTIMENTO_CODIGOS } from '../consentimento/consentimento.constants.js';
-import { parseMonth } from '../compra/financeiro.js';
+import { businessPeriod, parseMonth } from '../compra/financeiro.js';
 import { AnaliseComportamentalService } from '../analise/comportamento.service.js';
 import { recomendar, type RecommendationContext } from './recomendacao.engine.js';
 import { RecommendationTextService, type RecommendationTextProvider } from './recomendacao.text.js';
@@ -61,11 +61,14 @@ export class PrismaRecommendationRepository implements RecommendationRepository 
   }
 
   list(userId: number, options: { limit: number; cursor?: number; now: Date; periodo?: string }) {
+    const periodoHistorico = Boolean(options.periodo && options.periodo < businessPeriod(options.now));
     return this.db.tb_ai_recomendacao.findMany({
       where: {
         usuario_id: userId,
         ai_recomendacao_status: { not: 'DESCARTADA' },
-        OR: [{ ai_recomendacao_data_expiracao: null }, { ai_recomendacao_data_expiracao: { gt: options.now } }],
+        ...(periodoHistorico ? {} : {
+          OR: [{ ai_recomendacao_data_expiracao: null }, { ai_recomendacao_data_expiracao: { gt: options.now } }],
+        }),
         ...(options.cursor ? { ai_recomendacao_id: { lt: options.cursor } } : {}),
         ...(options.periodo ? { ai_recomendacao_evidencias: { path: ['periodo'], equals: options.periodo } } : {}),
       },
