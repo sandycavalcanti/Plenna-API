@@ -35,6 +35,16 @@ const comum = {
   anulado: z.boolean().default(false),
 };
 export const eventoCompraSchema = z.discriminatedUnion('tipo', [
+  z.object({
+    ...comum,
+    tipo: z.literal('RESPOSTA_ANALISE'),
+    avaliacaoId: id,
+    versaoMotor: z.enum(['contextual-1','contextual-2']),
+    versaoInterpretacao: z.literal('sinais-contextuais-1'),
+    interpretacaoId: z.string().min(1).max(160).regex(/^[a-zA-Z0-9_:.-]+$/),
+    resposta: z.enum(['CONCORDO','DISCORDO','NAO_SEI']),
+    confirmarImpulsiva: z.boolean().default(false),
+  }).strict(),
   z
     .object({
       ...comum,
