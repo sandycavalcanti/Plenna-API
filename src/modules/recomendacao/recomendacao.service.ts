@@ -16,6 +16,7 @@ export const recommendationStatusSchema = z.enum(['NOVA', 'VISUALIZADA', 'DESCAR
 export const recommendationQuerySchema = z.object({
   limite: z.coerce.number().int().min(1).max(20).default(10),
   cursor: z.coerce.number().int().positive().optional(),
+  periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/).optional(),
 }).strict();
 export const recommendationStatusInputSchema = z.object({ status: z.enum(['VISUALIZADA', 'DESCARTADA']) }).strict();
 
@@ -34,7 +35,7 @@ export type RecommendationRecord = {
 };
 
 export type RecommendationRepository = {
-  list(userId: number, options: { limit: number; cursor?: number; now: Date }): Promise<RecommendationRecord[]>;
+  list(userId: number, options: { limit: number; cursor?: number; now: Date; periodo?: string }): Promise<RecommendationRecord[]>;
   findById(userId: number, id: number): Promise<RecommendationRecord | null>;
   findByKey(userId: number, key: string): Promise<RecommendationRecord | null>;
   create(data: Omit<RecommendationRecord, 'ai_recomendacao_id'>): Promise<RecommendationRecord>;
@@ -59,13 +60,14 @@ export class PrismaRecommendationRepository implements RecommendationRepository 
     this.db = db;
   }
 
-  list(userId: number, options: { limit: number; cursor?: number; now: Date }) {
+  list(userId: number, options: { limit: number; cursor?: number; now: Date; periodo?: string }) {
     return this.db.tb_ai_recomendacao.findMany({
       where: {
         usuario_id: userId,
         ai_recomendacao_status: { not: 'DESCARTADA' },
         OR: [{ ai_recomendacao_data_expiracao: null }, { ai_recomendacao_data_expiracao: { gt: options.now } }],
         ...(options.cursor ? { ai_recomendacao_id: { lt: options.cursor } } : {}),
+        ...(options.periodo ? { ai_recomendacao_evidencias: { path: ['periodo'], equals: options.periodo } } : {}),
       },
       orderBy: { ai_recomendacao_id: 'desc' },
       take: options.limit,
@@ -169,7 +171,7 @@ export class RecommendationService {
   async list(userId: number, query: z.infer<typeof recommendationQuerySchema>, now = new Date()) {
     const active = await this.consent.temConsentimentoAtivo(userId, CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO);
     if (!active) return { itens: [], proximoCursor: null, consentimentoAtivo: false };
-    const records = await this.repository.list(userId, { limit: query.limite, cursor: query.cursor, now });
+    const records = await this.repository.list(userId, { limit: query.limite, cursor: query.cursor, now, periodo: query.periodo });
     return { itens: records.map(serialize), proximoCursor: records.length === query.limite ? records[records.length - 1]!.ai_recomendacao_id : null, consentimentoAtivo: true };
   }
 
