@@ -13,15 +13,15 @@ export function obterIp(req: Request): string {
   return ip;
 }
 
-export async function permitirRedefinicao(email: string, ip: string): Promise<boolean> {
+export async function permitirRedefinicao(email: string, ip: string, finalidade: 'forgot' | 'verify' = 'forgot'): Promise<boolean> {
   const chave = env.rateLimitHmacKey;
   if (!chave || Buffer.byteLength(chave) < 32) throw new Error('Limitador nao configurado');
   const hmac = (contexto: string, valor: string) => createHmac('sha256', chave).update(contexto).update('\0').update(valor).digest('hex');
   return prisma.$transaction(async (tx) => {
     // Sempre a mesma ordem de locks. O limite por IP também limita novas chaves de email.
     for (const [contexto, valor, maximo] of [
-      ['forgot:ip', ip, REDEFINICAO_LIMITES.ip],
-      ['forgot:email', email.trim().toLowerCase(), REDEFINICAO_LIMITES.email],
+      [`${finalidade}:ip`, ip, finalidade === 'forgot' ? REDEFINICAO_LIMITES.ip : 60],
+      [`${finalidade}:email`, email.trim().toLowerCase(), finalidade === 'forgot' ? REDEFINICAO_LIMITES.email : 15],
     ] as const) {
       const hash = hmac(contexto, valor);
       const rows = await tx.$queryRaw<{ limite_contagem: number }[]>`
