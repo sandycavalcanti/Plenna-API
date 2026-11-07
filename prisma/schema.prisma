@@ -8,6 +8,80 @@ datasource db {
   schemas  = ["public"]
 }
 
+// RF017 wire v3: current context, typed daily facts, reconstructed accesses, exclusions.
+model MonitoramentoInstalacao {
+  id String @id @map("instalacao_id") @db.Uuid
+  hash Bytes @map("chave_hash") @db.ByteA
+  accountId Int? @map("usuario_ativo_id")
+  contextId String @map("contexto_id") @db.Uuid
+  sessionId String? @map("sessao_cliente") @db.Uuid
+  eligibleFrom DateTime? @map("inicio_contexto") @db.Timestamptz(3)
+  timezone String? @map("fuso_contexto") @db.VarChar(64)
+  collectionId String? @map("coleta_id") @db.Uuid
+  collectionUntil DateTime? @map("coleta_ate") @db.Timestamptz(3)
+  account tb_usuario? @relation(fields: [accountId], references: [usuario_id], onDelete: Restrict)
+  days MonitoramentoTempoDiario[]
+  exclusions MonitoramentoExclusao[]
+  @@index([accountId], map: "monitoramento_instalacao_usuario_idx", where: raw("usuario_ativo_id IS NOT NULL"))
+  @@map("tb_monitoramento_instalacao")
+  @@schema("public")
+}
+
+model MonitoramentoTempoDiario {
+  id BigInt @id @default(autoincrement()) @map("diario_id")
+  accountId Int @map("usuario_id")
+  installationId String @map("instalacao_id") @db.Uuid
+  contextId String @map("contexto_id") @db.Uuid
+  localDate DateTime @map("data_local") @db.Date
+  timezone String @map("fuso_horario") @db.VarChar(64)
+  packageId String @map("pacote") @db.VarChar(255)
+  durationMs Int? @map("duracao_ms")
+  coverageStart DateTime? @map("cobertura_inicio") @db.Timestamptz(3)
+  coverageEnd DateTime? @map("cobertura_fim") @db.Timestamptz(3)
+  quality Int @map("qualidade") @db.SmallInt
+  version Int @map("versao")
+  collectionState Int @map("estado_coleta") @db.SmallInt
+  accessState Int @map("estado_acessos") @db.SmallInt
+  accessCoverageStart DateTime? @map("acessos_cobertura_inicio") @db.Timestamptz(3)
+  accessCoverageEnd DateTime? @map("acessos_cobertura_fim") @db.Timestamptz(3)
+  collectorVersion Int @map("versao_coletor") @db.SmallInt
+  account tb_usuario @relation(fields: [accountId], references: [usuario_id], onDelete: Restrict)
+  installation MonitoramentoInstalacao @relation(fields: [installationId], references: [id], onDelete: Restrict)
+  accesses MonitoramentoAcesso[]
+  @@unique([installationId, contextId, localDate, packageId], map: "monitoramento_diario_origem_unique")
+  @@index([accountId, localDate, packageId, id], map: "monitoramento_diario_usuario_periodo_idx")
+  @@map("tb_monitoramento_tempo_diario")
+  @@schema("public")
+}
+
+model MonitoramentoAcesso {
+  dailyId BigInt @map("diario_id")
+  key String @map("chave_acesso") @db.Uuid
+  start DateTime @map("inicio_utc") @db.Timestamptz(3)
+  end DateTime? @map("fim_utc") @db.Timestamptz(3)
+  quality Int @map("qualidade") @db.SmallInt
+  daily MonitoramentoTempoDiario @relation(fields: [dailyId], references: [id], onDelete: Cascade)
+  @@id([dailyId, key])
+  @@index([dailyId, start, key], map: "monitoramento_acesso_ordem_idx")
+  @@map("tb_monitoramento_acesso")
+  @@schema("public")
+}
+
+model MonitoramentoExclusao {
+  accountId Int @map("usuario_id")
+  scopeHash Bytes @map("escopo_hash") @db.ByteA
+  installationId String? @map("instalacao_id") @db.Uuid
+  start DateTime @map("inicio_utc") @db.Timestamptz(3)
+  end DateTime @map("fim_utc") @db.Timestamptz(3)
+  packages String[] @map("pacotes") @db.Text
+  account tb_usuario @relation(fields: [accountId], references: [usuario_id], onDelete: Restrict)
+  installation MonitoramentoInstalacao? @relation(fields: [installationId], references: [id], onDelete: Restrict)
+  @@id([accountId, scopeHash])
+  @@index([accountId, start, end], map: "monitoramento_exclusao_periodo_idx")
+  @@map("tb_monitoramento_exclusao")
+  @@schema("public")
+}
+
 model tb_categoria {
   categoria_id           Int                        @id @default(autoincrement())
   categoria_nome         String                     @db.VarChar(45)
@@ -195,6 +269,9 @@ model tb_usuario {
   tb_propaganda             tb_propaganda[]
   tb_redefinicao_senha      tb_redefinicao_senha[]
   tb_tempo_uso              tb_tempo_uso[]
+  monitoramento_instalacoes MonitoramentoInstalacao[]
+  monitoramento_diarios MonitoramentoTempoDiario[]
+  monitoramento_exclusoes MonitoramentoExclusao[]
   referencias_historicas    tb_referencia_financeira[]
 
   @@schema("public")
@@ -351,6 +428,8 @@ model tb_tempo_uso {
 
   @@unique([usuario_id, tempo_uso_package_id, tempo_uso_inicio, tempo_uso_fim], name: "tempo_uso_usuario_package_periodo_unique", map: "tempo_uso_usuario_package_periodo_unique")
   @@index([usuario_id, tempo_uso_inicio], map: "tempo_uso_usuario_inicio_idx")
+  @@index([usuario_id, tempo_uso_data_local], map: "tempo_uso_usuario_dia_v2_idx")
+  @@index([usuario_id, tempo_uso_data], map: "tempo_uso_usuario_data_v2_idx")
   @@schema("public")
 }
 

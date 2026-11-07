@@ -1,8 +1,9 @@
 import { prisma } from '../../lib/prisma.js';
+import { legacyReadOverlay } from '../tempo-uso-v2/legacy.runtime.js';
 import { CreateTempoUsoDTO, SyncTempoUsoDTO, UpdateTempoUsoDTO, criarSyncTempoUsoSchema, createTempoUsoSchema, updateTempoUsoSchema } from './tempo-uso.schemas.js';
 import { AppError } from '../../errors/AppError.js';
 import { APLICATIVOS_COMPRA, encontrarAplicativoCompra } from './aplicativos-compra.catalog.js';
-import { sincronizarFotografiasAtomicamente, autorizarEscritaTempoUso } from './tempo-uso.sync.js';
+import { sincronizarFotografiasAtomicamente, autorizarEscritaTempoUso, assertLegacyV1Compatible } from './tempo-uso.sync.js';
 
 import { segundosDoRegistro, minutosParaSegundos, duracaoLegada } from './tempo-uso.duracao.js';
 
@@ -34,12 +35,23 @@ export class TempoUsoService {
     });
   }
 
-  static async findAllByUserId(userId: number) {
+  static async findAllByUserId(userId: number, mes?: string) {
     const registros = await prisma.tb_tempo_uso.findMany({
       where: { usuario_id: userId },
       orderBy: { tempo_uso_data_criacao: 'desc' },
     });
-    return registros.map(normalizarRegistroLegado);
+    const filtered = registros.filter(registro => {
+      if (!mes) return true;
+      if (registro.tempo_uso_data_local) return registro.tempo_uso_data_local.toISOString().slice(0, 7) === mes;
+      const date = registro.tempo_uso_data ?? registro.tempo_uso_inicio;
+      if (!date) return false;
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit',
+      }).formatToParts(date).map(part => [part.type, part.value]));
+      return `${parts.year}-${parts.month}` === mes;
+    });
+    const visible=await legacyReadOverlay(userId,filtered);
+    return visible.map(normalizarRegistroLegado);
   }
 
   static async findById(userId: number, id: number) {
@@ -47,7 +59,8 @@ export class TempoUsoService {
       where: { tempo_uso_id: id, usuario_id: userId },
     });
     if (!tempo) throw new AppError('Registro de tempo não encontrado', 404);
-    return normalizarRegistroLegado(tempo);
+    const visible=(await legacyReadOverlay(userId,[tempo]))[0];
+    return normalizarRegistroLegado(visible);
   }
 
   static async update(userId: number, id: number, data: UpdateTempoUsoDTO) {
@@ -56,9 +69,9 @@ export class TempoUsoService {
       const entrada = updateTempoUsoSchema.parse(data);
       const tempo = await tx.tb_tempo_uso.findFirst({ where: { tempo_uso_id: id, usuario_id: userId } });
       if (!tempo) throw new AppError('Registro de tempo não encontrado', 404);
-      if (tempo.tempo_uso_origem !== 'LEGADO') throw new AppError('Registro Android não pode ser editado pelo endpoint legado', 409);
+      if (tempo.tempo_uso_origem !== 'LEGADO') throw new AppError('O tempo medido pelo Android não pode ser editado manualmente', 409);
       const segundos = entrada.minutos === undefined ? segundosDoRegistro(tempo) : minutosParaSegundos(entrada.minutos);
-      if (segundos === null) throw new AppError('Informe uma duração válida para atualizar este registro legado', 400);
+      if (segundos === null) throw new AppError('Informe uma duração válida para atualizar este registro anterior', 400);
       const atualizado = await tx.tb_tempo_uso.update({ where: { tempo_uso_id: id }, data: {
         tempo_uso_nome: entrada.nome, tempo_uso_data: entrada.data, ...duracaoLegada(segundos),
       } });
@@ -67,12 +80,16 @@ export class TempoUsoService {
   }
 
   static async delete(userId: number, id: number) {
-    const tempo = await prisma.tb_tempo_uso.findFirst({
+    return prisma.$transaction(async tx=>{
+    await tx.$queryRaw`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id=${userId} FOR UPDATE`;
+    await assertLegacyV1Compatible(tx,userId);
+    const tempo = await tx.tb_tempo_uso.findFirst({
       where: { tempo_uso_id: id, usuario_id: userId },
     });
     if (!tempo) throw new AppError('Registro de tempo não encontrado', 404);
 
-    await prisma.tb_tempo_uso.delete({ where: { tempo_uso_id: id } });
+    await tx.tb_tempo_uso.delete({ where: { tempo_uso_id: id } });
+    });
   }
 
   static listarAplicativosCompra() {

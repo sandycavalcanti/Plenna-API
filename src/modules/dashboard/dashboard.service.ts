@@ -1,4 +1,5 @@
 import { segundosDoRegistro } from '../tempo-uso/tempo-uso.duracao.js';
+import { legacyReadOverlay } from '../tempo-uso-v2/legacy.runtime.js';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { BUSINESS_TIMEZONE, getMonthBounds, financialWhere, parseMonth, summarizeValues, cents } from '../compra/financeiro.js';
@@ -656,8 +657,13 @@ export class DashboardService {
           tempo_uso_nome: true,
           tempo_uso_minutos: true,
           tempo_uso_duracao_segundos: true,
+          tempo_uso_package_id: true,
+          tempo_uso_inicio: true,
+          tempo_uso_fim: true,
+          tempo_uso_data_local: true,
+          tempo_uso_data: true,
         },
-      }),
+      }).then(rows => legacyReadOverlay(userId, rows)),
       prisma.tb_compra.groupBy({
         where: {
         usuario_id: userId,
