@@ -24,6 +24,12 @@ positivo com até duas casas e dentro da capacidade de `NUMERIC(10,2)`. A chave
 O retorno previsto contém o movimento confirmado e o resumo atualizado da
 meta. Valores monetários novos serão serializados como texto com duas casas.
 
+Em um replay idêntico, a API retorna a movimentação persistida originalmente e
+o resumo corrente da meta, sem criar outro histórico nem reaplicar o saldo. O
+resumo pode refletir movimentações confirmadas depois da primeira resposta;
+isso não altera a movimentação retornada. Reutilizar a mesma chave com tipo ou
+valor diferente retorna `409`.
+
 Erros previstos:
 
 - `400`: body, UUID, tipo ou valor inválido;
@@ -47,8 +53,19 @@ A listagem mantém os campos legados e adiciona `meta_valor_reservado`,
 `ultimo_deposito`. O progresso pode superar 100%; o valor restante é limitado a
 zero. `meta_completado` continua explícito e não é alterado automaticamente.
 
+## Análise para a IA
+
+A tool somente leitura `analisar_metas` consulta metas e movimentações do
+usuário autenticado. Aceita `periodo` (`AAAA-MM`), `meses` (1 a 12),
+`limite_metas` (1 a 10) e `limite_movimentacoes_recentes` (1 a 10), todos
+opcionais. O retorno informa o fuso `America/Sao_Paulo`, cobertura e
+limitações, valores reservados, progresso, períodos mensais, comparações,
+sequência de meses com depósitos e movimentações recentes. `usuario_id`,
+`userId` e equivalentes não fazem parte dos argumentos: a identidade vem do
+contexto autenticado. A tool não cria, altera ou exclui metas e movimentações.
+
 ## Compatibilidade
 
-`GET /goals` mantém todos os campos atuais. Campos de progresso serão
-adicionados de forma aditiva em etapa posterior. Reservas não são compras,
+`GET /goals` mantém todos os campos atuais. Os campos de progresso são
+adicionados de forma aditiva. Reservas não são compras,
 despesas, saldo bancário ou dados do dashboard de consumo.

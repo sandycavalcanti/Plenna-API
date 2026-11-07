@@ -72,16 +72,75 @@ function buildSavingsSummary(goal: any, latest: any | null, lastDeposit: any | n
   };
 }
 
-async function summaryForGoal(db: GoalMovementDatabase, goal: any) {
+async function findLatestMovement(db: GoalMovementDatabase, goalId: number, type?: 'DEPOSITO' | 'RETIRADA') {
+  const where = {
+    meta_id: goalId,
+    ...(type ? { meta_movimentacao_tipo: type } : {}),
+  };
+  if (typeof db.tb_meta_movimentacao.findFirst === 'function') {
+    return db.tb_meta_movimentacao.findFirst({
+      where,
+      orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
+    });
+  }
+
+  // Fallback apenas para doubles de teste antigos que ainda nao implementam findFirst.
   const movements = await db.tb_meta_movimentacao.findMany({
-    where: { meta_id: goal.meta_id },
+    where: { meta_id: goalId },
     orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
   });
+  return movements.find((movement: any) => !type || movement.meta_movimentacao_tipo === type) ?? null;
+}
+
+async function summaryForGoal(db: GoalMovementDatabase, goal: any) {
+  const [latest, lastDeposit] = await Promise.all([
+    findLatestMovement(db, goal.meta_id),
+    findLatestMovement(db, goal.meta_id, 'DEPOSITO'),
+  ]);
   return buildSavingsSummary(
     goal,
-    movements[0] ?? null,
-    movements.find((movement: any) => movement.meta_movimentacao_tipo === 'DEPOSITO') ?? null,
+    latest,
+    lastDeposit,
   );
+}
+
+async function findLatestPerGoal(
+  db: GoalMovementDatabase,
+  goalIds: number[],
+  type?: 'DEPOSITO' | 'RETIRADA',
+) {
+  // DISTINCT ON consulta somente uma linha por meta no PostgreSQL, evitando
+  // carregar o historico completo na listagem de metas.
+  if (typeof db.tb_meta_movimentacao.findFirst === 'function' && typeof db.$queryRaw === 'function') {
+    const typeFilter = type
+      ? Prisma.sql`AND m.meta_movimentacao_tipo = ${type}`
+      : Prisma.empty;
+    return db.$queryRaw(Prisma.sql`
+      SELECT DISTINCT ON (m.meta_id)
+        m.meta_movimentacao_id,
+        m.meta_id,
+        m.meta_movimentacao_operacao_id,
+        m.meta_movimentacao_tipo,
+        m.meta_movimentacao_valor,
+        m.meta_movimentacao_data
+      FROM public.tb_meta_movimentacao AS m
+      WHERE m.meta_id IN (${Prisma.join(goalIds)})
+        ${typeFilter}
+      ORDER BY m.meta_id ASC, m.meta_movimentacao_data DESC, m.meta_movimentacao_id DESC
+    `);
+  }
+
+  // Fallback para doubles de teste sem suporte a queryRaw/first.
+  const movements = await db.tb_meta_movimentacao.findMany({
+    where: { meta_id: { in: goalIds } },
+    orderBy: [{ meta_id: 'asc' }, { meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
+  });
+  const result = new Map<number, any>();
+  for (const movement of movements) {
+    if (type && movement.meta_movimentacao_tipo !== type) continue;
+    if (!result.has(movement.meta_id)) result.set(movement.meta_id, movement);
+  }
+  return [...result.values()];
 }
 
 function encodeCursor(metaId: number, movement: any) {
@@ -280,24 +339,19 @@ export class GoalMovementService {
   static async enrichGoals(goals: any[], database: GoalMovementDatabase = prisma) {
     if (goals.length === 0) return goals;
     const ids = goals.map((goal) => goal.meta_id);
-    const movements = await database.tb_meta_movimentacao.findMany({
-      where: { meta_id: { in: ids } },
-      orderBy: [{ meta_id: 'asc' }, { meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
-    });
-    const byGoal = new Map<number, any[]>();
-    for (const movement of movements) {
-      const list = byGoal.get(movement.meta_id) ?? [];
-      list.push(movement);
-      byGoal.set(movement.meta_id, list);
-    }
+    const [latest, deposits] = await Promise.all([
+      findLatestPerGoal(database, ids),
+      findLatestPerGoal(database, ids, 'DEPOSITO'),
+    ]);
+    const latestByGoal = new Map(latest.map((movement: any) => [movement.meta_id, movement]));
+    const depositByGoal = new Map(deposits.map((movement: any) => [movement.meta_id, movement]));
     return goals.map((goal) => {
-      const goalMovements = byGoal.get(goal.meta_id) ?? [];
       return {
         ...goal,
         ...buildSavingsSummary(
           goal,
-          goalMovements[0] ?? null,
-          goalMovements.find((movement) => movement.meta_movimentacao_tipo === 'DEPOSITO') ?? null,
+          latestByGoal.get(goal.meta_id) ?? null,
+          depositByGoal.get(goal.meta_id) ?? null,
         ),
       };
     });

@@ -7,6 +7,11 @@ import { CompraService } from '../compra/compra.service.js';
 import { DashboardService } from '../dashboard/dashboard.service.js';
 import { analyticsQuerySchema, analyticsResponseSchema } from '../dashboard/dashboard.schemas.js';
 import { GoalService } from '../goal/goal.service.js';
+import {
+  GoalAnalyticsService,
+  goalAnalysisInputSchema,
+  goalAnalysisResultSchema,
+} from '../goal/goal-analytics.service.js';
 import { RecorrenciaService } from '../recorrencia/recorrencia.service.js';
 import type { ToolDefinition } from './ai.contracts.js';
 
@@ -105,6 +110,7 @@ type FinancialToolDependencies = {
   analytics: (userId: number, args: z.infer<typeof analyticsQuerySchema>) => Promise<unknown>;
   limits: (userId: number, periodo?: string) => Promise<unknown>;
   goals: (userId: number) => Promise<any[]>;
+  analyzeGoals?: (userId: number, args: z.infer<typeof goalAnalysisInputSchema>) => Promise<unknown>;
   recurrences: (userId: number, status?: string) => Promise<any[]>;
   upcoming: (userId: number, id: number, limit: number) => Promise<any>;
   usage: (userId: number, periodo?: string) => Promise<unknown>;
@@ -183,6 +189,7 @@ function defaultDependencies(): FinancialToolDependencies {
       return { periodo: summary.periodo, orcamentoMensal: summary.orcamentoMensal, estadoOrcamento: summary.estadoOrcamento, limitePorCompra: summary.limitePorCompra, comprasAcimaLimiteIndividual: summary.comprasAcimaLimiteIndividual, comprasAcimaLimite: limits.acima_limite, comprasDentroLimite: limits.dentro_limite };
     },
     goals: (userId) => GoalService.findAllByUserId(userId),
+    analyzeGoals: (userId, args) => GoalAnalyticsService.analyze(userId, args),
     recurrences: (userId, status) => RecorrenciaService.findAll(userId, status as any),
     upcoming: (userId, id, limit) => RecorrenciaService.upcoming(userId, id, limit),
     usage: async (userId, periodo) => {
@@ -219,6 +226,7 @@ export function createFinancialToolDefinitions(dependencies: FinancialToolDepend
     { name: 'finance_analytics', description: 'Consulta análises financeiras determinísticas por mês, evolução ou comparação.', argsSchema: analyticsQuerySchema, resultSchema: analyticsResponseSchema, execute: (args, context) => dependencies.analytics(context.usuario_id, args) },
     { name: 'limits_status', description: 'Consulta orçamento, limite por compra e contagens observadas.', argsSchema: monthInputSchema, resultSchema: limitsResultSchema, execute: (args, context) => dependencies.limits(context.usuario_id, args.periodo) },
     { name: 'goals_list', description: 'Lista metas financeiras declaradas pelo usuário autenticado.', argsSchema: goalsInputSchema, resultSchema: z.object({ itens: z.array(goalResultSchema).max(50) }).strict(), execute: async (args, context) => ({ itens: (await dependencies.goals(context.usuario_id)).slice(0, args.limite).map(serializeGoal) }) },
+    { name: 'analisar_metas', description: 'Analisa metas e movimentacoes reais do usuario autenticado, somente para leitura.', argsSchema: goalAnalysisInputSchema, resultSchema: goalAnalysisResultSchema, execute: (args, context) => (dependencies.analyzeGoals ?? ((userId, input) => GoalAnalyticsService.analyze(userId, input)))(context.usuario_id, args) },
     { name: 'recurrences_list', description: 'Lista compromissos recorrentes próprios e seus valores.', argsSchema: recurrencesInputSchema, resultSchema: recurrencesResultSchema, execute: async (args, context) => ({ itens: (await dependencies.recurrences(context.usuario_id, args.status)).slice(0, args.limite).map(serializeRecurrence) }) },
     { name: 'recurrence_commitments', description: 'Calcula compromissos recorrentes previstos em uma janela limitada.', argsSchema: commitmentsInputSchema, resultSchema: commitmentResultSchema, execute: async (rawArgs, context) => {
       const args = normalizeCommitmentArgs(rawArgs);
