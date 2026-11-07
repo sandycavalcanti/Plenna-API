@@ -89,25 +89,27 @@ export class AuthService {
       where: { usuario_email: email },
     });
 
-    if (!user) return;
-
-    const ultimoRegistro = await prisma.tb_redefinicao_senha.findFirst({
-      where: { usuario_id: user.usuario_id },
-      orderBy: { redefinicao_senha_data_criacao: "desc" },
-    });
-
-    if (
-      ultimoRegistro &&
-      ultimoRegistro.redefinicao_senha_data_criacao.getTime() > Date.now() - RESET_CODE_RESEND_SECONDS * 1000
-    ) {
-      return;
-    }
+    if (!user || user.usuario_status === false) return;
 
     const codigo = crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
-    const codigoHash = await bcrypt.hash(codigo, 10);
+    const token = crypto.randomBytes(32).toString('hex');
+    const codigoHash = `${await bcrypt.hash(codigo, 10)}|${crypto.createHash('sha256').update(token).digest('hex')}`;
+    const link = new URL(process.env.PASSWORD_RESET_URL || 'plenna://reset-password');
+    if (!(link.protocol === 'plenna:' || link.protocol === 'https:') || link.username || link.password) {
+      throw new Error('URL de redefinição não configurada corretamente');
+    }
+    link.searchParams.set('email', email);
+    link.searchParams.set('token', token);
     const expiraEm = new Date(Date.now() + RESET_CODE_TTL_MINUTES * 60 * 1000);
 
     const registro = await prisma.$transaction(async (tx) => {
+      // Serializa emissão e conclusão por conta, inclusive entre instâncias serverless.
+      await tx.$queryRaw`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${user.usuario_id} FOR UPDATE`;
+      const ultimoRegistro = await tx.tb_redefinicao_senha.findFirst({
+        where: { usuario_id: user.usuario_id },
+        orderBy: { redefinicao_senha_data_criacao: "desc" },
+      });
+      if (ultimoRegistro && ultimoRegistro.redefinicao_senha_data_criacao.getTime() > Date.now() - RESET_CODE_RESEND_SECONDS * 1000) return null;
       await tx.tb_redefinicao_senha.updateMany({
         where: { usuario_id: user.usuario_id, redefinicao_senha_usado: false },
         data: { redefinicao_senha_usado: true },
@@ -122,11 +124,13 @@ export class AuthService {
       });
     });
 
+    if (!registro) return;
     try {
       await sendMail(
         user.usuario_email,
         "Código de redefinição de senha — Plenna",
-        `<p>Olá, ${user.usuario_nome}!</p>
+        `<p>Olá!</p>
+         <p><a href="${link.toString().replace(/&/g, '&amp;')}">Redefinir minha senha no aplicativo Plenna</a></p>
          <p>Seu código para redefinir a senha do Plenna é:</p>
          <p style="font-size:24px; font-weight:bold; letter-spacing:4px;">${codigo}</p>
          <p>Esse código expira em ${RESET_CODE_TTL_MINUTES} minutos. Se você não pediu essa redefinição, ignore este e-mail.</p>`,
@@ -151,7 +155,7 @@ export class AuthService {
       where: { usuario_email: email },
     });
 
-    if (!user) throw new AppError("Código inválido ou expirado", 400);
+    if (!user || user.usuario_status === false) throw new AppError("Código inválido ou expirado", 400);
 
     const registro = await prisma.tb_redefinicao_senha.findFirst({
       where: { usuario_id: user.usuario_id, redefinicao_senha_usado: false },
@@ -160,7 +164,7 @@ export class AuthService {
 
     if (!registro) throw new AppError("Código inválido ou expirado", 400);
 
-    if (registro.redefinicao_senha_expira_em < new Date()) {
+    if (registro.redefinicao_senha_expira_em <= new Date()) {
       throw new AppError("Código inválido ou expirado", 400);
     }
 
@@ -168,15 +172,22 @@ export class AuthService {
       throw new AppError("Número máximo de tentativas excedido. Solicite um novo código.", 429);
     }
 
-    const match = await bcrypt.compare(codigo, registro.redefinicao_senha_codigo_hash);
-
-    if (!match) {
-      await prisma.tb_redefinicao_senha.update({
-        where: { redefinicao_senha_id: registro.redefinicao_senha_id },
-        data: { redefinicao_senha_tentativas: { increment: 1 } },
-      });
-      throw new AppError("Código inválido ou expirado", 400);
-    }
+    // Reserva uma tentativa antes da comparação para limitar verificações concorrentes.
+    const tentativa = await prisma.tb_redefinicao_senha.updateMany({
+      where: {
+        redefinicao_senha_id: registro.redefinicao_senha_id,
+        redefinicao_senha_usado: false,
+        redefinicao_senha_expira_em: { gt: new Date() },
+        redefinicao_senha_tentativas: { lt: RESET_CODE_MAX_ATTEMPTS },
+      },
+      data: { redefinicao_senha_tentativas: { increment: 1 } },
+    });
+    if (tentativa.count !== 1) throw new AppError("Código inválido ou expirado", 400);
+    const [hashCodigo, hashToken] = registro.redefinicao_senha_codigo_hash.split('|');
+    const match = /^[a-f0-9]{64}$/.test(codigo)
+      ? Boolean(hashToken && /^[a-f0-9]{64}$/.test(hashToken) && crypto.timingSafeEqual(Buffer.from(crypto.createHash('sha256').update(codigo).digest('hex')), Buffer.from(hashToken)))
+      : await bcrypt.compare(codigo, hashCodigo);
+    if (!match) throw new AppError("Código inválido ou expirado", 400);
 
     return { user, registro };
   }
@@ -195,6 +206,7 @@ export class AuthService {
     const hash = await bcrypt.hash(novaSenha, 10);
 
     await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${user.usuario_id} FOR UPDATE`;
       const consumed = await tx.tb_redefinicao_senha.updateMany({
         where: {
           redefinicao_senha_id: registro.redefinicao_senha_id,

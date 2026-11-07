@@ -48,6 +48,7 @@ export class AuthController {
   static async verifyResetCode(req: Request, res: Response) {
     try {
       const data = verifyResetCodeSchema.parse(req.body);
+      if (!await permitirRedefinicao(data.email, obterIp(req), 'verify')) return res.status(429).json({ message: 'Aguarde antes de tentar novamente.' });
       const result = await AuthService.verifyResetCode(data.email, data.codigo);
 
       return res.status(200).json(result);
@@ -59,6 +60,7 @@ export class AuthController {
   static async resetPassword(req: Request, res: Response) {
     try {
       const data = resetPasswordSchema.parse(req.body);
+      if (!await permitirRedefinicao(data.email, obterIp(req), 'verify')) return res.status(429).json({ message: 'Aguarde antes de tentar novamente.' });
       await AuthService.resetPassword(data.email, data.codigo, data.novaSenha);
 
       return res.status(200).json({ message: 'Senha redefinida com sucesso.' });
