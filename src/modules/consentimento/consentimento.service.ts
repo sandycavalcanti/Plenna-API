@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma.js';
+import { revokeUsageAssociations } from '../tempo-uso-v2/consent.js';
 import type { Prisma } from '@prisma/client';
 import { AppError } from '../../errors/AppError.js';
 import type { RegistrarConsentimentosBulkDTO } from './consentimento.schemas.js';
@@ -112,6 +113,7 @@ export class ConsentimentoService {
       await tx.tb_integracao.deleteMany({ where: { usuario_id: userId, integracao_provedor: { in: ['GMAIL', 'OUTLOOK'] } } });
     }
 
+    if ((!status && codigo === 'MONITORAMENTO_TEMPO_USO') || (codigo === 'MONITORAMENTO_ACESSOS' && existente?.consentimento_status !== status)) await revokeUsageAssociations(tx, userId);
     return consentimento;
   }
 }

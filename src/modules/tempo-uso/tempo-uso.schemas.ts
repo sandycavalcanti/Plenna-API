@@ -12,6 +12,9 @@ const dataUsoSchema = z.coerce.date().refine((data) => data.getTime() <= Date.no
 });
 
 export const tempoUsoIdSchema = z.coerce.number().int().positive();
+export const tempoUsoConsultaSchema = z.object({
+  mes: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/, 'Use mes no formato YYYY-MM').optional(),
+});
 
 export const createTempoUsoSchema = z.object({
   nome: nomeAplicativoSchema,

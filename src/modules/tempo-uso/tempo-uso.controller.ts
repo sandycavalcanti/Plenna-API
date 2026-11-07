@@ -1,8 +1,16 @@
 import { Response } from 'express';
 import { AuthRequest } from '../auth/auth.middleware.js';
-import { createTempoUsoSchema, criarSyncTempoUsoSchema, tempoUsoIdSchema, updateTempoUsoSchema } from './tempo-uso.schemas.js';
+import { createTempoUsoSchema, criarSyncTempoUsoSchema, tempoUsoIdSchema, tempoUsoConsultaSchema, updateTempoUsoSchema } from './tempo-uso.schemas.js';
 import { TempoUsoService } from './tempo-uso.service.js';
 import { handleError } from '../../utils/handleError.js';
+import { AppError } from '../../errors/AppError.js';
+
+function handleMonitoringError(res: Response, status: number, error: unknown) {
+  if(error instanceof AppError && error.message.startsWith('RF017_V2_REQUIRED:')) {
+    return res.status(409).json({code:'RF017_V2_REQUIRED',message:'Atualize o PLENNA para gerenciar o monitoramento de tempo em aplicativos.',errors:[]});
+  }
+  return handleError(res,status,error);
+}
 
 export class TempoUsoController {
   static async create(req: AuthRequest, res: Response) {
@@ -12,17 +20,18 @@ export class TempoUsoController {
       const tempo = await TempoUsoService.create(req.userId, data);
       return res.status(201).json(tempo);
     } catch (error: any) {
-      return handleError(res, 400, error);
+      return handleMonitoringError(res, 400, error);
     }
   }
 
   static async findAllByUserId(req: AuthRequest, res: Response) {
     try {
       if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
-      const tempos = await TempoUsoService.findAllByUserId(req.userId);
+      const { mes } = tempoUsoConsultaSchema.parse(req.query);
+      const tempos = await TempoUsoService.findAllByUserId(req.userId, mes);
       return res.json(tempos);
     } catch (error: any) {
-      return handleError(res, 500, error);
+      return handleMonitoringError(res, 500, error);
     }
   }
 
@@ -33,7 +42,7 @@ export class TempoUsoController {
       const tempo = await TempoUsoService.findById(req.userId, id);
       return res.json(tempo);
     } catch (error: any) {
-      return handleError(res, 404, error);
+      return handleMonitoringError(res, 404, error);
     }
   }
 
@@ -45,7 +54,7 @@ export class TempoUsoController {
       const updated = await TempoUsoService.update(req.userId, id, data);
       return res.json(updated);
     } catch (error: any) {
-      return handleError(res, 400, error);
+      return handleMonitoringError(res, 400, error);
     }
   }
 
@@ -56,7 +65,7 @@ export class TempoUsoController {
       await TempoUsoService.delete(req.userId, id);
       return res.status(204).send();
     } catch (error: any) {
-      return handleError(res, 404, error);
+      return handleMonitoringError(res, 404, error);
     }
   }
 
@@ -72,7 +81,7 @@ export class TempoUsoController {
       const resultado = await TempoUsoService.sync(req.userId, data);
       return res.json(resultado);
     } catch (error: unknown) {
-      return handleError(res, 400, error);
+      return handleMonitoringError(res, 400, error);
     }
   }
 }
