@@ -4,11 +4,12 @@ import { AppError } from '../../errors/AppError.js';
 import { businessPeriod, cents, parseMonth } from '../compra/financeiro.js';
 import { AnaliseComportamentalService } from '../analise/comportamento.service.js';
 import { homeResumoSchema } from './home.schemas.js';
+import { resolverOrcamentoMensal } from '../compra/referencias.service.js';
 
 const month = (date: Date) => businessPeriod(date);
 
 export class HomeService {
-  static async consultar(userId: number, periodo: string, now = new Date()) {
+  static async consultar(userId: number, periodo: string, now = new Date(), versao = 1) {
     parseMonth(periodo);
     const current = month(now);
     if (periodo > current) throw new AppError('Periodo futuro nao permitido', 400);
@@ -30,15 +31,18 @@ export class HomeService {
       const f = snapshot.analise.indicadores.financeiro;
       const coverage = snapshot.analise.qualidade.cobertura;
       const historical = periodo !== current;
-      const budget = historical || f.orcamentoMensal === null ? null : cents(f.orcamentoMensal);
+      const reference = versao >= 2 ? await resolverOrcamentoMensal(tx, userId, periodo, now) : null;
+      // Estados novos são opt-in; clientes v2 continuam exigindo mês inteiro.
+      const proven = reference?.valor != null && (versao >= 3 || reference.vigencia === 'MES_COMPROVADO');
+      const budget = proven ? cents(reference.valor!) : historical || reference?.motivo === 'ORCAMENTO_DESATIVADO' || f.orcamentoMensal === null ? null : cents(f.orcamentoMensal);
       const known = cents(f.totalConhecido);
       const ratio = budget === null || f.qualidade === 'INSUFICIENTE' ? null : new Prisma.Decimal(known).mul(100).div(budget).toNumber();
       let state: 'VERDE' | 'AMARELO' | 'LARANJA' | 'VERMELHO' | 'NEUTRO' = 'NEUTRO';
       if (ratio !== null) {
         if (known > budget!) state = 'VERMELHO';
-        else if (f.qualidade !== 'PARCIAL' && coverage === 'COMPLETA') state = known * 100 < budget! * 50 ? 'VERDE' : known * 100 < budget! * 75 ? 'AMARELO' : 'LARANJA';
+        else if (versao >= 2 || f.qualidade !== 'PARCIAL' && coverage === 'COMPLETA') state = known * 100 < budget! * 50 ? 'VERDE' : known * 100 < budget! * 75 ? 'AMARELO' : 'LARANJA';
       }
-      return homeResumoSchema.parse({ versaoContrato: 1, periodo, referenciaTemporal: 'America/Sao_Paulo',
+      return homeResumoSchema.parse({ versaoContrato: versao, periodo, referenciaTemporal: 'America/Sao_Paulo',
         perspectivas: {
           categorias: { disponibilidade: 'INDISPONIVEL', motivo: 'POLITICA_DE_PRIVACIDADE_NAO_VERIFICAVEL' },
           pagamentos: { disponibilidade: 'INDISPONIVEL', motivo: 'POLITICA_DE_PRIVACIDADE_NAO_VERIFICAVEL' },
@@ -48,13 +52,13 @@ export class HomeService {
         financeiro: { comprasConfirmadas: f.comprasConfirmadas, comprasComValor: f.comprasComValor,
           comprasSemValor: f.comprasSemValor, totalConhecidoCentavos: known,
           totalCentavos: f.total === null ? null : cents(f.total), qualidade: f.qualidade, cobertura: coverage },
-        orcamento: { disponibilidade: budget === null ? 'INDISPONIVEL' : 'REFERENCIA_ATUAL',
+        orcamento: { disponibilidade: budget === null ? 'INDISPONIVEL' : proven ? 'REFERENCIA_HISTORICA' : 'REFERENCIA_ATUAL',
           valorCentavos: budget, percentualConhecido: ratio,
           excessoConhecidoCentavos: ratio === null || budget === null ? null : Math.max(0, known - budget),
-          vigencia: historical ? 'NAO_COMPROVADA' : 'ATUAL_SEM_HISTORICO', estadoUtilizacao: state,
-          motivo: historical ? 'ORCAMENTO_HISTORICO_NAO_COMPROVADO' : budget === null ? 'ORCAMENTO_AUSENTE_OU_INVALIDO' : f.qualidade === 'INSUFICIENTE' ? 'VALORES_DESCONHECIDOS' : null },
+          vigencia: proven ? reference.vigencia : historical ? 'NAO_COMPROVADA' : 'ATUAL_SEM_HISTORICO', estadoUtilizacao: state,
+          motivo: proven ? f.qualidade === 'INSUFICIENTE' ? 'VALORES_DESCONHECIDOS' : reference.motivo : historical ? reference?.motivo ?? 'ORCAMENTO_HISTORICO_NAO_COMPROVADO' : budget === null ? 'ORCAMENTO_AUSENTE_OU_INVALIDO' : f.qualidade === 'INSUFICIENTE' ? 'VALORES_DESCONHECIDOS' : null },
         limitacoes: [...new Set([...snapshot.analise.limitacoes,
-          historical ? 'ORCAMENTO_HISTORICO_NAO_COMPROVADO' : 'ORCAMENTO_ATUAL_SEM_HISTORICO_DE_VIGENCIA'])],
+          ...(proven ? [] : [historical ? 'ORCAMENTO_HISTORICO_NAO_COMPROVADO' : 'ORCAMENTO_ATUAL_SEM_HISTORICO_DE_VIGENCIA'])])],
       });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }

@@ -3,7 +3,43 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../errors/AppError.js';
-import { businessDayBounds, businessPeriod, cents } from './financeiro.js';
+import { businessDayBounds, businessDateKey, businessPeriod, cents, parseMonth } from './financeiro.js';
+
+export async function referenciasDisponiveis(tx: Prisma.TransactionClient) {
+  const rows = await tx.$queryRaw<{ tabela: string | null }[]>`
+    SELECT to_regclass('public.tb_referencia_financeira')::text AS tabela
+  `;
+  return rows[0]?.tabela !== null && rows[0]?.tabela !== undefined;
+}
+
+/** Retrospectiva mensal; não usar este resultado para avaliar compras anteriores à vigência. */
+export async function resolverOrcamentoMensal(tx: Prisma.TransactionClient, userId: number, periodo: string, now = new Date()) {
+  const { start, end } = parseMonth(periodo);
+  if (start > now) throw new AppError('Período futuro não permitido', 400);
+  if (!await referenciasDisponiveis(tx)) return { valor: null, vigencia: 'NAO_COMPROVADA' as const, motivo: 'HISTORICO_INDISPONIVEL' };
+  const cutoff = new Date(Math.min(end.getTime(), now.getTime()));
+  const reference = await tx.tb_referencia_financeira.findFirst({
+    where: { usuario_id: userId, tipo: 'ORCAMENTO_MENSAL', categoria_id: null, vigente_desde: { lt: cutoff }, registrada_em: { lte: now } },
+    orderBy: [{ vigente_desde: 'desc' }, { referencia_id: 'desc' }],
+  });
+  const absent = { valor: null, vigencia: 'NAO_COMPROVADA' as const, motivo: 'ORCAMENTO_HISTORICO_NAO_COMPROVADO' };
+  if (!reference) return absent;
+  const continuous = ['PERFIL_CONTINUO', 'DECLARADO_CONTINUO'].includes(reference.origem);
+  const originKnown = continuous || ['ALTERACAO_PERFIL', 'ALTERACAO_LEGADA', 'DECLARADO'].includes(reference.origem);
+  const effective = reference.vigente_desde;
+  const registered = reference.registrada_em;
+  // Metadados inconsistentes não autorizam recuperar uma versão anterior conveniente.
+  if (!originKnown || !['REFERENCIA_ATUAL', 'MES_INTEIRO'].includes(reference.aplicacao) ||
+      !(effective instanceof Date) || !(registered instanceof Date) ||
+      !Number.isFinite(effective.getTime()) || !Number.isFinite(registered.getTime()) ||
+      businessDateKey(registered) !== businessDateKey(effective) ||
+      reference.periodo !== businessPeriod(effective) || (!continuous && effective < start)) return absent;
+  if (reference.valor === null || Number(reference.valor) <= 0) return { ...absent, motivo: 'ORCAMENTO_DESATIVADO' };
+  const wholeMonth = reference.aplicacao === 'MES_INTEIRO' && reference.periodo === periodo;
+  return { valor: reference.valor, vigencia: wholeMonth ? 'MES_COMPROVADO' as const : effective < start ? 'CONTINUIDADE_COMPROVADA' as const : 'REFERENCIA_OBSERVADA' as const,
+    motivo: wholeMonth || effective < start ? null : 'COBERTURA_HISTORICA_PARCIAL' };
+}
+
 export const referenciaSchema = z
   .object({
     versaoContrato: z.literal(1),
@@ -61,7 +97,7 @@ export async function registrarAlteracoesReferencia(
         vigente_desde: now,
         periodo,
         aplicacao: change.aplicacao ?? (change.tipo === 'ORCAMENTO_MENSAL' ? 'REFERENCIA_ATUAL' : 'AGORA'),
-        origem: change.aplicacao ? 'DECLARADO' : 'ALTERACAO_PERFIL',
+        origem: change.aplicacao ? 'DECLARADO_CONTINUO' : 'PERFIL_CONTINUO',
         operacao_id: randomUUID(),
       },
     });
@@ -110,8 +146,7 @@ export class ReferenciasService {
     const data = referenciaSchema.parse(raw);
     if (
       data.tipo === 'ORCAMENTO_MENSAL' &&
-      (data.aplicacao !== 'MES_INTEIRO' ||
-        data.periodo !== businessPeriod(now))
+      data.aplicacao !== 'MES_INTEIRO'
     )
       throw new AppError(
         'Escolha o mês atual inteiro para esta referência mensal',
@@ -154,6 +189,9 @@ export class ReferenciasService {
           persistido: true,
           id: existing.referencia_id,
         };
+      }
+      if (data.tipo === 'ORCAMENTO_MENSAL' && data.periodo !== businessPeriod(now)) {
+        throw new AppError('Escolha o mês atual inteiro para esta referência mensal', 422);
       }
       const valor = new Prisma.Decimal(data.valorCentavos).div(100);
       if (data.tipo === 'CATEGORIA') {
@@ -199,7 +237,7 @@ export class ReferenciasService {
           vigente_desde: now,
           periodo: data.periodo ?? null,
           aplicacao: data.aplicacao,
-          origem: 'DECLARADO',
+          origem: 'DECLARADO_CONTINUO',
           operacao_id: data.operacaoId,
         },
       });
