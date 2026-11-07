@@ -352,16 +352,32 @@ model tb_mensagem {
 }
 
 model tb_meta {
-  meta_id           Int        @id @default(autoincrement())
-  usuario_id        Int
-  meta_titulo       String     @db.VarChar(45)
-  meta_descricao    String?
-  meta_valor        Decimal    @db.Decimal(10, 2)
-  meta_data         DateTime?  @db.Date
-  meta_completado   Boolean    @default(false)
-  meta_data_criacao DateTime   @default(now()) @db.Timestamp(6)
-  tb_usuario        tb_usuario @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  meta_id                Int                      @id @default(autoincrement())
+  usuario_id             Int
+  meta_titulo            String                   @db.VarChar(45)
+  meta_descricao         String?
+  meta_valor             Decimal                  @db.Decimal(10, 2)
+  meta_data              DateTime?                @db.Date
+  meta_completado        Boolean                  @default(false)
+  meta_data_criacao      DateTime                 @default(now()) @db.Timestamp(6)
+  meta_valor_reservado   Decimal                  @default(0) @db.Decimal(10, 2)
+  tb_usuario             tb_usuario               @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)
+  tb_meta_movimentacao   tb_meta_movimentacao[]
 
+  @@schema("public")
+}
+
+model tb_meta_movimentacao {
+  meta_movimentacao_id            Int        @id @default(autoincrement())
+  meta_id                         Int
+  meta_movimentacao_operacao_id   String     @db.Uuid
+  meta_movimentacao_tipo          String     @db.VarChar(10)
+  meta_movimentacao_valor         Decimal    @db.Decimal(10, 2)
+  meta_movimentacao_data          DateTime   @default(now()) @db.Timestamptz(6)
+  tb_meta                         tb_meta    @relation(fields: [meta_id], references: [meta_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_meta_movimentacao_meta")
+
+  @@unique([meta_id, meta_movimentacao_operacao_id], map: "uq_meta_movimentacao_meta_operacao")
+  @@index([meta_id, meta_movimentacao_data(sort: Desc), meta_movimentacao_id(sort: Desc)], map: "idx_meta_movimentacao_meta_data")
   @@schema("public")
 }
 

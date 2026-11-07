@@ -28,3 +28,17 @@ export const gmailMessageDetailSchema = gmailMessageSummarySchema.extend({
   date: z.string().nullable().optional(),
   bodyText: z.string().nullable().optional(),
 });
+
+export const stateSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
+export const tentativaSchema = z.object({
+  tentativa: z.string().uuid(),
+  state: stateSchema,
+  segredo: stateSchema,
+}).strict();
+
+export const finalizarEmailSchema = tentativaSchema.extend({
+  code: z.string().min(1).max(4096),
+});
+
+export type FinalizarEmailDTO = z.infer<typeof finalizarEmailSchema>;

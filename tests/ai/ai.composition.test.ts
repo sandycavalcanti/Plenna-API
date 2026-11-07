@@ -30,7 +30,8 @@ const financialToolNames = [
   'impulsive_purchase_summary',
   'finance_analytics',
   'limits_status',
-  'goals_list',
+  'listar_metas',
+  'analisar_metas',
   'recurrences_list',
   'recurrence_commitments',
   'usage_summary',
@@ -39,10 +40,10 @@ const financialToolNames = [
 ];
 const memoryToolNames = ['memory_list', 'memory_save', 'memory_update'];
 
-test('composição real registra 15 tools financeiras e 3 de memória sem duplicação', async () => {
+test('composição real registra 16 tools financeiras e 3 de memória sem duplicação', async () => {
   const registeredNames = aiToolRegistry.definitions().map((definition) => definition.name);
-  assert.equal(registeredNames.length, 18);
-  assert.equal(new Set(registeredNames).size, 18);
+  assert.equal(registeredNames.length, 19);
+  assert.equal(new Set(registeredNames).size, 19);
   assert.deepEqual(new Set(registeredNames), new Set([...financialToolNames, ...memoryToolNames]));
 
   let providerTools: any[] = [];
@@ -65,7 +66,7 @@ test('composição real registra 15 tools financeiras e 3 de memória sem duplic
   }).run(provider, [{ role: 'user', content: 'teste de composição' }], { usuario_id: 42 });
 
   assert.equal(result.text, 'Composição carregada.');
-  assert.equal(providerTools.length, 18);
+  assert.equal(providerTools.length, 19);
   assert.deepEqual(new Set(providerTools.map((tool) => tool.function.name)), new Set([...financialToolNames, ...memoryToolNames]));
 });
 
@@ -90,7 +91,7 @@ test('orquestra duas consultas financeiras do catálogo com identidade autentica
     impulsivity: async () => [],
     analytics: async () => ({ mode: 'month', timezone: 'UTC', periodos: [], comparacao: null }),
     limits: async () => ({ periodo: '2026-10', orcamentoMensal: null, estadoOrcamento: 'SEM_ORCAMENTO', limitePorCompra: null, comprasAcimaLimiteIndividual: null, comprasAcimaLimite: 0, comprasDentroLimite: 0 }),
-    goals: async () => [],
+    metas: async () => [],
     recurrences: async () => [],
     upcoming: async () => ({ ocorrencias: [] }),
     usage: async () => ({ periodo: '2026-10', itens: [], autorizado: true }),

@@ -75,7 +75,7 @@ export const env = {
     rateLimitHmacKey: process.env.RATE_LIMIT_HMAC_KEY,
     port,
     dbUrl: process.env.DIRECT_URL ?? requireEnv("DATABASE_URL"),
-    apiBaseUrl: process.env.API_BASE_URL ?? "https://plenna-api-orpin.vercel.app",
+    apiBaseUrl: process.env.API_BASE_URL ?? "https://plenna-api.vercel.app",
     googleClientId: requireEnv("GOOGLE_CLIENT_ID"),
     googleClientSecret: requireEnv("GOOGLE_CLIENT_SECRET"),
     googleRedirectUri: requireEnv("GOOGLE_REDIRECT_URI"),

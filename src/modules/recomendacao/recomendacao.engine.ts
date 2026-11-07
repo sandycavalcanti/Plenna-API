@@ -94,12 +94,12 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
         referencias: [`compras-impulsivas:${context.comprasImpulsivas.quantidade}`], limitacoes: sorted([...input.limitacoes, 'CLASSIFICACAO_FORNECIDA_PELO_USUARIO_OU_FLUXO_EXISTENTE']),
       });
     }
-    const openGoal = context.metas?.find((goal) => !goal.concluida && goal.valor > 0);
-    if (expanded && openGoal) {
+    const metaAberta = context.metas?.find((meta) => !meta.concluida && meta.valor > 0);
+    if (expanded && metaAberta) {
       recommendations.push({
         codigo: 'ATENCAO_META', prioridade: 4, titulo: 'Mantenha sua meta no radar',
-        mensagem: `A meta "${openGoal.titulo.slice(0, 60)}" continua em andamento. Que tal vermos como os próximos gastos podem se encaixar melhor no seu planejamento para ajudar você a avançar?`,
-        referencias: [`meta:${openGoal.id}`], limitacoes: sorted([...input.limitacoes, 'PROGRESSO_MONETARIO_DA_META_NAO_DISPONIVEL_NESTE_CONTRATO']),
+        mensagem: `A meta "${metaAberta.titulo.slice(0, 60)}" continua em andamento. Que tal vermos como os próximos gastos podem se encaixar melhor no seu planejamento para ajudar você a avançar?`,
+        referencias: [`meta:${metaAberta.id}`], limitacoes: sorted([...input.limitacoes, 'PROGRESSO_MONETARIO_DA_META_NAO_DISPONIVEL_NESTE_CONTRATO']),
       });
     }
     const recurring = context.recorrencias?.find((item) => item.valorMensalConhecido !== null && item.valorMensalConhecido > 0);

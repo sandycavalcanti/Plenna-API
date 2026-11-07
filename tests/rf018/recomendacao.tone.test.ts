@@ -51,10 +51,10 @@ test('mantém a ressalva de vigência e usa tom acolhedor para metas', () => {
     metas: [{ id: 3, titulo: 'Cadeira Gamer', valor: 1000, concluida: false, data: null }],
     enableExpandedRules: true,
   });
-  const goal = result.recomendacoes.find((item) => item.codigo === 'ATENCAO_META');
-  assert.ok(goal);
-  assert.match(goal.mensagem, /continua em andamento|pr[oó]ximos gastos|planejamento/i);
-  assert.doesNotMatch(goal.mensagem, /diagn[oó]stico|culpa|sempre|nunca/i);
+  const meta = result.recomendacoes.find((item) => item.codigo === 'ATENCAO_META');
+  assert.ok(meta);
+  assert.match(meta.mensagem, /continua em andamento|pr[oó]ximos gastos|planejamento/i);
+  assert.doesNotMatch(meta.mensagem, /diagn[oó]stico|culpa|sempre|nunca/i);
 });
 
 test('fallback proativo não usa o prefixo burocrático e convida à conversa', async () => {

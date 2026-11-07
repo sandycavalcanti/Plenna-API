@@ -3,7 +3,7 @@ import cors from 'cors';
 import type { NextFunction, Request, Response } from 'express';
 import { usersRouter } from './modules/user/user.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
-import { goalRouter } from './modules/goal/goal.routes.js';
+import { metaRouter } from './modules/meta/meta.routes.js';
 import { preferenciasCategoriaRouter } from './modules/preferencia/preferencia.routes.js';
 import { categoryRouter } from './modules/category/category.routes.js';
 import { tempoUsoMonitoramentoRouter } from './modules/monitoramento/routes.js';
@@ -36,7 +36,9 @@ app.use(express.json());
 
 app.use('/users', usersRouter);
 app.use('/auth', authRouter);
-app.use('/goals', goalRouter);
+// Rota canônica do módulo de metas. O alias legado permanece temporariamente
+// para versões já publicadas do aplicativo; novos clientes devem usar /metas.
+app.use('/metas', metaRouter);
 app.use('/preferencia', preferenciasCategoriaRouter);
 app.use('/categories', categoryRouter);
 app.use('/tempo-uso', tempoUsoRouter);

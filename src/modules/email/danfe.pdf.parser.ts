@@ -1,4 +1,4 @@
-import { PDFParse } from 'pdf-parse';
+import type { PDFParse } from 'pdf-parse';
 
 export type ParsedDanfeItem = {
   name: string;
@@ -211,10 +211,17 @@ export function parseDanfeText(text: string): ParsedDanfe | null {
  */
 export async function extractPdfText(bytes: Buffer): Promise<PdfTextResult> {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0) throw new DanfePdfParseError('PDF vazio');
+
+  // O worker instala os globals DOMMatrix/ImageData/Path2D antes de
+  // pdfjs-dist ser avaliado no runtime Node.js da Vercel.
+  const { CanvasFactory } = await import('pdf-parse/worker');
+  const { PDFParse } = await import('pdf-parse');
+
   let parser: PDFParse | null = null;
   try {
     parser = new PDFParse({
       data: new Uint8Array(bytes),
+      CanvasFactory,
       useWorkerFetch: false,
       disableAutoFetch: true,
       disableStream: true,
