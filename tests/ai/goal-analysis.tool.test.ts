@@ -28,6 +28,7 @@ function dependencies(calls: unknown[]): FinancialToolDependencies {
           metas_retornadas: 0,
           metas_limitadas: false,
           dados_suficientes: true,
+          saldo_historico_disponivel: false,
           movimentos_considerados: 0,
           sem_movimentacoes: true,
           periodo_referencia_parcial: false,

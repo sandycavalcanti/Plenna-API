@@ -62,7 +62,14 @@ opcionais. O retorno informa o fuso `America/Sao_Paulo`, cobertura e
 limitações, valores reservados, progresso, períodos mensais, comparações,
 sequência de meses com depósitos e movimentações recentes. `usuario_id`,
 `userId` e equivalentes não fazem parte dos argumentos: a identidade vem do
-contexto autenticado. A tool não cria, altera ou exclui metas e movimentações.
+contexto autenticado. `saldo_atual_reservado`/`valor_reservado` representam o
+saldo atual da meta; `saldo_liquido_no_periodo` representa somente o fluxo de
+movimentações do período. O contrato informa
+`saldo_historico_disponivel: false` porque não reconstitui saldos de meses
+anteriores. Referências futuras são limitadas ao último mês observado e isso é
+registrado em `limitacoes`. A resposta é reduzida quando necessário para
+respeitar o limite de caracteres do orquestrador. A tool não cria, altera ou
+exclui metas e movimentações.
 
 ## Compatibilidade
 

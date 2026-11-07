@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma.js';
+import { env } from '../../lib/env.js';
 
 export const GOAL_ANALYSIS_TIMEZONE = 'America/Sao_Paulo';
 
@@ -62,6 +63,7 @@ const analyzedGoalSchema = z.object({
   id: z.number().int().positive(),
   titulo: z.string(),
   valor_objetivo: moneySchema,
+  saldo_atual_reservado: moneySchema,
   valor_reservado: moneySchema,
   valor_restante: moneySchema,
   progresso_percentual: z.number().finite().nonnegative(),
@@ -95,6 +97,7 @@ export const goalAnalysisResultSchema = z.object({
     metas_retornadas: z.number().int().nonnegative(),
     metas_limitadas: z.boolean(),
     dados_suficientes: z.boolean(),
+    saldo_historico_disponivel: z.literal(false),
     movimentos_considerados: z.number().int().nonnegative(),
     sem_movimentacoes: z.boolean(),
     periodo_referencia_parcial: z.boolean(),
@@ -217,6 +220,60 @@ function serializeMovement(row: any) {
   };
 }
 
+function addLimitation(limitacoes: string[], message: string) {
+  if (limitacoes.includes(message) || limitacoes.length >= 10) return;
+  limitacoes.push(message);
+}
+
+function serializedResultSize(result: GoalAnalysisResult) {
+  return JSON.stringify({ ok: true, result }).length;
+}
+
+/**
+ * O orchestrator serializa { ok, result } e aplica AI_TOOL_RESULT_MAX_CHARS.
+ * A tool conserva o resultado estruturado, reduzindo apenas detalhes
+ * opcionais quando o limite configurado for menor que a resposta solicitada.
+ */
+export function fitGoalAnalysisResult(
+  source: GoalAnalysisResult,
+  maxChars = env.aiToolResultMaxChars,
+): GoalAnalysisResult {
+  if (serializedResultSize(source) <= maxChars) return source;
+
+  const result = JSON.parse(JSON.stringify(source)) as GoalAnalysisResult;
+  for (const goal of result.metas) goal.movimentacoes_recentes = [];
+  addLimitation(result.limitacoes, 'Movimentacoes recentes foram omitidas para respeitar o limite de resposta da IA.');
+
+  while (serializedResultSize(result) > maxChars && result.metas.length > 1) {
+    result.metas.pop();
+    result.cobertura.metas_limitadas = true;
+    result.cobertura.dados_suficientes = false;
+  }
+  if (result.cobertura.metas_limitadas) {
+    addLimitation(result.limitacoes, 'A resposta foi limitada ao numero de metas que cabe no contexto da IA.');
+  }
+
+  while (serializedResultSize(result) > maxChars && result.metas.some((goal) => goal.indicadores.periodos_mensais.length > 1)) {
+    for (const goal of result.metas) {
+      if (goal.indicadores.periodos_mensais.length <= 1) continue;
+      goal.indicadores.periodos_mensais.shift();
+      goal.indicadores.periodos_mensais[0].comparacao_com_mes_anterior = null;
+      if (goal.indicadores.periodos_sem_movimentacoes.length > 0) goal.indicadores.periodos_sem_movimentacoes.shift();
+      if (goal.indicadores.meses_com_movimentacoes_sem_deposito.length > 0) goal.indicadores.meses_com_movimentacoes_sem_deposito.shift();
+    }
+    result.cobertura.dados_suficientes = false;
+    addLimitation(result.limitacoes, 'Periodos mensais antigos foram omitidos para respeitar o limite de resposta da IA.');
+  }
+
+  if (serializedResultSize(result) > maxChars) {
+    result.metas = [];
+    result.cobertura.metas_limitadas = true;
+    result.cobertura.dados_suficientes = false;
+    addLimitation(result.limitacoes, 'A analise nao coube no limite de resposta configurado para a IA.');
+  }
+  return result;
+}
+
 function emptyAggregate(partial: boolean, partialReason: MonthAggregate['partialReason']): MonthAggregate {
   return {
     totalDeposit: ZERO,
@@ -301,7 +358,71 @@ function buildMonthlyResult(period: string, aggregate: MonthAggregate, previous:
   };
 }
 
-function buildGoalResult(goal: any, movements: any[], keys: string[], input: GoalAnalysisInput, now: Date) {
+async function findLatestPerGoal(
+  database: GoalAnalyticsDatabase,
+  goalIds: number[],
+  before: Date,
+  type?: 'DEPOSITO' | 'RETIRADA',
+) {
+  if (goalIds.length === 0) return new Map<number, any>();
+
+  if (typeof database.$queryRaw === 'function') {
+    const typeFilter = type
+      ? Prisma.sql`AND m.meta_movimentacao_tipo = ${type}`
+      : Prisma.empty;
+    const rows = await database.$queryRaw(Prisma.sql`
+      SELECT DISTINCT ON (m.meta_id)
+        m.meta_movimentacao_id,
+        m.meta_id,
+        m.meta_movimentacao_tipo,
+        m.meta_movimentacao_valor,
+        m.meta_movimentacao_data
+      FROM public.tb_meta_movimentacao AS m
+      WHERE m.meta_id IN (${Prisma.join(goalIds)})
+        AND m.meta_movimentacao_data < ${before}
+        ${typeFilter}
+      ORDER BY m.meta_id ASC, m.meta_movimentacao_data DESC, m.meta_movimentacao_id DESC
+    `);
+    return new Map(rows.map((row: any) => [row.meta_id, row]));
+  }
+
+  // Fallback para doubles de teste que nao expõem queryRaw.
+  if (typeof database.tb_meta_movimentacao.findFirst === 'function') {
+    const rows = await Promise.all(goalIds.map((metaId) => database.tb_meta_movimentacao.findFirst({
+      where: {
+        meta_id: metaId,
+        meta_movimentacao_data: { lt: before },
+        ...(type ? { meta_movimentacao_tipo: type } : {}),
+      },
+      orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
+    })));
+    return new Map(rows.filter(Boolean).map((row: any) => [row.meta_id, row]));
+  }
+
+  const rows = await database.tb_meta_movimentacao.findMany({
+    where: {
+      meta_id: { in: goalIds },
+      meta_movimentacao_data: { lt: before },
+    },
+    orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
+  });
+  const latest = new Map<number, any>();
+  for (const row of rows) {
+    if (type && row.meta_movimentacao_tipo !== type) continue;
+    if (!latest.has(row.meta_id)) latest.set(row.meta_id, row);
+  }
+  return latest;
+}
+
+function buildGoalResult(
+  goal: any,
+  monthlyMovements: any[],
+  latestMovement: any | null,
+  lastDeposit: any | null,
+  keys: string[],
+  input: GoalAnalysisInput,
+  now: Date,
+) {
   const target = decimal(goal.meta_valor);
   const reserved = decimal(goal.meta_valor_reservado);
   const safeReserved = reserved.isNegative() ? ZERO : reserved;
@@ -310,7 +431,7 @@ function buildGoalResult(goal: any, movements: any[], keys: string[], input: Goa
     ? safeReserved.div(target).mul(100).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber()
     : 0;
   const { aggregates } = aggregateMovements(
-    movements,
+    monthlyMovements,
     keys,
     goal.meta_data_criacao ? new Date(goal.meta_data_criacao) : null,
     now,
@@ -327,8 +448,6 @@ function buildGoalResult(goal: any, movements: any[], keys: string[], input: Goa
     if ((aggregates.get(period)?.depositCount ?? 0) === 0) break;
     consecutive += 1;
   }
-  const latest = movements[0] ?? null;
-  const lastDeposit = movements.find((movement) => movement.meta_movimentacao_tipo === 'DEPOSITO') ?? null;
   const noMovementPeriods = monthly.filter((item) => item.status === 'SEM_MOVIMENTACOES').map((item) => item.periodo);
   const movementWithoutDeposit = monthly.filter((item) => item.status === 'SEM_DEPOSITOS').map((item) => item.periodo);
   const periodCount = monthly.length;
@@ -337,13 +456,14 @@ function buildGoalResult(goal: any, movements: any[], keys: string[], input: Goa
     id: goal.meta_id,
     titulo: goal.meta_titulo,
     valor_objetivo: money(target),
+    saldo_atual_reservado: money(safeReserved),
     valor_reservado: money(safeReserved),
     valor_restante: money(remaining.isNegative() ? ZERO : remaining),
     progresso_percentual: progress,
     meta_completado: Boolean(goal.meta_completado),
-    ultima_movimentacao: latest ? serializeMovement(latest) : null,
+    ultima_movimentacao: latestMovement ? serializeMovement(latestMovement) : null,
     ultimo_deposito: lastDeposit ? serializeMovement(lastDeposit) : null,
-    movimentacoes_recentes: movements.slice(0, input.limite_movimentacoes_recentes).map(serializeMovement),
+    movimentacoes_recentes: monthlyMovements.slice(0, input.limite_movimentacoes_recentes).map(serializeMovement),
     indicadores: {
       periodos_mensais: monthly,
       total_depositado_no_periodo: money(totalDeposit),
@@ -380,12 +500,16 @@ export class GoalAnalyticsService {
     if (!Number.isInteger(userId) || userId <= 0) throw new Error('INVALID_AUTHENTICATED_USER');
     const parsed = goalAnalysisInputSchema.parse(rawInput);
     const referencePeriod = parsed.periodo ?? currentGoalAnalysisPeriod(now);
+    const currentPeriod = currentGoalAnalysisPeriod(now);
+    const futureReference = monthNumber(referencePeriod) > monthNumber(currentPeriod);
+    const effectiveReferencePeriod = futureReference ? currentPeriod : referencePeriod;
     const input: GoalAnalysisInput = {
       ...parsed,
       periodo: referencePeriod,
     };
-    const referenceBounds = monthBounds(referencePeriod);
-    const keys = periodKeys(referencePeriod, input.meses);
+    const referenceBounds = monthBounds(effectiveReferencePeriod);
+    const keys = periodKeys(effectiveReferencePeriod, input.meses);
+    const analysisStart = monthBounds(keys[0]).start;
     const rawGoals = await database.tb_meta.findMany({
       where: { usuario_id: userId },
       orderBy: [{ meta_data_criacao: 'desc' }, { meta_id: 'desc' }],
@@ -394,38 +518,53 @@ export class GoalAnalyticsService {
     const metasLimitadas = rawGoals.length > input.limite_metas;
     const goals = rawGoals.slice(0, input.limite_metas);
     const ids = goals.map((goal: any) => goal.meta_id);
-    const movements = ids.length === 0
+    const monthlyMovements = ids.length === 0
       ? []
       : await database.tb_meta_movimentacao.findMany({
           where: {
             meta_id: { in: ids },
-            meta_movimentacao_data: { lt: referenceBounds.end },
+            meta_movimentacao_data: { gte: analysisStart, lt: referenceBounds.end },
+          },
+          select: {
+            meta_movimentacao_id: true,
+            meta_id: true,
+            meta_movimentacao_tipo: true,
+            meta_movimentacao_valor: true,
+            meta_movimentacao_data: true,
           },
           orderBy: [{ meta_movimentacao_data: 'desc' }, { meta_movimentacao_id: 'desc' }],
         });
+    const [latestByGoal, depositByGoal] = await Promise.all([
+      findLatestPerGoal(database, ids, referenceBounds.end),
+      findLatestPerGoal(database, ids, referenceBounds.end, 'DEPOSITO'),
+    ]);
     const byGoal = new Map<number, any[]>();
-    for (const movement of movements) {
+    for (const movement of monthlyMovements) {
       const list = byGoal.get(movement.meta_id) ?? [];
       list.push(movement);
       byGoal.set(movement.meta_id, list);
     }
-    const analyzedGoals = goals.map((goal: any) => buildGoalResult(goal, byGoal.get(goal.meta_id) ?? [], keys, input, now));
-    const analysisStart = monthBounds(keys[0]).start;
-    const movementsInWindow = movements.filter((movement: any) => (
-      new Date(movement.meta_movimentacao_data) >= analysisStart
-      && new Date(movement.meta_movimentacao_data) < referenceBounds.end
+    const analyzedGoals = goals.map((goal: any) => buildGoalResult(
+      goal,
+      byGoal.get(goal.meta_id) ?? [],
+      latestByGoal.get(goal.meta_id) ?? null,
+      depositByGoal.get(goal.meta_id) ?? null,
+      keys,
+      input,
+      now,
     ));
     const limitacoes: string[] = [];
-    if (metasLimitadas) limitacoes.push(`A analise foi limitada a ${input.limite_metas} metas.`);
-    if (monthKey(now) === referencePeriod) limitacoes.push('O mes de referencia ainda esta incompleto.');
-    if (goals.length === 0) limitacoes.push('Nao existem metas disponiveis para o usuario autenticado.');
+    if (metasLimitadas) addLimitation(limitacoes, `A analise foi limitada a ${input.limite_metas} metas.`);
+    if (futureReference) addLimitation(limitacoes, `O periodo solicitado (${referencePeriod}) e futuro; a analise foi limitada ao mes observado (${effectiveReferencePeriod}).`);
+    if (monthKey(now) === effectiveReferencePeriod) addLimitation(limitacoes, 'O mes de referencia observado ainda esta incompleto.');
+    if (goals.length === 0) addLimitation(limitacoes, 'Nao existem metas disponiveis para o usuario autenticado.');
+    addLimitation(limitacoes, 'Saldo atual reservado nao e saldo historico: os indicadores mensais mostram movimentacoes e nao reconstituem saldos de meses anteriores.');
     const qualidade = goals.length === 0
       ? 'SEM_METAS'
-      : metasLimitadas || monthKey(now) === referencePeriod
+      : metasLimitadas || futureReference || monthKey(now) === effectiveReferencePeriod
         ? 'PARCIAL'
         : 'COMPLETA_NO_PERIODO';
-
-    return {
+    const result = {
       periodo_referencia: referencePeriod,
       meses_solicitados: input.meses,
       timezone: GOAL_ANALYSIS_TIMEZONE,
@@ -434,15 +573,17 @@ export class GoalAnalyticsService {
         fim_exclusivo: referenceBounds.end.toISOString(),
         metas_retornadas: analyzedGoals.length,
         metas_limitadas: metasLimitadas,
-        dados_suficientes: !metasLimitadas,
-        movimentos_considerados: movementsInWindow.length,
-        sem_movimentacoes: movementsInWindow.length === 0,
-        periodo_referencia_parcial: monthKey(now) === referencePeriod,
+        dados_suficientes: !metasLimitadas && !futureReference,
+        saldo_historico_disponivel: false,
+        movimentos_considerados: monthlyMovements.length,
+        sem_movimentacoes: monthlyMovements.length === 0,
+        periodo_referencia_parcial: monthKey(now) === effectiveReferencePeriod,
         qualidade,
       },
       limitacoes,
       metas: analyzedGoals,
     } as GoalAnalysisResult;
+    return fitGoalAnalysisResult(result);
   }
 }
 

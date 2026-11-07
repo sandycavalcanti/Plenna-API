@@ -61,6 +61,7 @@ function fakeDatabase() {
     },
   ];
   const movements = [
+    movement(0, 1, 'DEPOSITO', '999.99', '2026-06-30T12:00:00.000Z'),
     // 2026-08-01T02:30Z ainda e 31/07 em Sao Paulo; deve cair em julho.
     movement(1, 1, 'DEPOSITO', '100.00', '2026-07-31T23:30:00.000Z'),
     movement(2, 1, 'DEPOSITO', '5.00', '2026-08-01T02:30:00.000Z'),
@@ -70,7 +71,8 @@ function fakeDatabase() {
     movement(6, 1, 'RETIRADA', '100.00', '2026-10-06T12:00:00.000Z'),
     movement(7, 3, 'DEPOSITO', '90.00', '2026-10-10T12:00:00.000Z'),
   ];
-  return {
+  const movementQueries: any[] = [];
+  const database = {
     tb_meta: {
       findMany: async ({ where, take }: any) => goals
         .filter((goal) => goal.usuario_id === where.usuario_id)
@@ -78,26 +80,44 @@ function fakeDatabase() {
         .slice(0, take),
     },
     tb_meta_movimentacao: {
-      findMany: async ({ where, orderBy }: any) => movements
+      findMany: async (args: any) => {
+        const { where, orderBy } = args;
+        movementQueries.push(args);
+        return movements
         .filter((row) => where.meta_id.in.includes(row.meta_id))
+        .filter((row) => !where.meta_movimentacao_data?.gte || row.meta_movimentacao_data >= where.meta_movimentacao_data.gte)
         .filter((row) => !where.meta_movimentacao_data?.lt || row.meta_movimentacao_data < where.meta_movimentacao_data.lt)
         .sort((left, right) => (
           right.meta_movimentacao_data.getTime() - left.meta_movimentacao_data.getTime()
           || right.meta_movimentacao_id - left.meta_movimentacao_id
         ))
-        .map((row) => ({ ...row })),
+        .map((row) => ({ ...row }));
+      },
+      findFirst: async ({ where }: any) => movements
+        .filter((row) => row.meta_id === where.meta_id)
+        .filter((row) => !where.meta_movimentacao_data?.lt || row.meta_movimentacao_data < where.meta_movimentacao_data.lt)
+        .filter((row) => !where.meta_movimentacao_tipo || row.meta_movimentacao_tipo === where.meta_movimentacao_tipo)
+        .sort((left, right) => (
+          right.meta_movimentacao_data.getTime() - left.meta_movimentacao_data.getTime()
+          || right.meta_movimentacao_id - left.meta_movimentacao_id
+        ))[0] ?? null,
     },
   };
+  return Object.assign(database, { movementQueries });
 }
 
 test('agrega indicadores por mes no fuso de Sao Paulo com Decimal', async () => {
+  const database: any = fakeDatabase();
   const result = await GoalAnalyticsService.analyze(7, {
     periodo: '2026-10',
     meses: 4,
     limite_metas: 10,
     limite_movimentacoes_recentes: 10,
-  }, fakeDatabase(), NOW);
+  }, database, NOW);
 
+  assert.equal(database.movementQueries.length, 1);
+  assert.equal(database.movementQueries[0].where.meta_movimentacao_data.gte.toISOString(), '2026-07-01T03:00:00.000Z');
+  assert.equal(database.movementQueries[0].where.meta_movimentacao_data.lt.toISOString(), '2026-11-01T03:00:00.000Z');
   assert.equal(result.timezone, 'America/Sao_Paulo');
   const viagem: any = result.metas.find((goal) => goal.id === 1);
   assert.equal(viagem.valor_reservado, '65.00');
@@ -117,6 +137,7 @@ test('agrega indicadores por mes no fuso de Sao Paulo com Decimal', async () => 
   assert.equal(viagem.indicadores.frequencia_contribuicoes.total_depositos, 4);
   assert.equal(viagem.ultima_movimentacao.tipo, 'RETIRADA');
   assert.equal(viagem.ultimo_deposito.valor, '25.00');
+  assert.equal(viagem.saldo_atual_reservado, '65.00');
   assert.equal(viagem.indicadores.periodos_mensais[1].comparacao_com_mes_anterior.envolve_periodo_parcial, true);
 });
 
@@ -146,10 +167,41 @@ test('retorna metas somente do usuario autenticado, limites e periodo atual inco
   assert.equal(result.metas.some((goal: any) => goal.id === 99), false);
   assert.equal(result.cobertura.metas_limitadas, true);
   assert.equal(result.cobertura.dados_suficientes, false);
+  assert.equal(result.cobertura.saldo_historico_disponivel, false);
   assert.equal(result.cobertura.periodo_referencia_parcial, true);
   assert.equal(result.metas[0].indicadores.periodos_mensais.at(-1).parcial, true);
   assert.equal(result.metas[0].indicadores.periodos_mensais.at(-1).motivo_parcial, 'MES_ATUAL_INCOMPLETO');
   assert.equal(result.metas[0].movimentacoes_recentes.length <= 1, true);
+});
+
+test('nao transforma referencia futura em meses completos sem movimentacoes', async () => {
+  const result: any = await GoalAnalyticsService.analyze(7, {
+    periodo: '2027-02',
+    meses: 4,
+    limite_metas: 10,
+    limite_movimentacoes_recentes: 10,
+  }, fakeDatabase(), NOW);
+  assert.equal(result.periodo_referencia, '2027-02');
+  assert.equal(result.cobertura.fim_exclusivo, '2026-12-01T03:00:00.000Z');
+  assert.equal(result.cobertura.periodo_referencia_parcial, true);
+  assert.equal(result.cobertura.dados_suficientes, false);
+  assert.equal(result.limitacoes.some((item: string) => item.includes('futuro')), true);
+  assert.equal(result.metas[0].indicadores.periodos_mensais.some((period: any) => period.periodo.startsWith('2027-')), false);
+});
+
+test('ajusta o retorno ao limite do orchestrator sem perder a distinÃ§Ã£o do saldo atual', async () => {
+  const source: any = await GoalAnalyticsService.analyze(7, {
+    periodo: '2026-10',
+    meses: 12,
+    limite_metas: 10,
+    limite_movimentacoes_recentes: 10,
+  }, fakeDatabase(), NOW);
+  assert.equal(JSON.stringify({ ok: true, result: source }).length <= 12_000, true);
+  const { fitGoalAnalysisResult } = await import('../../src/modules/goal/goal-analytics.service.js');
+  const bounded: any = fitGoalAnalysisResult(source, 4_000);
+  assert.equal(JSON.stringify({ ok: true, result: bounded }).length <= 4_000, true);
+  assert.equal(bounded.cobertura.saldo_historico_disponivel, false);
+  assert.equal(bounded.limitacoes.some((item: string) => item.includes('limite de resposta')), true);
 });
 
 test('resultado vazio informa ausencia sem executar escrita', async () => {
