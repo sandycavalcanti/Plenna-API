@@ -1,6 +1,7 @@
 import { prisma } from '../../lib/prisma.js';
 import { CheckGoalDTO, CreateGoalDTO, UpdateGoalDTO } from './goal.schemas.js';
 import { AppError } from '../../errors/AppError.js';
+import { GoalMovementService } from './goal-movement.service.js';
 
 export class GoalService {
   // CREATE
@@ -19,12 +20,13 @@ export class GoalService {
   }
 
   // LIST BY USER ID
-  static async findAllByUserId(userId: number) {
+  static async findAllByUserId(userId: number, options: { includeSavings?: boolean } = {}) {
     const goals = await prisma.tb_meta.findMany({
       where: { usuario_id: userId },
       orderBy: { meta_data_criacao: 'desc' },
     });
-    return goals;
+    if (options.includeSavings !== true) return goals;
+    return GoalMovementService.enrichGoals(goals);
   }
 
   // CHECK GOAL

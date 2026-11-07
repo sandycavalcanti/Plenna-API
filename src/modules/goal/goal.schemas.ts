@@ -88,7 +88,9 @@ export const goalMovementErrorCodeSchema = z.enum([
   'DADOS_INVALIDOS',
   'META_NAO_ENCONTRADA',
   'SALDO_INSUFICIENTE',
+  'SALDO_LIMITE_EXCEDIDO',
   'OPERACAO_REUTILIZADA',
+  'ERRO_INTERNO',
 ]);
 
 export const goalMovementErrorSchema = z.object({

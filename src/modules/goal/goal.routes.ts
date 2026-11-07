@@ -7,5 +7,7 @@ export const goalRouter = Router();
 goalRouter.post("/", authMiddleware, GoalController.create);
 goalRouter.get("/", authMiddleware, GoalController.findAllByUserId);
 goalRouter.put("/check", authMiddleware, GoalController.checkGoal);
+goalRouter.post("/:id/movimentacoes", authMiddleware, GoalController.createMovement);
+goalRouter.get("/:id/movimentacoes", authMiddleware, GoalController.listMovements);
 goalRouter.put("/:id", authMiddleware, GoalController.update);
 goalRouter.delete("/:id", authMiddleware, GoalController.delete);
