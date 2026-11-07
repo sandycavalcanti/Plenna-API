@@ -6,7 +6,19 @@ import { HistoricoService } from './historico.service.js';
 import { DescobertasService } from './descobertas.service.js';
 import { AnaliseAutomaticaService } from './analise-automatica.service.js';
 import { handleError } from '../../utils/handleError.js';
+import { PanoramaService } from './panorama.service.js';
+import { UsoContextualService } from './uso-contextual.service.js';
 export const analisesRouter = Router();
+analisesRouter.get('/uso-contextual',authMiddleware,async(req,res)=>{
+  res.setHeader('Cache-Control','no-store');
+  try{return res.json(await UsoContextualService.consultar((req as import('../auth/auth.middleware.js').AuthRequest).userId!,req.query));}
+  catch(error){return handleError(res,500,error);}
+});
+analisesRouter.get('/panorama', authMiddleware, async(req,res)=>{
+  res.setHeader('Cache-Control','no-store');
+  try { return res.json(await PanoramaService.consultar((req as import('../auth/auth.middleware.js').AuthRequest).userId!,req.query)); }
+  catch(error) { return handleError(res,500,error); }
+});
 const querySchema = z.object({ periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/) }).strict();
 analisesRouter.get('/compras/:compraId/automatica',authMiddleware,async(req,res)=>{
  res.setHeader('Cache-Control','no-store');

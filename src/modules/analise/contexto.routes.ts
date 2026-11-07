@@ -65,13 +65,21 @@ contextoRouter.get('/:compraId/avaliacoes/atual', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
     const { compraId } = contextoParamsSchema.parse(req.params);
-    z.object({}).strict().parse(req.query);
+    const { explicacao } = z.object({ explicacao: z.literal('1').optional() }).strict().parse(req.query);
     return res.json(
-      await AvaliacaoService.consultar((req as AuthRequest).userId!, compraId),
+      await AvaliacaoService.consultar((req as AuthRequest).userId!, compraId, undefined, explicacao === '1'),
     );
   } catch (error) {
     return handleError(res, 500, error);
   }
+});
+contextoRouter.get('/:compraId/avaliacoes/historico', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { compraId } = contextoParamsSchema.parse(req.params);
+    const { antes, explicacao } = z.object({ explicacao: z.literal('1').optional(), antes: z.coerce.number().int().positive().max(2147483647).optional() }).strict().parse(req.query);
+    return res.json(await AvaliacaoService.historico((req as AuthRequest).userId!, compraId, antes, explicacao === '1'));
+  } catch (error) { return handleError(res, 500, error); }
 });
 contextoRouter.get('/:compraId/avaliacoes/:avaliacaoId', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -85,12 +93,13 @@ contextoRouter.get('/:compraId/avaliacoes/:avaliacaoId', async (req, res) => {
       .positive()
       .max(2147483647)
       .parse(req.params.avaliacaoId);
-    z.object({}).strict().parse(req.query);
+    const { explicacao } = z.object({ explicacao: z.literal('1').optional() }).strict().parse(req.query);
     return res.json(
       await AvaliacaoService.consultar(
         (req as AuthRequest).userId!,
         compraId,
         avaliacaoId,
+        explicacao === '1',
       ),
     );
   } catch (error) {

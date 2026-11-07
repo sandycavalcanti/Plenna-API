@@ -14,6 +14,8 @@ let rows,
   failUsage;
 const clone = (value) => structuredClone(value);
 const db = {
+  tb_compra_evento: { findMany: async () => [] },
+  $queryRaw: async () => [{ relation: null }], // RF017 v2 migration has not been applied in this fixture.
   tb_consentimento: {
     findFirst: async ({ where }) => {
       assert.equal(where.usuario_id, 1);

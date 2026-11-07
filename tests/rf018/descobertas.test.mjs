@@ -122,7 +122,7 @@ test('commercial date comes from the existing calendar, with email precision lim
   const { result } = run({
     compras: [],
     periodo: '2026-11',
-    extra: { data: '2026-11-27T00:00:00Z', email: true },
+    extra: { data: '2026-11-27T12:00:00Z', email: true },
   });
   const card = result.itens.find((i) => i.codigo === 'DATA_COMERCIAL');
   assert.match(card.titulo, /Black Friday/);

@@ -5,7 +5,6 @@ import { recomendar } from '../../src/modules/recomendacao/recomendacao.engine.t
 const row = (extra={})=>({id:1,usuarioId:1,ativa:true,status:'CONFIRMADA',horario:'2026-10-05T12:00:00Z',precisaoHorario:'APROXIMADO',valorLiquido:100,categorias:[2],origem:'MANUAL',referencias:['manual:1'],...extra});
 const snapshot=(extra={})=>({versaoContrato:1,usuarioId:1,janela:{periodo:'2026-10',observadoAte:'2026-10-11T00:00:00Z',cobertura:'COMPLETA'},compras:[row()],limiteIndividual:{valor:80,vigencia:'ATUAL_SEM_HISTORICO',referencia:'limite:atual'},orcamentoMensal:{valor:200,vigencia:'ATUAL_SEM_HISTORICO',referencia:'orcamento:atual'},...extra});
 const period=(extra={})=>analisarPeriodo(snapshot(extra));
-
 test('atenção removida não gera recomendação individual; orçamento e fatos permanecem',()=>{
  const data=snapshot({compras:[row({valorLiquido:250})],limiteIndividual:{valor:null,vigencia:'ATUAL_SEM_HISTORICO',referencia:'limite:atual'}});
  const before=structuredClone(data);
@@ -18,6 +17,11 @@ test('atenção removida não gera recomendação individual; orçamento e fatos
  assert.ok(recommendations.some(r=>r.codigo==='ACOMPANHAR_ORCAMENTO_EXCEDIDO'));
  assert.equal(analisarCompra({...data,compraId:1}).excessoLimiteCentavos,null);
  assert.deepEqual(data,before);
+});
+test('limite individual zero não gera recomendação de ultrapassagem',()=>{
+ const analysis=period({compras:[row({valorLiquido:250})],limiteIndividual:{valor:0,vigencia:'ATUAL_SEM_HISTORICO',referencia:'limite:zero'}});
+ assert.equal(analysis.indicadores.limiteIndividual.disponibilidade,'INDISPONIVEL');
+ assert.ok(!recomendar(analysis).recomendacoes.some((recommendation)=>recommendation.codigo==='REVISAR_LIMITE_INDIVIDUAL'));
 });
 test('known individual excess emits evidence-backed recommendation',()=>{
  const r=recomendar(period());assert.equal(r.recomendacoes.length,1);assert.equal(r.recomendacoes[0].codigo,'REVISAR_LIMITE_INDIVIDUAL');assert.ok(r.recomendacoes[0].referencias.includes('compra:1'));assert.match(r.recomendacoes[0].mensagem,/atualmente/);

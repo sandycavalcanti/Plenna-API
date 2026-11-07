@@ -13,8 +13,6 @@ import {
 
 const DAY = 86_400_000;
 const iso = (time: number) => new Date(time).toISOString();
-const day = (row: CompraHistorico) =>
-  businessDateKey(new Date(row.data!));
 const fraction = (n: number, denominator: number) =>
   denominator ? n / denominator : null;
 const median = (values: number[]) => {
@@ -93,6 +91,14 @@ function declaration(
 
 /** Análise descritiva pura: não infere respostas, grava dados ou classifica compras. */
 export function analisarHistorico(raw: unknown) {
+  // Request-local memoization: repeated comparisons never reconstruct the same
+  // civil day, and nothing survives this analysis or crosses user boundaries.
+  const days = new Map<number, string>();
+  const day = (row: CompraHistorico) => {
+    let value = days.get(row.id);
+    if (value === undefined) { value = businessDateKey(new Date(row.data!)); days.set(row.id, value); }
+    return value;
+  };
   const input = entradaHistoricoSchema.parse(raw);
   const { start, end } = parseMonth(input.periodo);
   const cutoff = new Date(input.observadoAte).getTime();

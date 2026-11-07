@@ -41,9 +41,10 @@ export function avaliarAutomaticamente(
   raw: EntradaHistorico,
   alvo?: CompraHistorico,
   complementos: ComplementosAutomaticos = {},
+  historicoPreparado?: ReturnType<typeof analisarHistorico>,
 ) {
   const input = entradaHistoricoSchema.parse(raw),
-    h = analisarHistorico(input);
+    h = historicoPreparado ?? analisarHistorico(input);
   input.observadoAte = new Date(input.observadoAte).toISOString();
   input.compras = input.compras.map((r) => ({
     ...r,
@@ -112,7 +113,7 @@ export function avaliarAutomaticamente(
       );
       return;
     }
-    const max = Math.max(...amounts);
+    const max = amounts.reduce((highest, value) => Math.max(highest, value), 0);
     evidencias.push({
       indicador,
       familia: 'VALORES',

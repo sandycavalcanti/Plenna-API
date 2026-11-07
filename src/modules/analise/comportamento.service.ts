@@ -4,6 +4,7 @@ import { AppError } from '../../errors/AppError.js';
 import { parseMonth, financialWhere } from '../compra/financeiro.js';
 import { analisarPeriodo } from './comportamento.engine.js';
 import { recomendar } from '../recomendacao/recomendacao.engine.js';
+import { comprasRestritasNoPeriodo } from '../compra/eventos.consulta.js';
 
 export class AnaliseComportamentalService {
   static async consultar(userId: number, periodo: string, now = new Date()) {
@@ -21,12 +22,16 @@ export class AnaliseComportamentalService {
       const cutoff = new Date(Math.min(now.getTime(), end.getTime()));
       const user = await tx.tb_usuario.findFirst({ where: { usuario_id: userId, usuario_status: true }, select: { usuario_meta_valor_compra: true, usuario_meta_valor_mensal: true } });
       if (!user) throw new AppError('Usuário não encontrado', 404);
-      const rows = await tx.tb_compra.findMany({
+      let rows = await tx.tb_compra.findMany({
         where: { ...financialWhere(userId, start), compra_horario: { gte: start, lt: cutoff } },
         select: { compra_id: true, usuario_id: true, compra_ativo: true, compra_status: true, compra_horario: true, compra_valor: true, compra_email: true,
           tb_compra_item: { where: { compra_item_ativo: 1 }, select: { categoria_id: true, tb_categoria: { select: { categoria_id: true, categoria_nome: true } } } } },
         orderBy: { compra_id: 'asc' },
       });
+      if (rows.length) {
+        const restricted = await comprasRestritasNoPeriodo(tx, userId, start, cutoff);
+        rows = rows.filter(row => !restricted.has(row.compra_id));
+      }
       const categories = new Map<number, string>();
       for (const row of rows) for (const item of row.tb_compra_item) if (item.tb_categoria) categories.set(item.tb_categoria.categoria_id, item.tb_categoria.categoria_nome);
       const analise = analisarPeriodo({

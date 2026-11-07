@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { avaliarAutomaticamente as avaliar } from '../../src/modules/analise/analise-automatica.engine.ts';
+import { analisarHistorico } from '../../src/modules/analise/historico.engine.ts';
 const row = (id, data, valor = '20', extra = {}) => ({
   id,
   usuarioId: 1,
@@ -47,6 +48,11 @@ function clustered() {
 }
 const context = (respostas) => ({
   contexto: { disponibilidade: 'DISPONIVEL', revisao: 1, respostas },
+});
+
+test('reutilizar histórico do mesmo snapshot conserva resultado e fingerprint sem dupla avaliação', () => {
+  const raw=input();
+  assert.deepEqual(avaliar(raw,target(),{},analisarHistorico(raw)),avaliar(raw,target()));
 });
 
 test('A: atypical purchase produces automatic signals without any contextual response', () => {

@@ -17,6 +17,8 @@ import {
 import { respostasContextoSchema } from './contexto.schemas.js';
 import { interpretarCompra } from './interpretacao.engine.js';
 import { createHash } from 'node:crypto';
+import { resumirEventos } from '../compra/eventos.engine.js';
+import { comprasRestritasNoPeriodo } from '../compra/eventos.consulta.js';
 import { refletirHistorico } from './historico.reflexoes.js';
 
 function canonical(value: unknown): string {
@@ -67,7 +69,7 @@ export async function snapshot(
     start.getUTCFullYear(),
     start.getUTCMonth() - meses,
   ).start;
-  const rows = await tx.tb_compra.findMany({
+  let rows = await tx.tb_compra.findMany({
     where: {
       usuario_id: userId,
       compra_ativo: 1,
@@ -107,6 +109,13 @@ export async function snapshot(
     },
     orderBy: [{ compra_horario: 'asc' }, { compra_id: 'asc' }],
   });
+  // One ledger read for the bounded historical window, never one per purchase.
+  // Reuse the domain reducer: latest visibility per scope and corrected events
+  // must agree with the Panorama universe, including hidden individual items.
+  if (rows.length) {
+    const restricted = await comprasRestritasNoPeriodo(tx, userId, from, cutoff);
+    rows = rows.filter(row => !restricted.has(row.compra_id));
+  }
   const recurring = somenteAutomatico
     ? []
     : await tx.tb_compra_recorrencia.findMany({
@@ -147,6 +156,7 @@ export async function snapshot(
             | undefined);
       if (context && !Array.isArray(context.itens))
         throw Error('ANALISE_HISTORY_CONTEXT_ITEMS_INVALID');
+      const activeItems = new Set(row.tb_compra_item.map(item => item.compra_item_id));
       return {
         id: row.compra_id,
         usuarioId: row.usuario_id,
@@ -180,11 +190,7 @@ export async function snapshot(
               revisao: context.revisao,
               respostas: readAnswers(context.respostas),
               itens: context.itens
-                .filter((i) =>
-                  row.tb_compra_item.some(
-                    (active) => active.compra_item_id === i.compra_item_id,
-                  ),
-                )
+                .filter((i) => activeItems.has(i.compra_item_id))
                 .map((i) => ({
                   itemId: i.compra_item_id,
                   planejamento: i.planejamento,
@@ -243,6 +249,11 @@ export class HistoricoService {
           },
         });
         if (!purchase) throw new AppError('Compra não encontrada', 404);
+        const events = resumirEventos(await tx.tb_compra_evento.findMany({
+          where: { usuario_id: userId, compra_id: compraId }, orderBy: { revisao: 'asc' },
+        }));
+        if (events.oculto || events.itensOcultos.length) throw new AppError('Compra não encontrada', 404);
+        if (events.cancelamentos) throw new AppError('Compra ainda não elegível para histórico', 409);
         if (
           purchase.compra_status !== 'CONFIRMADA' ||
           purchase.compra_horario > now
