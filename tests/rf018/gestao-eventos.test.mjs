@@ -7,7 +7,13 @@ import {
   eventosVigentes,
   resumirEventos,
 } from '../../src/modules/compra/eventos.engine.ts';
-globalThis.prismaRuntime = { client: {}, pool: { end: async () => {} } };
+let referenciaExistente = null;
+const referenceDb = {
+  $queryRaw: async () => [{ usuario_id: 1 }],
+  tb_referencia_financeira: { findUnique: async () => referenciaExistente },
+};
+referenceDb.$transaction = async work => work(referenceDb);
+globalThis.prismaRuntime = { client: referenceDb, pool: { end: async () => {} } };
 const { referenciaNaData, ReferenciasService } = await import(
   '../../src/modules/compra/referencias.service.ts'
 );
@@ -225,6 +231,7 @@ test('monthly aggregation never invents prorating, future scheduling or historic
     (e) => e.statusCode === 422,
   );
 });
+
 test('migration is additive, changes only the two new tables and contains no backfill or enum alteration', () => {
   const sql = readFileSync(
     new URL(

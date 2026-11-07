@@ -10,6 +10,7 @@ Object.assign(process.env, { GOOGLE_CLIENT_ID: 'offline', GOOGLE_CLIENT_SECRET: 
 let rows, created, budget, active, fail, queries, transactions;
 const now = new Date('2026-10-12T12:00:00Z');
 const fake = {
+  tb_compra_evento: { findMany: async () => [] },
   tb_usuario: { findFirst: async ({where, select}) => !active ? null : select.usuario_id ? {usuario_id: where.usuario_id} : select.usuario_data_criacao ? {usuario_data_criacao: created} : {usuario_meta_valor_compra: 100, usuario_meta_valor_mensal: budget} },
   tb_compra: {
     findFirst: async ({where}) => { queries.push(where); return rows.filter(r => r.usuario_id === where.usuario_id && r.compra_ativo === 1 && r.compra_status === 'CONFIRMADA' && r.compra_horario < where.compra_horario.lt).sort((a,b)=>a.compra_horario-b.compra_horario)[0] ?? null; },
