@@ -1,3 +1,4 @@
+import { classificacoesAgregadoSql, type ClassificacaoAgregada } from '../compra/eventos.consulta.js';
 import { segundosDoRegistro } from '../tempo-uso/tempo-uso.duracao.js';
 import { legacyReadOverlay } from '../tempo-uso-v2/legacy.runtime.js';
 import { Prisma } from '@prisma/client';
@@ -316,6 +317,7 @@ function registrarIgnorados(indicador: string, quantidade: number) {
  */
 export class DashboardService {
   static async analytics(userId: number, query: AnalyticsQueryDTO): Promise<AnalyticsResponseDTO> {
+    const observedAt = new Date();
     const periodDefinitions = buildAnalyticsPeriods(query);
     const periods = periodDefinitions.map(createMutablePeriod);
     const rangeStart = new Date(Math.min(...periods.map((period) => period.start.getTime())));
@@ -388,20 +390,7 @@ export class DashboardService {
           });
         }
 
-        if (purchase.compra_classificacao) {
-          const classification = purchase.compra_classificacao as AnalyticsImpulsivityDTO['compra_classificacao'];
-          const impulsivity = period.impulsividade.get(classification);
-          if (impulsivity) {
-            impulsivity.quantidade += 1;
-            impulsivity.valor_total_centavos += purchaseCents;
-          } else {
-            period.impulsividade.set(classification, {
-              compra_classificacao: classification,
-              quantidade: 1,
-              valor_total_centavos: purchaseCents,
-            });
-          }
-        }
+
       }
 
       if (purchase.compra_acima_limite === true) {
@@ -436,6 +425,15 @@ export class DashboardService {
       }
     }
 
+    // Only classification counts use this extra set-based read; financial cards
+    // keep their existing contracts. One query for all requested windows.
+    const classificacoes = await prisma.$queryRaw<ClassificacaoAgregada[]>(classificacoesAgregadoSql(userId,
+      periodDefinitions.map(p=>({inicio:p.start,fim:new Date(Math.min(p.end.getTime(),observedAt.getTime()))}))));
+    for(const group of classificacoes) {
+      const period=periods.find(p=>p.key===group.periodo);
+      if(period)period.impulsividade.set(group.compra_classificacao,{compra_classificacao:group.compra_classificacao,
+        quantidade:group.quantidade,valor_total_centavos:group.valor_total_centavos??0});
+    }
     const serializedPeriods = periods.map(serializePeriod);
     const comparacao = query.mode === 'compare'
       ? buildComparison(serializedPeriods[0], serializedPeriods[1])
@@ -569,35 +567,17 @@ export class DashboardService {
   }
 
   static async findImpulsividade(userId: number, periodo?: unknown): Promise<ImpulsividadeDTO[]> {
-    const { start, end } = parseMonth(periodo);
+    const { start } = parseMonth(periodo);
+    const end = financialWhere(userId, start).compra_horario.lt;
 
-    const grupos = await prisma.tb_compra.groupBy({
-      where: {
-        usuario_id: userId,
-        compra_ativo: 1,
-        compra_status: 'CONFIRMADA',
-        compra_horario: {
-          gte: start,
-          lt: end,
-        },
-      },
-      by: ['compra_classificacao'],
-      _count: {
-        _all: true,
-        compra_valor: true,
-      },
-      _sum: {
-        compra_valor: true,
-      },
-    });
-
-    registrarIgnorados('impulsividade', grupos.reduce((total, grupo) => total + grupo._count._all - grupo._count.compra_valor, 0));
+    const grupos = await prisma.$queryRaw<ClassificacaoAgregada[]>(classificacoesAgregadoSql(userId,[{inicio:start,fim:end}]));
+    registrarIgnorados('impulsividade', grupos.reduce((total, grupo) => total + grupo.quantidade - grupo.quantidade_com_valor, 0));
     return grupos.map((grupo) => ({
       compra_classificacao: grupo.compra_classificacao,
-      quantidade: grupo._count.compra_valor, // Compatibilidade: contagem com valor conhecido.
-      quantidade_total: grupo._count._all,
-      quantidade_sem_valor: grupo._count._all - grupo._count.compra_valor,
-      valor_total: grupo._sum.compra_valor === null ? null : toNumber(grupo._sum.compra_valor),
+      quantidade: grupo.quantidade_com_valor, // Compatibility: known-value count.
+      quantidade_total: grupo.quantidade,
+      quantidade_sem_valor: grupo.quantidade - grupo.quantidade_com_valor,
+      valor_total: grupo.valor_total_centavos === null ? null : grupo.valor_total_centavos/100,
     })).sort((a, b) => a.compra_classificacao.localeCompare(b.compra_classificacao));
   }
 

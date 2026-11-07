@@ -18,7 +18,7 @@ export class AnaliseAutomaticaService {
   static async periodo(userId: number, periodo: string, now = new Date()) {
     const result = await prisma.$transaction(
       async (tx) => {
-        const { fontes } = await snapshot(
+        const { fontes, historico } = await snapshot(
           tx,
           userId,
           periodo,
@@ -27,7 +27,7 @@ export class AnaliseAutomaticaService {
           undefined,
           true,
         );
-        return avaliarAutomaticamente(fontes);
+        return avaliarAutomaticamente(fontes, undefined, {}, historico);
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
@@ -43,8 +43,18 @@ export class AnaliseAutomaticaService {
         if (!p) throw new AppError('Compra não encontrada', 404);
         if (p.compra_status !== 'CONFIRMADA' || p.compra_horario > now)
           throw new AppError('Compra não elegível para análise', 409);
+        const events = resumirEventos(
+          await tx.tb_compra_evento.findMany({
+            where: { compra_id: compraId, usuario_id: userId },
+            orderBy: { revisao: 'asc' },
+          }),
+        );
+        if (events.oculto || events.itensOcultos.length)
+          throw new AppError('Compra não encontrada', 404);
+        if (events.cancelamentos)
+          throw new AppError('Compra não elegível para análise', 409);
         const day = businessDateKey(p.compra_horario);
-        const { fontes, user } = await snapshot(
+        const { fontes, user, historico } = await snapshot(
           tx,
           userId,
           day.slice(0, 7),
@@ -67,12 +77,6 @@ export class AnaliseAutomaticaService {
           String(refs[0].valor) !== String(user.usuario_meta_valor_compra)
         )
           historical = null;
-        const events = resumirEventos(
-          await tx.tb_compra_evento.findMany({
-            where: { compra_id: compraId, usuario_id: userId },
-            orderBy: { revisao: 'asc' },
-          }),
-        );
         const complementos: ComplementosAutomaticos = {
           limiteHistoricoCentavos:
             historical?.valor == null
@@ -108,7 +112,7 @@ export class AnaliseAutomaticaService {
           recorrenciaId: p.compra_recorrencia_id,
           contexto: null,
         };
-        return { fontes, alvo, complementos };
+        return { fontes, alvo, complementos, historico };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
@@ -139,6 +143,7 @@ export class AnaliseAutomaticaService {
         result.fontes,
         result.alvo,
         result.complementos,
+        result.historico,
       ),
       avaliadoEm: now.toISOString(),
     };

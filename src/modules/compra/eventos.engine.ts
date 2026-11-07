@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { AppError } from '../../errors/AppError.js';
+import { businessDateKey } from './financeiro.js';
 import type { EventoCompraDTO } from './eventos.schemas.js';
 export type EventoRegistro = {
   evento_id: number;
@@ -19,40 +20,40 @@ export function eventosVigentes(rows: EventoRegistro[]) {
   );
   return rows.filter((e) => !corrected.has(e.evento_id) && !e.anulado);
 }
-export function resumirEventos(rows: EventoRegistro[]) {
-  const atuais = eventosVigentes(rows),
-    refunds = atuais.filter((e) => e.tipo === 'REEMBOLSO');
-  const total = refunds.reduce(
-    (n, e) => n + Number((e.dados as { valorCentavos: number }).valorCentavos),
-    0,
-  );
-  const last = (tipo: string, itemId: number | null) =>
-    atuais
-      .filter((e) => e.tipo === tipo && e.compra_item_id === itemId)
-      .sort((a, b) => b.revisao - a.revisao)[0];
-  const hidden = last('OCULTACAO', null);
-  const classification = last('CLASSIFICACAO', null);
+/** Acumula o mesmo resumo do dom?nio em ordem decrescente, sem reter o ledger inteiro. */
+export function criarResumoEventosDesc() {
+  const substituidos=new Set<number>();
+  const items=new Map<number,{primeira:number;oculto?:boolean}>();
+  let revisao=0,reembolsadoCentavos=0,reembolsosSemData=0,cancelamentos=0,devolucoes=0;
+  let oculto=false,privacidadeVista=false,classificacao:string|null=null,classificacaoVista=false;
   return {
-    revisao: rows.reduce((n, e) => Math.max(n, e.revisao), 0),
-    reembolsadoCentavos: total,
-    reembolsosSemData: refunds.filter((e) => !e.efetiva_em).length,
-    oculto: hidden ? (hidden.dados as { oculto: boolean }).oculto : false,
-    itensOcultos: [
-      ...new Set(
-        atuais.flatMap((e) =>
-          e.compra_item_id === null ? [] : [e.compra_item_id],
-        ),
-      ),
-    ].filter((id) => {
-      const e = last('OCULTACAO', id);
-      return e && (e.dados as { oculto: boolean }).oculto;
-    }),
-    classificacao: classification
-      ? (classification.dados as { classificacao: string }).classificacao
-      : null,
-    cancelamentos: atuais.filter((e) => e.tipo === 'CANCELAMENTO').length,
-    devolucoes: atuais.filter((e) => e.tipo === 'DEVOLUCAO').length,
+    adicionar(e:EventoRegistro) {
+      revisao=Math.max(revisao,e.revisao);
+      const corrigido=substituidos.delete(e.evento_id);
+      if(e.corrige_evento_id!==null)substituidos.add(e.corrige_evento_id);
+      if(corrigido||e.anulado)return;
+      const dados=e.dados as {oculto?:boolean;classificacao?:string;valorCentavos?:number};
+      if(e.tipo==='REEMBOLSO'){reembolsadoCentavos+=Number(dados.valorCentavos);if(!e.efetiva_em)reembolsosSemData++;}
+      if(e.tipo==='CANCELAMENTO')cancelamentos++;
+      if(e.tipo==='DEVOLUCAO')devolucoes++;
+      if(e.compra_item_id!==null){
+        const item=items.get(e.compra_item_id)??{primeira:e.revisao};item.primeira=Math.min(item.primeira,e.revisao);
+        if(e.tipo==='OCULTACAO'&&item.oculto===undefined)item.oculto=dados.oculto===true;
+        items.set(e.compra_item_id,item);
+      }else{
+        if(e.tipo==='OCULTACAO'&&!privacidadeVista){oculto=dados.oculto===true;privacidadeVista=true;}
+        if((e.tipo==='CLASSIFICACAO'||e.tipo==='RESPOSTA_ANALISE'&&dados.classificacao==='IMPULSIVA')&&!classificacaoVista){classificacao=dados.classificacao??null;classificacaoVista=true;}
+      }
+    },
+    resultado(){return {revisao,reembolsadoCentavos,reembolsosSemData,oculto,
+      itensOcultos:[...items].filter(([,item])=>item.oculto).sort((a,b)=>a[1].primeira-b[1].primeira).map(([id])=>id),
+      classificacao,cancelamentos,devolucoes};},
   };
+}
+export function resumirEventos(rows: EventoRegistro[]) {
+  const resumo=criarResumoEventosDesc();
+  for(const row of [...rows].sort((a,b)=>b.revisao-a.revisao))resumo.adicionar(row);
+  return resumo.resultado();
 }
 export function validarEventoFinanceiro(
   data: EventoCompraDTO,
@@ -67,7 +68,7 @@ export function validarEventoFinanceiro(
   },
   now: Date,
 ) {
-  if (data.dataEfetiva && data.dataEfetiva > now.toISOString().slice(0, 10))
+  if (data.dataEfetiva && data.dataEfetiva > businessDateKey(now))
     throw new AppError('A data do evento não pode estar no futuro', 400);
   if (data.anulado && !data.corrigeEventoId)
     throw new AppError('Selecione o evento que deseja corrigir', 400);

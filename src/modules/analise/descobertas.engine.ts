@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { cents } from '../compra/financeiro.js';
+import { businessDateKey, cents } from '../compra/financeiro.js';
 import { SEASONAL_EVENTS } from '../notification/seasonal-calendar.js';
 import type { ResultadoHistorico } from './historico.engine.js';
 import type { CompraHistorico } from './historico.schemas.js';
@@ -218,7 +218,7 @@ export function descobrirCompra({
         : {}),
     });
   }
-  const day = compra.data.slice(0, 10),
+  const day = businessDateKey(new Date(compra.data)),
     [year, month, date] = day.split('-').map(Number);
   const seasonal = SEASONAL_EVENTS.find((e) => {
     const d = e.resolveDate(year!);

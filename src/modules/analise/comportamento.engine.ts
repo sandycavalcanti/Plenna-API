@@ -23,6 +23,7 @@ function limitations(input: EntradaPeriodo) {
     ...(!input.anterior ? ['HISTORICO_NAO_FORNECIDO'] : []),
     ...(input.compras.some(row => row.precisaoHorario !== 'INSTANTE') ? ['HORARIOS_NAO_COMPROVADOS'] : []),
     ...(input.limiteIndividual.vigencia === 'ATUAL_SEM_HISTORICO' || input.orcamentoMensal.vigencia === 'ATUAL_SEM_HISTORICO' ? ['LIMITES_ATUAIS_SEM_VIGENCIA_HISTORICA'] : []),
+    'RF017_NAO_UTILIZADO_NESTE_BLOCO',
   ];
 }
 const assessment = (eligible: boolean) => ({ estado: eligible ? 'DADOS_INSUFICIENTES' as const : 'NAO_AVALIAVEL' as const, regrasAplicadas: [], justificativas: ['REGRAS_COMPORTAMENTAIS_NAO_APROVADAS'] });

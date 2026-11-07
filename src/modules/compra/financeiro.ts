@@ -3,8 +3,8 @@ import { AppError } from '../../errors/AppError.js';
 
 export const BUSINESS_TIMEZONE = 'America/Sao_Paulo' as const;
 
-function zonedParts(date: Date) {
-  const parts = new Intl.DateTimeFormat('en-US', {
+// Locale/timezone configuration is immutable and contains no user data.
+const businessFormatter = new Intl.DateTimeFormat('en-US', {
     timeZone: BUSINESS_TIMEZONE,
     year: 'numeric',
     month: '2-digit',
@@ -13,7 +13,9 @@ function zonedParts(date: Date) {
     minute: '2-digit',
     second: '2-digit',
     hourCycle: 'h23',
-  }).formatToParts(date);
+  });
+function zonedParts(date: Date) {
+  const parts = businessFormatter.formatToParts(date);
   return Object.fromEntries(
     parts
       .filter((part) => part.type !== 'literal')
@@ -86,10 +88,10 @@ export function parseMonth(periodo: unknown, now = new Date()) {
   const [year, month] = periodo.split('-').map(Number);
   return businessMonthBounds(year!, month! - 1);
 }
-export function financialWhere(userId: number, referenceDate: Date) {
+export function financialWhere(userId: number, referenceDate: Date, now = new Date()) {
   const { start, end } = getMonthBounds(referenceDate);
   return { usuario_id: userId, compra_ativo: 1, compra_status: 'CONFIRMADA' as const,
-    compra_horario: { gte: start, lt: end } };
+    compra_horario: { gte: start, lt: new Date(Math.min(end.getTime(), now.getTime())) } };
 }
 export function cents(value: Prisma.Decimal | number | string) {
   const result = new Prisma.Decimal(value).mul(100).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
@@ -101,7 +103,8 @@ export function summarizeValues(values: Array<Prisma.Decimal | number | string |
   const totalCents = known.reduce<number>((sum, v) => sum + cents(v), 0);
   if (!Number.isSafeInteger(totalCents)) throw new AppError('Total financeiro inválido', 500);
   const qualidade = !values.length ? 'SEM_COMPRAS' : !known.length ? 'INSUFICIENTE' : known.length !== values.length ? 'PARCIAL' : 'COMPLETO';
-  const budgetCents = budget === null || cents(budget) === 0 ? null : cents(budget);
+  const parsedBudgetCents = budget === null ? null : cents(budget);
+  const budgetCents = parsedBudgetCents !== null && parsedBudgetCents > 0 ? parsedBudgetCents : null;
   const estadoOrcamento = budgetCents === null ? 'SEM_ORCAMENTO' : !known.length && values.length ? 'INDETERMINADO' :
     totalCents > budgetCents ? 'EXCEDIDO' : qualidade === 'PARCIAL' ? 'INDETERMINADO' : totalCents === budgetCents ? 'ATINGIDO' : 'DENTRO';
   return { totalConhecido: totalCents / 100, total: qualidade === 'INSUFICIENTE' ? null : totalCents / 100,

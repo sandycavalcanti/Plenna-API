@@ -26,7 +26,7 @@ export type RecommendationContext = {
 };
 const sorted = (values: string[]) => [...new Set(values)].sort();
 
-/** Pure consumer of ANALISE v1. Invalid contracts throw; empty success is explicit.
+/** Pure consumer of descriptive analysis v1. Invalid contracts throw; empty success is explicit.
  * No money calculation, behavioral evaluation, clock, I/O or Android dependency.
  */
 export function recomendar(raw: unknown, context: RecommendationContext = {}) {
@@ -43,10 +43,10 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     if (financeiro.estadoOrcamento === 'EXCEDIDO' && orcamento.estadoNoUniversoObservado === 'EXCEDIDO' && orcamento.disponibilidade !== 'INDISPONIVEL' && financeiro.orcamentoMensal !== null && financeiro.orcamentoMensal > 0 && financeiro.comprasComValor > 0 && budgetEvidence && knownEvidence.length > 0) {
       const current = orcamento.vigencia === 'ATUAL_SEM_HISTORICO';
       recommendations.push({
-        codigo: 'ACOMPANHAR_ORCAMENTO_EXCEDIDO', prioridade: 1, titulo: 'Observe seu orçamento',
+        codigo: 'ACOMPANHAR_ORCAMENTO_EXCEDIDO', prioridade: 1, titulo: 'Acompanhe seu orçamento',
         mensagem: current
-          ? 'O total conhecido dos gastos registrados já ultrapassou o orçamento mensal atualmente informado. Talvez seja um bom momento para olhar as despesas recentes e identificar onde economizar nas próximas compras. Quer analisar isso comigo?'
-          : 'O total conhecido dos gastos do período ultrapassou o orçamento informado para essa janela. Vale olhar as despesas recentes e pensar em prioridades para as próximas compras. Quer analisar isso comigo?',
+          ? 'O total conhecido das compras registradas supera o orçamento mensal atualmente informado. Acompanhe as próximas compras; isso não comprova qual orçamento estava vigente nas compras.'
+          : 'O total conhecido das compras registradas supera o orçamento informado para o período. Revise o planejamento para os próximos gastos.',
         referencias: sorted([...budgetEvidence.referencias, ...knownEvidence.flatMap(e => e.referencias)]),
         limitacoes: sorted([...input.limitacoes, ...(financeiro.qualidade === 'PARCIAL' || orcamento.disponibilidade === 'PARCIAL' ? ['TOTAL_CONHECIDO_NAO_REPRESENTA_CONSUMO_COMPLETO'] : [])]),
       });
@@ -55,10 +55,10 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
     const excessEvidence = limiteIndividual.desvios.filter(d => d.excessoCentavos > 0).map(d => purchaseEvidence(d.compraId)).filter(e => e !== undefined);
     if (limiteIndividual.disponibilidade !== 'INDISPONIVEL' && limiteIndividual.limiteCentavos !== null && limiteIndividual.limiteCentavos > 0 && limitEvidence && excessEvidence.length > 0) {
       recommendations.push({
-        codigo: 'REVISAR_LIMITE_INDIVIDUAL', prioridade: 2, titulo: 'Observe gastos acima do limite',
+        codigo: 'REVISAR_LIMITE_INDIVIDUAL', prioridade: 2, titulo: 'Confira seu limite por compra',
         mensagem: limiteIndividual.vigencia === 'ATUAL_SEM_HISTORICO'
-          ? 'Há compras registradas com valor conhecido acima do limite por compra atualmente informado. Que tal analisarmos esses gastos e pensarmos em maneiras de evitar novos excessos? Pequenas decisões podem ajudar a manter seu planejamento.'
-          : 'Há compras registradas com valor conhecido acima do limite por compra informado para o período. Vale analisar esses gastos e pensar em alternativas para as próximas compras.',
+          ? 'Há compras registradas com valor conhecido acima do limite individual atualmente informado. Confira se esse limite corresponde ao seu planejamento atual.'
+          : 'Há compras registradas com valor conhecido acima do limite individual informado para o período. Confira seu planejamento antes de novas compras.',
         referencias: sorted([...limitEvidence.referencias, ...excessEvidence.flatMap(e => e.referencias)]),
         limitacoes: sorted([...input.limitacoes, ...(limiteIndividual.disponibilidade === 'PARCIAL' ? ['COMPARACAO_RESTRITA_A_COMPRAS_COM_EVIDENCIA'] : [])]),
       });
@@ -124,6 +124,11 @@ export function recomendar(raw: unknown, context: RecommendationContext = {}) {
   return resultadoRecomendacoesSchema.parse({
     versaoContrato: 1, versaoRegras: 'financeiras-1', estado: recommendations.length ? 'COM_RECOMENDACOES' : 'SEM_RECOMENDACOES_ELEGIVEIS', acao: recommendations.length ? 'RECOMENDAR' : 'NENHUMA_ACAO',
     recomendacoes: recommendations.slice(0, context.maxCandidates ?? 3),
-    regrasDesativadas: ['DIAGNOSTICO_PSICOLOGICO', 'CAUSALIDADE_NAO_COMPROVADA', ...(expanded ? [] : ['CONCENTRACAO_CATEGORIA_SEM_PARAMETROS_APROVADOS'])],
+    regrasDesativadas: [
+      'DIAGNOSTICO_PSICOLOGICO',
+      'CAUSALIDADE_NAO_COMPROVADA',
+      ...(expanded ? [] : ['CONCENTRACAO_CATEGORIA_SEM_PARAMETROS_APROVADOS']),
+      'APROXIMACAO_ORCAMENTO_SEM_PARAMETRO_APROVADO',
+    ],
   });
 }
