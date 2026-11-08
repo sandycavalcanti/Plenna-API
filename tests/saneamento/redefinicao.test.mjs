@@ -81,6 +81,24 @@ test('logger não copia campos livres do erro', () => {
   assert.equal(evento.categoria, 'autenticacao');
   assert.ok(!JSON.stringify(evento).includes('VAZAMENTO'));
 });
+test('logger SMTP registra diagnóstico seguro sem copiar resposta ou credencial', () => {
+  logSeguro('redefinicao_smtp_falhou', {
+    name: 'Error',
+    code: 'EAUTH',
+    responseCode: 535,
+    command: 'AUTH',
+    response: '535 senha-secreta-do-servidor',
+    message: 'segredo interno',
+  }, 'correlacao-teste', { etapa: 'smtp.sendMail' });
+  const evento = console.error.mock.calls[0].arguments[0];
+  assert.equal(evento.categoria, 'autenticacao');
+  assert.equal(evento.etapa, 'smtp.sendMail');
+  assert.equal(evento.codigo_smtp, 'EAUTH');
+  assert.equal(evento.codigo_resposta_smtp, 535);
+  assert.equal(evento.comando_smtp, 'AUTH');
+  assert.ok(!JSON.stringify(evento).includes('senha-secreta-do-servidor'));
+  assert.ok(!JSON.stringify(evento).includes('segredo interno'));
+});
 test('HMAC separa contexto, normaliza email e SQL é parametrizado', async () => {
   await permitirRedefinicao(' TESTE@example.invalid ', '127.0.0.1');
   const chamadas = client.$queryRaw.mock.calls;

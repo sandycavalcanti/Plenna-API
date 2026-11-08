@@ -15,6 +15,13 @@ function requireEnv(name) {
 const nodeEnv = process.env.NODE_ENV ?? "development";
 const portRaw = process.env.PORT ?? "3000";
 const port = Number(portRaw);
+// A recuperação de senha pode usar uma caixa SMTP própria. Mantemos
+// SMTP_* como fallback para não quebrar ambientes já configurados.
+const smtpHost = process.env.PASSWORD_RESET_SMTP_HOST || process.env.SMTP_HOST;
+const smtpPortRaw = process.env.PASSWORD_RESET_SMTP_PORT || process.env.SMTP_PORT || "587";
+const smtpUser = process.env.PASSWORD_RESET_SMTP_USER || process.env.SMTP_USER;
+const smtpPass = process.env.PASSWORD_RESET_SMTP_PASS || process.env.SMTP_PASS;
+const smtpFrom = process.env.PASSWORD_RESET_SMTP_FROM || process.env.SMTP_FROM || smtpUser;
 // Os limites da sincronização são configuráveis para controlar a quantidade
 // de trabalho realizada por uma única execução serverless.
 const emailSyncInitialMessagesRaw = process.env.EMAIL_SYNC_INITIAL_MESSAGES ?? "30";
@@ -103,6 +110,13 @@ function requireNonNegativeInteger(name, raw) {
     const value = Number(raw);
     if (!Number.isInteger(value) || value < 0) {
         throw new Error(`Invalid ${name} value: ${raw}`);
+    }
+    return value;
+}
+function parseSmtpPort(raw) {
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0 || value > 65535) {
+        throw new Error(`Invalid SMTP port value: ${raw}`);
     }
     return value;
 }
@@ -211,10 +225,10 @@ export const env = {
     proactivityQuietEnd: parseClock("AI_PROACTIVITY_QUIET_END", proactivityQuietEndRaw),
     proactivityTimezone: parseTimezone("AI_PROACTIVITY_TIMEZONE", proactivityTimezoneRaw),
     smtp: {
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-        from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+        host: smtpHost,
+        port: parseSmtpPort(smtpPortRaw),
+        user: smtpUser,
+        pass: smtpPass,
+        from: smtpFrom,
     },
 };

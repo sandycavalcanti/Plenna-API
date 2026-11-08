@@ -3,7 +3,7 @@ import { env } from "./env.js";
 let transporter = null;
 function getTransporter() {
     if (!env.smtp.host || !env.smtp.user || !env.smtp.pass) {
-        throw new Error("Envio de e-mail não configurado: defina SMTP_HOST, SMTP_USER e SMTP_PASS no .env");
+        throw new Error("Envio de e-mail não configurado: defina PASSWORD_RESET_SMTP_HOST, PASSWORD_RESET_SMTP_USER e PASSWORD_RESET_SMTP_PASS (ou SMTP_HOST, SMTP_USER e SMTP_PASS) no ambiente");
     }
     if (!transporter) {
         transporter = nodemailer.createTransport({

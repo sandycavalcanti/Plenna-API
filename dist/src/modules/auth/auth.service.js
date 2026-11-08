@@ -101,7 +101,7 @@ export class AuthService {
          <p>Esse código expira em ${RESET_CODE_TTL_MINUTES} minutos. Se você não pediu essa redefinição, ignore este e-mail.</p>`);
         }
         catch (error) {
-            logSeguro('redefinicao_smtp_falhou', error, correlacao);
+            logSeguro('redefinicao_smtp_falhou', error, correlacao, { etapa: 'smtp.sendMail' });
             try {
                 await prisma.tb_redefinicao_senha.update({
                     where: { redefinicao_senha_id: registro.redefinicao_senha_id },
