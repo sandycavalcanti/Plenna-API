@@ -282,3 +282,30 @@ test('janelas históricas preservam mês parcial, virada de ano e fevereiro biss
     assert.deepEqual(c.frequencia,{atual:0,anterior:0,diferenca:0});assert.equal(c.medianaCentavos,null);
   }
 });
+
+if (process.env.PLENNA_MOBILE_URL) test('Mobile valida indicadores financeiros e panorama comportamental via HTTP local', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { dashboardRouter } = await import('../../src/modules/dashboard/dashboard.routes.ts');
+  const app = express(); app.use('/dashboard', dashboardRouter); app.use('/analises', analisesRouter);
+  const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const token = jwt.sign({ userId: 7 }, process.env.JWT_SECRET);
+  const abort = new AbortController();
+  const storage = { captureSession: async () => ({ id: 7, signal: abort.signal }), assertSession() {} };
+  const client = { get: async (path, config) => {
+    const response = await fetch(origin + path + '?' + new URLSearchParams(config.params), { headers: { Authorization: `Bearer ${token}` }, signal: config.signal });
+    assert.equal(response.status, 200); return { data: await response.json() };
+  }};
+  try {
+    fixtures.compras = [compra(1, { compra_classificacao: 'IMPULSIVA' }), compra(2, { compra_valor: null })];
+    const source = await readFile(new URL('src/api/dashboard.js', process.env.PLENNA_MOBILE_URL), 'utf8');
+    const getAnalytics = new Function('apiClient', 'tokenStorage', source.replace(/^import .*;\r?\n/gm, '').replace('export async function getDashboardAnalytics', 'async function getDashboardAnalytics') + ';return getDashboardAnalytics;')(client, storage);
+    const analytics = await getAnalytics({ mode: 'month', month: '2026-10' });
+    assert.equal(analytics.periodos[0].quantidade_compras, 2);
+    assert.equal(analytics.periodos[0].quantidade_compras_com_valor, 1);
+    const { criarConsultaPanorama } = await import(new URL('src/services/panoramaComprasService.js', process.env.PLENNA_MOBILE_URL));
+    const states = []; const query = criarConsultaPanorama({ filtros: { modo: 'MES', mes: '2026-10' }, client, storage, onChange: state => states.push(state) });
+    await query.consultar(true, true); assert.equal(states.at(-1).status, 'ready'); assert.equal(states.at(-1).dados.universo, 2);
+    query.dispose();
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 process.env.DOTENV_CONFIG_PATH = fileURLToPath(new URL('./.absent-offline-env', import.meta.url));
 Object.assign(process.env, { NODE_ENV: 'test', DATABASE_URL: 'postgresql://localhost:1/offline', DIRECT_URL: 'postgresql://localhost:1/offline',
   GOOGLE_CLIENT_ID:'offline', GOOGLE_CLIENT_SECRET:'offline', GOOGLE_REDIRECT_URI:'https://example.invalid', JWT_SECRET:'offline-only' });
-delete process.env.ANALISE_LOCAL; delete process.env.VERCEL;
+delete process.env.RF018_LOCAL; delete process.env.ANALISE_LOCAL; delete process.env.VERCEL;
 let rows = [], metrics = [], events = [];
 let user = { usuario_meta_valor_mensal: 200, usuario_meta_valor_compra: 80 };
 const fake = {
@@ -30,7 +30,8 @@ const fake = {
       return event;
     },
   },
-  $queryRaw: async () => [],
+  $queryRaw: async () => [{tabela:'public.tb_referencia_financeira'}],
+  tb_referencia_financeira:{findFirst:async()=>user.usuario_meta_valor_mensal==null?null:({tipo:'ORCAMENTO_MENSAL',valor:user.usuario_meta_valor_mensal,periodo:'2026-10',origem:'DECLARADO',aplicacao:'MES_INTEIRO',vigente_desde:new Date('2026-10-01T12:00:00Z'),registrada_em:new Date('2026-10-01T12:00:00Z')})},
   tb_metricas: {
     findFirst: async ({where}) => metrics.find(m=>m.metricas_periodo_referencia.getTime()===where.metricas_periodo_referencia.getTime()),
     create: async ({data}) => { const m={metricas_id:metrics.length+1,...data}; metrics.push(m); return m; },
@@ -42,7 +43,7 @@ const { DashboardService }=await import('../../src/modules/dashboard/dashboard.s
 const { DashboardController }=await import('../../src/modules/dashboard/dashboard.controller.ts');
 const { CompraService }=await import('../../src/modules/compra/compra.service.ts');
 const { MetricasService }=await import('../../src/modules/compra/metricas.service.ts');
-const {parseMonth,metricPeriods,summarizeValues}=await import('../../src/modules/compra/financeiro.ts');
+const {parseMonth,metricPeriods,summarizeValues,financialWhere}=await import('../../src/modules/compra/financeiro.ts');
 const row=(overrides={})=>({compra_id:1,usuario_id:7,compra_ativo:1,compra_status:'CONFIRMADA',compra_horario:new Date('2026-10-15T12:00:00Z'),
   compra_valor:100,compra_desconto:20,compra_classificacao:'PENDENTE',forma_pagamento_id:null,compra_fonte:'Loja',tb_compra_item:[],...overrides});
 test.beforeEach(()=>{rows=[];metrics=[];events=[];user={usuario_meta_valor_mensal:200,usuario_meta_valor_compra:80};});
@@ -58,6 +59,15 @@ test('atenção desativada fica indisponível sem alterar compras ou orçamento 
   assert.equal(summary.orcamentoMensal,200);
   assert.deepEqual(rows,before);
  }
+});
+test('valor de compra zero permanece conhecido enquanto limite zero fica indisponível', async () => {
+ rows=[row({compra_valor:0})];
+ user.usuario_meta_valor_compra=0;
+ const summary=await DashboardService.resumoMensal(7,'2026-10');
+ assert.equal(summary.total,0);
+ assert.equal(summary.qualidade,'COMPLETO');
+ assert.equal(summary.limitePorCompra,null);
+ assert.equal(summary.comprasAcimaLimiteIndividual,null);
 });
 test('1: confirmed active only, excluding pending ignored deleted and other user',async()=>{
  rows=[row(),row({compra_status:'AGUARDANDO_CONFIRMACAO',compra_valor:50}),row({compra_ativo:0,compra_valor:30}),row({compra_status:'IGNORADA'}),row({usuario_id:8})];
@@ -87,16 +97,28 @@ test('unknown values never return stale cache as monthly summary',async()=>{
  rows=[row({compra_valor:null})];metrics=[{metricas_id:1,metricas_media_gasto:999,metricas_periodo_referencia:new Date('2026-10-01Z')}];
  assert.equal((await DashboardService.resumoMensal(7,'2026-10')).total,null);
 });
-test('6: inclusive UTC start and exclusive next month, independent of creation date',async()=>{
- rows=[row({compra_horario:new Date('2026-10-01T00:00:00Z')}),row({compra_horario:new Date('2026-11-01T00:00:00Z')})];
+test('6: business-month start and exclusive next month, independent of creation date',async()=>{
+ rows=[row({compra_horario:new Date('2026-10-01T03:00:00Z')}),row({compra_horario:new Date('2026-11-01T03:00:00Z')})];
  assert.equal((await DashboardService.resumoMensal(7,'2026-10')).comprasConfirmadas,1);
  assert.throws(()=>parseMonth('2026-13'));assert.throws(()=>parseMonth(['2026-10']));
 });
 test('7: actual update between December and January recalculates both months',async()=>{
- rows=[row({compra_horario:new Date('2026-12-31T23:00:00Z')})];
- await CompraService.update(7,1,{compraHorario:new Date('2027-01-01T03:00:00Z')});
+ rows=[row({compra_horario:new Date('2025-12-31T23:00:00Z')})];
+ await CompraService.update(7,1,{compraHorario:new Date('2026-01-01T03:00:00Z')});
  assert.equal(metrics.length,2);assert.deepEqual(metrics.map(m=>Number(m.metricas_media_gasto)),[0,100]);
  assert.equal(metricPeriods(new Date('2026-10-01T03:00:00Z'),new Date('2026-10-30T03:00:00Z')).length,1);
+});
+
+test('editar valor em novembro preserva data de outubro quando nenhuma data é enviada',async()=>{
+  rows=[row()];const original=rows[0].compra_horario.toISOString();
+  await CompraService.update(7,1,{compraValor:120});
+  assert.equal(rows[0].compra_horario.toISOString(),original);assert.equal(Number(rows[0].compra_valor),120);
+});
+
+test('F02: instante de corte exclui compras futuras sem alterar limites de meses encerrados',()=>{
+ const now=new Date('2026-11-03T12:00:00Z');
+ assert.equal(financialWhere(7,now,now).compra_horario.lt.toISOString(),now.toISOString());
+ assert.equal(financialWhere(7,new Date('2026-10-10T12:00:00Z'),now).compra_horario.lt.toISOString(),'2026-11-01T03:00:00.000Z');
 });
 test('8: exact budget is reached not exceeded; partial lower bound is inconclusive',async()=>{
  rows=[row({compra_valor:200})];assert.equal((await DashboardService.resumoMensal(7,'2026-10')).estadoOrcamento,'ATINGIDO');
@@ -116,15 +138,22 @@ test('10: controller failure is HTTP error never an empty successful financial s
 });
 
 test('dashboard descriptive queries use the selected business month and user before querying', async()=>{
- const calls=[];const originalFind=fake.tb_compra.findMany;
+ const calls=[];const originalFind=fake.tb_compra.findMany,originalRaw=fake.$queryRaw;
  fake.tb_compra.findMany=async args=>{calls.push(args.where);return [];};
  fake.tb_compra.groupBy=async args=>{calls.push(args.where);return [];};
  fake.tb_tempo_uso={findMany:async()=>[]};
+ fake.$queryRaw=async query=>{
+   if(!Array.isArray(query.values))return originalRaw(query);
+   assert.ok(query.values.includes(7));
+   const dates=query.values.filter(v=>v instanceof Date);
+   assert.equal(dates[0].toISOString(),'2025-12-01T03:00:00.000Z');assert.equal(dates[1].toISOString(),'2026-01-01T03:00:00.000Z');
+   assert.match(query.text,/p\.compra_ativo=1 AND p\.compra_status='CONFIRMADA'/);return [];
+ };
  try {
  for(const method of ['findGastosPorCategoria','findGastosPorFormaPagamento','findImpulsividade','findComprasAcimaLimite','findTempoVsGasto']) await DashboardService[method](7,'2025-12');
- assert.equal(calls.length,5);
+ assert.equal(calls.length,4);
  for(const where of calls){assert.equal(where.usuario_id,7);assert.equal(where.compra_ativo,1);assert.equal(where.compra_status,'CONFIRMADA');assert.equal(where.compra_horario.gte.toISOString(),'2025-12-01T03:00:00.000Z');assert.equal(where.compra_horario.lt.toISOString(),'2026-01-01T03:00:00.000Z');}
  for(const method of ['findGastosPorCategoria','findGastosPorFormaPagamento','findImpulsividade','findComprasAcimaLimite','findTempoVsGasto']) await assert.rejects(()=>DashboardService[method](7,'2026-13'));
- assert.equal(calls.length,5);
- }finally{fake.tb_compra.findMany=originalFind;delete fake.tb_compra.groupBy;delete fake.tb_tempo_uso;}
+ assert.equal(calls.length,4);
+ }finally{fake.tb_compra.findMany=originalFind;fake.$queryRaw=originalRaw;delete fake.tb_compra.groupBy;delete fake.tb_tempo_uso;}
 });

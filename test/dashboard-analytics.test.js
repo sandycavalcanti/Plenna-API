@@ -7,6 +7,7 @@ process.env.DIRECT_URL = 'postgresql://localhost:1/dashboard_analytics_offline';
 process.env.DATABASE_URL = process.env.DIRECT_URL;
 
 const client = {
+  $queryRaw: async () => [],
   tb_compra: {
     findMany: async () => { throw new Error('Consulta não simulada'); },
   },
@@ -26,6 +27,19 @@ const { analyticsQuerySchema } = await import(compiled('src/modules/dashboard/da
 
 beforeEach(() => {
   mock.method(prisma.tb_compra, 'findMany', async () => []);
+  mock.method(prisma,'$queryRaw',async query=>{
+    const purchases=await prisma.tb_compra.findMany.mock.calls.at(-1)?.result??[];
+    const dates=query.values.filter(v=>v instanceof Date).slice(2),groups=new Map();
+    for(const p of purchases) {
+      if(!dates.some((d,i)=>i%2===0&&p.compra_horario>=d&&p.compra_horario<dates[i+1]))continue;
+      const parts=new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit'}).format(p.compra_horario);
+      const key=parts+':'+p.compra_classificacao;
+      const group=groups.get(key)??{periodo:parts,compra_classificacao:p.compra_classificacao,quantidade:0,quantidade_com_valor:0,valor_total_centavos:null};
+      group.quantidade++;if(p.compra_valor!==null){group.quantidade_com_valor++;group.valor_total_centavos=(group.valor_total_centavos??0)+Math.round(Number(p.compra_valor)*100);}
+      groups.set(key,group);
+    }
+    return [...groups.values()];
+  });
   mock.method(console, 'info', () => {});
 });
 
@@ -110,7 +124,7 @@ test('mode=month agrega compra confirmada, desconto separado e categoria bruta',
   assert.deepEqual(period.compras_acima_limite, { acima_limite: 0, dentro_limite: 0 });
   assert.deepEqual(period.impulsividade, [{
     compra_classificacao: 'PENDENTE',
-    quantidade: 1,
+    quantidade: 2,
     valor_total_centavos: 13000,
     valor_total: 130,
   }]);
@@ -156,7 +170,7 @@ test('analytics agrega pagamentos, limite e classificacao de impulsividade por p
   assert.deepEqual(period.impulsividade, [
     {
       compra_classificacao: 'IMPULSIVA',
-      quantidade: 1,
+      quantidade: 2,
       valor_total_centavos: 10000,
       valor_total: 100,
     },
@@ -330,6 +344,16 @@ test('controller exige usuário autenticado e usa o userId do request para owner
 
   assert.equal(authorizedResponse.statusCode, 200);
   assert.equal(query.where.usuario_id, 73);
+});
+
+test('outubro com saída inválida é falha do servidor; dezembro vazio é sucesso e mês malformado continua 400',async()=>{
+  const logs=[];mock.method(console,'error',(...args)=>logs.push(args));
+  mock.method(DashboardService,'analytics',async(_user,q)=>({mode:'month',timezone:'America/Sao_Paulo',comparacao:null,
+    periodos:q.month==='2026-10'?[{periodo:'2026-10',total_centavos:-1}]:[]}));
+  const out=responseDouble();await DashboardController.analytics({userId:7,query:{mode:'month',month:'2026-10'}},out);
+  assert.equal(out.statusCode,500);assert.equal(out.body.code,'ANALYTICS_OUTPUT_INVALID');assert.ok(out.body.errors.some(e=>e.field==='periodos.total_centavos'));assert.equal(logs[0][1].month,'2026-10');assert.doesNotMatch(JSON.stringify(logs),/total_centavos.*-1|Bearer|usuario_id/);
+  const empty=responseDouble();await DashboardController.analytics({userId:7,query:{mode:'month',month:'2026-12'}},empty);assert.equal(empty.statusCode,200);
+  const bad=responseDouble();await DashboardController.analytics({userId:7,query:{mode:'month',month:'outubro'}},bad);assert.equal(bad.statusCode,400);assert.equal(bad.body.errors[0].field,'month');
 });
 
 test('mode=compare consulta somente dois meses distantes, sem intervalo intermediario', async () => {
