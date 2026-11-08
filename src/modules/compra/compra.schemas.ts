@@ -33,7 +33,7 @@ export const createCompraSchema = compraBaseSchema.extend({
 
 export const updateCompraSchema = compraBaseSchema.partial().extend({
   compraStatus: z.never().optional(),
-  items: z.array(compraItemSchema).optional(),
+  items: z.array(compraItemSchema.extend({ itemId: z.number().int().positive().optional() })).optional(),
 });
 
 export type CompraItemDTO = z.infer<typeof compraItemSchema>;

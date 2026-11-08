@@ -1,7 +1,7 @@
 import type { Response } from 'express';
 import { AuthRequest } from '../auth/auth.middleware.js';
 import { CompraService } from './compra.service.js';
-import { createCompraSchema, updateCompraSchema } from './compra.schemas.js';
+import { createCompraSchema, updateCompraSchema, historicoComprasQuerySchema } from './compra.schemas.js';
 import { handleError } from '../../utils/handleError.js';
 
 /**
@@ -12,6 +12,13 @@ import { handleError } from '../../utils/handleError.js';
  * As regras de negócio permanecem concentradas em `CompraService`.
  */
 export class CompraController {
+  static async historico(req: AuthRequest, res: Response) {
+    res.setHeader('Cache-Control','no-store');
+    try {
+      if (!req.userId) return res.status(401).json({error:'Token inválido'});
+      return res.json(await CompraService.historico(req.userId,historicoComprasQuerySchema.parse(req.query)));
+    } catch(error) { return handleError(res,400,error); }
+  }
   static async create(req: AuthRequest, res: Response) {
     try {
       if (!req.userId) return res.status(401).json({ error: 'Token inválido' });

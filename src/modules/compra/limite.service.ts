@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { NotificationService } from '../notification/notification.service.js';
-import { getMonthBounds } from './metricas.service.js';
+import { financialWhere } from './financeiro.js';
 
 type LimitDatabase = Pick<
   Prisma.TransactionClient,
@@ -51,7 +51,8 @@ function formatMoney(cents: number) {
 }
 
 export function isConfiguredLimit(cents: number | null): cents is number {
-  return cents !== null && cents >= 0;
+  // Zero and negative values do not activate a limit; request schemas reject negatives.
+  return cents !== null && cents > 0;
 }
 
 export function calculatePurchaseAboveLimit(
@@ -193,6 +194,7 @@ export async function evaluateConfirmedPurchaseLimits(
       usuario_id: true,
       compra_valor: true,
       compra_horario: true,
+      compra_email: true,
       compra_acima_limite: true,
       tb_usuario: {
         select: {
@@ -212,10 +214,10 @@ export async function evaluateConfirmedPurchaseLimits(
     },
   });
 
-  if (!purchase) {
+  if (!purchase || purchase.compra_horario >= new Date()) {
     return {
       eligible: false as const,
-      reason: 'NOT_ACTIVE_CONFIRMED' as const,
+      reason: !purchase ? 'NOT_ACTIVE_CONFIRMED' as const : 'FUTURE_PURCHASE' as const,
       alerts: [],
     };
   }
@@ -237,6 +239,7 @@ export async function evaluateConfirmedPurchaseLimits(
   const categoryTotals = new Map<number, CategoryTotal>();
   for (const item of purchase.tb_compra_item) {
     if (item.categoria_id === null) continue;
+    if (purchase.compra_email && item.compra_item_quantidade === null) continue;
     const lineTotalCents = itemTotalCents(item.compra_item_valor, item.compra_item_quantidade);
     if (lineTotalCents === null) continue;
 
@@ -249,17 +252,17 @@ export async function evaluateConfirmedPurchaseLimits(
   }
 
   const categoryIds = [...categoryTotals.keys()];
-  const { start, end } = getMonthBounds(purchase.compra_horario);
   const [monthlyPurchases, preferences] = await Promise.all([
     db.tb_compra.findMany({
       where: {
         usuario_id: purchase.usuario_id,
         compra_ativo: 1,
         compra_status: 'CONFIRMADA',
-        compra_horario: { gte: start, lt: end },
+        compra_horario: financialWhere(purchase.usuario_id, purchase.compra_horario).compra_horario,
       },
       select: {
         compra_valor: true,
+        compra_email: true,
         tb_compra_item: {
           where: {
             compra_item_ativo: 1,
@@ -291,6 +294,7 @@ export async function evaluateConfirmedPurchaseLimits(
   for (const monthlyPurchase of monthlyPurchases) {
     for (const item of monthlyPurchase.tb_compra_item) {
       if (item.categoria_id === null) continue;
+      if (monthlyPurchase.compra_email && item.compra_item_quantidade === null) continue;
       const lineTotalCents = itemTotalCents(item.compra_item_valor, item.compra_item_quantidade);
       if (lineTotalCents === null) continue;
       monthlyCategoryTotals.set(
