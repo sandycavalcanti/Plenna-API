@@ -18,6 +18,7 @@ const delegateNames = [
   'tb_categoria',
   'tb_forma_pagamento',
   'tb_tempo_uso',
+  'tb_compra_evento',
 ];
 const methods = [
   'findFirst',
@@ -41,6 +42,7 @@ const client = Object.fromEntries(delegateNames.map((name) => [
   ])),
 ]));
 client.$transaction = async (callback) => callback(client);
+client.$queryRaw = async () => [{ compra_id: 1 }];
 client.$disconnect = async () => {};
 globalThis.prismaRuntime = { client, pool: { end: async () => {} } };
 
@@ -71,13 +73,17 @@ beforeEach(() => {
     }
   }
   mock.method(prisma, '$transaction', async (callback) => callback(prisma));
+  mock.method(prisma, '$queryRaw', async () => [{ compra_id: 1 }]);
+  mock.method(prisma.tb_compra_evento, 'findMany', async () => []);
+  mock.method(prisma.tb_compra_evento, 'findFirst', async () => null);
+  mock.method(prisma.tb_compra_evento, 'create', async ({ data }) => data);
   mock.method(console, 'info', () => {});
 });
 
 afterEach(() => mock.restoreAll());
 after(disconnectPrisma);
 
-test('baseline: dashboard filtra usuário, CONFIRMADA, ativa e mês UTC semiaberto', async () => {
+test('dashboard filtra usuário, CONFIRMADA, ativa e mês de negócio semiaberto', async () => {
   let query;
   let select;
   mock.method(prisma.tb_compra, 'findMany', async (args) => {
@@ -92,8 +98,10 @@ test('baseline: dashboard filtra usuário, CONFIRMADA, ativa e mês UTC semiaber
   assert.equal(query.usuario_id, 42);
   assert.equal(query.compra_ativo, 1);
   assert.equal(query.compra_status, 'CONFIRMADA');
-  assert.deepEqual(query.compra_horario, { gte: start, lt: end });
-  assert.equal('compra_item_quantidade' in select.tb_compra_item.select, false);
+  assert.deepEqual(query.compra_horario.gte, start);
+  assert.ok(query.compra_horario.lt <= end);
+  assert.ok(query.compra_horario.lt <= new Date());
+  assert.equal('compra_item_quantidade' in select.tb_compra_item.select, true);
   assert.equal('compra_desconto' in select, false);
 });
 
@@ -124,7 +132,7 @@ test('baseline: categoria usa valor bruto dos itens, enquanto pagamento usa tota
   assert.deepEqual(payment, [{ forma_pagamento_nome: 'Pix', total: 130 }]);
 });
 
-test('baseline: quantidade só participa dos limites, não do indicador atual por categoria', async () => {
+test('F08: quantidade participa tanto dos limites quanto dos totais por categoria', async () => {
   let categorySelect;
   mock.method(prisma.tb_compra, 'findMany', async ({ select }) => {
     categorySelect = select;
@@ -141,8 +149,8 @@ test('baseline: quantidade só participa dos limites, não do indicador atual po
 
   const result = await DashboardService.findGastosPorCategoria(7);
 
-  assert.deepEqual(result, [{ categoria_nome: 'Mercado', total: 25 }]);
-  assert.equal('compra_item_quantidade' in categorySelect.tb_compra_item.select, false);
+  assert.deepEqual(result, [{ categoria_nome: 'Mercado', total: 75 }]);
+  assert.equal('compra_item_quantidade' in categorySelect.tb_compra_item.select, true);
   assert.equal(itemTotalCents(25, 3), 7500);
   assert.equal(itemTotalCents(25, null), 2500);
   assert.equal(itemTotalCents(25, 0), null);
@@ -162,7 +170,9 @@ test('baseline: métricas ignoram valores nulos, preservam zero e usam mês UTC'
   const result = await MetricasService.recalculateMonthlyMetrics(7, reference);
   const { start, end } = getMonthBounds(reference);
 
-  assert.deepEqual(purchaseWhere.compra_horario, { gte: start, lt: end });
+  assert.deepEqual(purchaseWhere.compra_horario.gte, start);
+  assert.ok(purchaseWhere.compra_horario.lt <= end);
+  assert.ok(purchaseWhere.compra_horario.lt <= new Date());
   assert.equal(purchaseWhere.usuario_id, 7);
   assert.equal(purchaseWhere.compra_ativo, 1);
   assert.equal(purchaseWhere.compra_status, 'CONFIRMADA');

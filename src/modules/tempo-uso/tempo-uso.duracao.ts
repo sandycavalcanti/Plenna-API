@@ -7,15 +7,12 @@ import { AppError } from '../../errors/AppError.js';
 export function minutosParaSegundos(valor: unknown): number {
   const minutos = valor === null || valor === undefined ? NaN : Number(valor);
   // Decimal evita que 1.025 * 60 vire 61.499999... em ponto flutuante.
-  const segundos = Number.isFinite(minutos)
-    ? new Prisma.Decimal(String(valor)).mul(60).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber()
-    : NaN;
+  const segundos = Number.isFinite(minutos) ? new Prisma.Decimal(String(valor)).mul(60).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber() : NaN;
   if (!Number.isFinite(minutos) || minutos <= 0 || !Number.isSafeInteger(segundos) || segundos < 1 || segundos > 2147483647) {
     throw new AppError('Duração deve representar ao menos um segundo e caber em INTEGER', 400);
   }
   return segundos;
 }
-
 export function segundosDoRegistro(registro: {
   tempo_uso_duracao_segundos: number | null;
   tempo_uso_minutos: unknown;
@@ -24,13 +21,15 @@ export function segundosDoRegistro(registro: {
   if (segundos !== null && segundos !== undefined) {
     return Number.isInteger(segundos) && segundos > 0 && segundos <= 2147483647 ? segundos : null;
   }
-  try { return minutosParaSegundos(registro.tempo_uso_minutos); }
-  catch { return null; }
+  try {
+    return minutosParaSegundos(registro.tempo_uso_minutos);
+  } catch {
+    return null;
+  }
 }
-
 export function duracaoLegada(segundos: number) {
   return {
     tempo_uso_duracao_segundos: segundos,
-    tempo_uso_minutos: Number((segundos / 60).toFixed(2)),
+    tempo_uso_minutos: Number((segundos / 60).toFixed(2))
   };
 }

@@ -1,17 +1,18 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import type { CreateCompraDTO, UpdateCompraDTO } from './compra.schemas.js';
+import type { CreateCompraDTO, UpdateCompraDTO, HistoricoComprasQuery } from './compra.schemas.js';
 import { MetricasService } from './metricas.service.js';
-import { metricPeriods } from './financeiro.js';
+import { metricPeriods, parseMonth, businessDayBounds } from './financeiro.js';
 import { evaluateConfirmedPurchaseLimits, itemTotalCents } from './limite.service.js';
 import { AppError } from '../../errors/AppError.js';
 import { dispatchPushAfterCommit, type PushNotificationCandidate } from '../notification/push.service.js';
-import { registrarClassificacao, registrarEventoInterno, validarSaldoAposEdicao } from './eventos.ledger.js';
+import { bloquearCompra, registrarClassificacao, registrarEventoInterno, validarSaldoAposEdicao } from './eventos.ledger.js';
 
 const publicPurchaseSelect = {
   compra_id: true,
   usuario_id: true,
   forma_pagamento_id: true,
+  tb_forma_pagamento: { select: { forma_pagamento_nome: true } },
   compra_valor: true,
   compra_horario: true,
   compra_fonte: true,
@@ -115,17 +116,66 @@ async function applyCompraConfirmation(
   const compraFonte = data.compraFonte !== undefined ? data.compraFonte : existing.compra_fonte;
   const compraUsuarioConcorda = data.compraUsuarioConcorda ?? existing.compra_usuario_concorda;
   const compraUsuarioAnotacao = data.compraUsuarioAnotacao ?? existing.compra_usuario_anotacao;
-  const compraValor = resolveCompraValor(data.compraValor, items, existing.compra_valor, existing.compra_desconto);
+  let compraValor = resolveCompraValor(data.compraValor, items, existing.compra_valor, existing.compra_desconto);
   if (items) {
-    // Ao substituir os itens durante uma atualização, os registros antigos
-    // também seguem soft delete para preservar o histórico da compra.
-    await tx.tb_compra_item.updateMany({
-      where: { compra_id: compraId, compra_item_ativo: 1 },
+    const currentItems: Prisma.tb_compra_itemGetPayload<object>[] = await tx.tb_compra_item.findMany({
+      where: { compra_id: compraId, compra_item_ativo: 1 }, orderBy: { compra_item_id: 'asc' },
+    });
+    // Legacy clients can resend an unchanged list without allocating new identities.
+    const unchanged = items.length === currentItems.length && items.every((item, index) => {
+      const previous = currentItems[index];
+      return (item.itemId === undefined || item.itemId === previous.compra_item_id) && item.nome === previous.compra_item_nome &&
+        item.categoriaId === previous.categoria_id && toCents(item.valor) === toCents(previous.compra_item_valor);
+    });
+    const identified = unchanged ? items.map((item, index) => ({ ...item, itemId: currentItems[index].compra_item_id })) : items;
+    const ids = identified.flatMap(item => item.itemId === undefined ? [] : [item.itemId]);
+    if (new Set(ids).size !== ids.length) throw new AppError('Itens repetidos na correção da compra', 400);
+    const byId = new Map(currentItems.map(item => [item.compra_item_id, item]));
+    if (ids.some(id => !byId.has(id))) throw new AppError('Item da compra não encontrado', 404);
+    const retained = new Set(ids);
+    const removed = currentItems.filter(item => !retained.has(item.compra_item_id)).map(item => item.compra_item_id);
+    const financialChanges = identified.filter(item => item.itemId !== undefined &&
+      toCents(item.valor) !== toCents(byId.get(item.itemId)!.compra_item_valor)).map(item => item.itemId!);
+    if (removed.length || financialChanges.length) {
+      await validarSaldoAposEdicao(tx, userId, compraId, existing.compra_valor === null ? null : toCents(existing.compra_valor), [...removed, ...financialChanges]);
+    }
+    if (removed.length && await tx.contexto_compra_item.count({ where: { compra_id: compraId, compra_item_id: { in: removed } } })) {
+      throw new AppError('Preserve a identidade dos itens vinculados ao contexto ao corrigir a compra', 409);
+    }
+    if (data.compraValor === null || data.compraValor === undefined) {
+      if (unchanged) compraValor = existing.compra_valor;
+      else {
+        const totals = identified.map(item => {
+          const previous = item.itemId === undefined ? undefined : byId.get(item.itemId);
+          if (previous && existing.compra_email && previous.compra_item_quantidade === null) return null;
+          return itemTotalCents(item.valor, previous?.compra_item_quantidade ?? null);
+        });
+        if (totals.some(total => total === null)) throw new AppError('Dados insuficientes para recalcular a compra importada', 409);
+        compraValor = totals.length ? fromCents(Math.max(0, totals.reduce<number>((sum, total) => sum + total!, 0) - toCents(existing.compra_desconto))) : null;
+      }
+    }
+    for (const item of identified) {
+      if (item.itemId === undefined) continue;
+      const previous = byId.get(item.itemId)!;
+      if (item.nome !== previous.compra_item_nome || item.categoriaId !== previous.categoria_id || toCents(item.valor) !== toCents(previous.compra_item_valor)) {
+        await tx.tb_compra_item.update({ where: { compra_item_id: item.itemId }, data: {
+          categoria_id: item.categoriaId, compra_item_nome: item.nome, compra_item_valor: fromCents(toCents(item.valor)),
+        } });
+        await registrarEventoInterno(tx,userId,compraId,'ITEM_EDITADO',{
+          campos:[...(item.nome !== previous.compra_item_nome ? ['nome'] : []),
+            ...(item.categoriaId !== previous.categoria_id ? ['categoria'] : []),
+            ...(toCents(item.valor) !== toCents(previous.compra_item_valor) ? ['valor'] : [])],
+        },item.itemId);
+      }
+    }
+    if (removed.length) await tx.tb_compra_item.updateMany({
+      where: { compra_id: compraId, compra_item_id: { in: removed }, compra_item_ativo: 1 },
       data: { compra_item_ativo: 0, compra_item_excluido_em: new Date() },
     });
-    if (items.length > 0) {
+    const added = identified.filter(item => item.itemId === undefined);
+    if (added.length > 0) {
       await tx.tb_compra_item.createMany({
-        data: items.map((item) => ({
+        data: added.map((item) => ({
           compra_id: compraId,
           categoria_id: item.categoriaId,
           compra_item_nome: item.nome,
@@ -150,6 +200,14 @@ async function applyCompraConfirmation(
     },
   });
 
+  const campos = [
+    ...(Number(compraValor) !== Number(existing.compra_valor) || (compraValor === null) !== (existing.compra_valor === null) ? ['valor'] : []),
+    ...(compraHorario.getTime() !== existing.compra_horario.getTime() ? ['data'] : []),
+    ...(compraFonte !== existing.compra_fonte ? ['estabelecimento'] : []),
+    ...(formaPagamentoId !== existing.forma_pagamento_id ? ['pagamento'] : []),
+    ...(compraUsuarioAnotacao !== existing.compra_usuario_anotacao ? ['anotacao'] : []),
+  ];
+  if(campos.length) await registrarEventoInterno(tx,userId,compraId,'COMPRA_EDITADA',{campos});
   return { compra, compraHorario, compraValor };
 }
 
@@ -161,6 +219,7 @@ async function applyCompraConfirmation(
  * mesmo instante de exclusão e recalculam métricas de forma consistente.
  */
 export async function softDeleteCompra(tx: any, userId: number, compraId: number, auditar=true) {
+  await bloquearCompra(tx, userId, compraId);
   // A combinação do ID com o usuário e com compra_ativo impede operar sobre
   // compra de terceiro ou sobre compra já excluída, sem revelar sua existência.
   const existing = await tx.tb_compra.findFirst({
@@ -193,7 +252,41 @@ export async function softDeleteCompra(tx: any, userId: number, compraId: number
   }
 }
 
+import { validarPeriodoConta } from './periodo-conta.js';
+
 export class CompraService {
+  static async historico(userId: number, query: HistoricoComprasQuery) {
+    return prisma.$transaction(async tx => {
+      const user = await tx.tb_usuario.findFirst({where:{usuario_id:userId,usuario_status:true},select:{usuario_data_criacao:true}});
+      if (!user) throw new AppError('Usuário não encontrado',404);
+      validarPeriodoConta(query,user.usuario_data_criacao);
+      let range: { gte?: Date; lt: Date } | undefined;
+      if (query.mes) { const bounds = parseMonth(query.mes); range = { gte: bounds.start, lt: bounds.end }; }
+      if (query.inicio && query.fim) range = {
+        gte: businessDayBounds(new Date(query.inicio+'T12:00:00Z')).start,
+        lt: businessDayBounds(new Date(query.fim+'T12:00:00Z')).end,
+      };
+      // Current-month queries and all-history reads stop at the same observed instant.
+      const now = new Date();
+      if (range) range.lt = new Date(Math.min(range.lt.getTime(),now.getTime()));
+      else range = {lt:now};
+      const cursor = query.antes === undefined ? null : await tx.tb_compra.findFirst({
+        where: { usuario_id: userId, compra_id: query.antes }, select: { compra_horario: true, compra_id: true },
+      });
+      if (query.antes !== undefined && !cursor) throw new AppError('Página não disponível',404);
+      const rows = await tx.tb_compra.findMany({
+        where: { usuario_id: userId, compra_ativo: 1,
+            ...(query.busca ? { compra_fonte: { contains: query.busca, mode: 'insensitive' as const } } : {}),
+          compra_status: query.status ?? { in: ['CONFIRMADA','AGUARDANDO_CONFIRMACAO','IGNORADA'] },
+          ...(range ? { compra_horario: range } : {}),
+          ...(cursor ? { OR: [ { compra_horario: { lt: cursor.compra_horario } },
+            { compra_horario: cursor.compra_horario, compra_id: { lt: cursor.compra_id } } ] } : {}),
+        }, select: publicPurchaseSelect, orderBy: [{ compra_horario:'desc' },{ compra_id:'desc' }], take: 51,
+      });
+      const compras = rows.slice(0,50);
+      return { compras, proximoCursor: rows.length > 50 ? compras[49].compra_id : null };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
   /**
    * Cria uma compra cadastrada manualmente pelo usuário.
    *
@@ -202,6 +295,7 @@ export class CompraService {
    */
   static async create(userId: number, data: CreateCompraDTO) {
     const transactionResult = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id=${userId} FOR UPDATE`;
       const user = await tx.tb_usuario.findFirst({
         where: { usuario_id: userId, usuario_status: true },
         select: { usuario_id: true },
@@ -285,6 +379,7 @@ export class CompraService {
 
   static async update(userId: number, compraId: number, data: UpdateCompraDTO) {
     const transactionResult = await prisma.$transaction(async (tx) => {
+      await bloquearCompra(tx, userId, compraId);
       const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
       const previousHorario = existing.compra_horario;
@@ -327,6 +422,7 @@ export class CompraService {
    */
   static async confirm(userId: number, compraId: number, data?: UpdateCompraDTO) {
     const transactionResult = await prisma.$transaction(async (tx) => {
+      await bloquearCompra(tx, userId, compraId);
       const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
       if (existing.compra_status === 'CONFIRMADA') {
@@ -379,6 +475,7 @@ export class CompraService {
    */
   static async ignore(userId: number, compraId: number) {
     return prisma.$transaction(async (tx) => {
+      await bloquearCompra(tx, userId, compraId);
       const existing = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 } });
       if (!existing) throw new AppError('Compra não encontrada', 404);
       if (existing.compra_status === 'CONFIRMADA') throw new AppError('Compra confirmada não pode ser ignorada', 409);
@@ -450,11 +547,12 @@ export class CompraService {
    */
   static async deleteItem(userId: number, compraId: number, compraItemId: number, db?:Prisma.TransactionClient) {
     const execute = async (tx:Prisma.TransactionClient) => {
+      await bloquearCompra(tx, userId, compraId);
       // Combinar compra_id e usuario_id faz com que compras de terceiros sejam
       // tratadas como inexistentes, sem revelar sua existência ao solicitante.
       const existing = await tx.tb_compra.findFirst({
         where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
-        select: { compra_id: true, compra_horario: true, compra_status: true, compra_desconto: true },
+        select: { compra_id: true, compra_horario: true, compra_status: true, compra_desconto: true, compra_valor: true, compra_email: true },
       });
       if (!existing) throw new AppError('Compra não encontrada', 404);
 
@@ -471,6 +569,8 @@ export class CompraService {
       // A regra do último item considera apenas os itens ainda ativos.
       const itemCount = await tx.tb_compra_item.count({ where: { compra_id: compraId, compra_item_ativo: 1 } });
       if (itemCount === 1) {
+        await validarSaldoAposEdicao(tx, userId, compraId,
+          existing.compra_valor === null ? null : toCents(existing.compra_valor), compraItemId);
         // A exclusão do único item representa, para o usuário, a exclusão da
         // compra inteira. O front normalmente usa o DELETE da compra, mas este
         // caminho defensivo mantém a regra correta se a rota de item for chamada diretamente.
@@ -480,26 +580,30 @@ export class CompraService {
         return { response: null, createdNotifications: [] as PushNotificationCandidate[] };
       }
 
-      // O item é inativado, nunca removido fisicamente, para preservar o
-      // histórico sem deixá-lo participar das consultas atuais.
-      await tx.tb_compra_item.update({
-        where: { compra_item_id: compraItemId },
-        data: { compra_item_ativo: 0, compra_item_excluido_em: new Date() },
-      });
-      if(!db)await registrarEventoInterno(tx,userId,compraId,'EXCLUSAO_REGISTRO',{motivo:'NAO_INFORMADO'},compraItemId);
-
       // Recalculamos o total somente com os itens restantes, usando centavos
       // para manter a mesma precisão monetária das demais operações do service.
-      const remainingItems = await tx.tb_compra_item.findMany({
+      const activeItems = await tx.tb_compra_item.findMany({
         where: { compra_id: compraId, compra_item_ativo: 1 },
-        select: { compra_item_valor: true, compra_item_quantidade: true },
+        select: { compra_item_id: true, compra_item_valor: true, compra_item_quantidade: true },
       });
-      const totalCents = remainingItems.reduce((sum, item) => sum + (itemTotalCents(item.compra_item_valor, item.compra_item_quantidade) ?? 0), 0);
+      const remainingItems = activeItems.filter(item => item.compra_item_id !== compraItemId);
+      if (existing.compra_email && remainingItems.some(item => item.compra_item_quantidade === null)) {
+        throw new AppError('Quantidade não informada nos itens importados. Corrija os dados antes de recalcular o total', 409);
+      }
+      const itemTotals = remainingItems.map(item => itemTotalCents(item.compra_item_valor, item.compra_item_quantidade));
+      if (itemTotals.some(total => total === null)) throw new AppError('Dados insuficientes para recalcular o total dos itens', 409);
+      const totalCents = itemTotals.reduce<number>((sum, total) => sum + total!, 0);
       // O valor armazenado e o total liquido: itens restantes menos o desconto
       // original, limitado a zero para impedir valores financeiros negativos.
       const descontoCents = Math.max(0, toCents(existing.compra_desconto ?? 0));
       const compraValor = fromCents(Math.max(0, totalCents - descontoCents));
       await validarSaldoAposEdicao(tx,userId,compraId,toCents(compraValor),compraItemId);
+
+      await tx.tb_compra_item.update({
+        where: { compra_item_id: compraItemId },
+        data: { compra_item_ativo: 0, compra_item_excluido_em: new Date() },
+      });
+      if(!db)await registrarEventoInterno(tx,userId,compraId,'EXCLUSAO_REGISTRO',{motivo:'NAO_INFORMADO'},compraItemId);
 
       // A avaliação central recalcula compra_acima_limite depois do novo total.
       await tx.tb_compra.update({

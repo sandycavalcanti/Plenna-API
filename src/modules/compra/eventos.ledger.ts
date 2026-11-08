@@ -9,6 +9,12 @@ const classificationEvents = new Set([
   'PREFIRO_NAO_CLASSIFICAR',
 ]);
 
+/** Same order as Gmail and financial-reference writers: account, then purchase. */
+export async function bloquearCompra(tx: Prisma.TransactionClient, userId: number, compraId: number) {
+  await tx.$queryRaw`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id=${userId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT compra_id FROM public.tb_compra WHERE compra_id=${compraId} AND usuario_id=${userId} FOR UPDATE`;
+}
+
 /**
  * Applies ledger rules to a purchase mutation made by an internal flow.
  * The event table is part of the deployed schema; availability checks would
@@ -19,7 +25,7 @@ export async function validarSaldoAposEdicao(
   userId: number,
   compraId: number,
   valorCentavos: number | null,
-  itemId?: number,
+  itemId?: number | number[],
 ) {
   const rows = eventosVigentes(
     await tx.tb_compra_evento.findMany({
@@ -27,11 +33,12 @@ export async function validarSaldoAposEdicao(
     }),
   );
 
+  const itemIds = new Set(Array.isArray(itemId) ? itemId : itemId === undefined ? [] : [itemId]);
   if (
-    itemId &&
+    itemIds.size > 0 &&
     rows.some(
       (event) =>
-        event.compra_item_id === itemId &&
+        event.compra_item_id !== null && itemIds.has(event.compra_item_id) &&
         ['REEMBOLSO', 'CANCELAMENTO', 'DEVOLUCAO'].includes(event.tipo),
     )
   ) {

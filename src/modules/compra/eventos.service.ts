@@ -5,11 +5,20 @@ import { AppError } from '../../errors/AppError.js';
 import { eventoCompraSchema } from './eventos.schemas.js';
 import {
   eventosVigentes,
+  criarResumoEventosDesc,
   resumirEventos,
   validarEventoFinanceiro,
 } from './eventos.engine.js';
 import { CompraService, softDeleteCompra } from './compra.service.js';
 import { cents } from './financeiro.js';
+import { AvaliacaoService } from '../analise/avaliacao.service.js';
+
+export async function ledgerDisponivel(tx: Prisma.TransactionClient) {
+  const rows = await tx.$queryRaw<{ tabela: string | null }[]>`
+    SELECT to_regclass('public.tb_compra_evento')::text AS tabela
+  `;
+  return rows[0]?.tabela !== null && rows[0]?.tabela !== undefined;
+}
 
 const hash = (v: unknown): string => {
   const canonical = (x: any): string =>
@@ -37,32 +46,58 @@ const serializar = (e: any) => ({
   anulado: e.anulado,
 });
 export class EventosCompraService {
-  static async consultar(userId: number, compraId: number) {
+  static async historico(userId: number, compraId: number, query: { antes?: number; itemId?: number; escopo?: 'COMPRA' | 'ITENS'; finalidade?: 'COMPRA' | 'ANALISE' }) {
+    return prisma.$transaction(async tx => {
+      const compra = await tx.tb_compra.findFirst({ where: { compra_id: compraId, usuario_id: userId }, select: { compra_id: true } });
+      if (!compra) throw new AppError('Compra não encontrada', 404);
+      if (query.itemId !== undefined && !await tx.tb_compra_item.findFirst({ where: { compra_id: compraId, compra_item_id: query.itemId }, select: { compra_item_id: true } })) throw new AppError('Item não encontrado',404);
+      const rows = await tx.tb_compra_evento.findMany({
+        where: { usuario_id: userId, compra_id: compraId,
+          ...(query.finalidade ? { tipo: query.finalidade === 'ANALISE' ? { in: ['CLASSIFICACAO', 'RESPOSTA_ANALISE'] } : { notIn: ['CLASSIFICACAO', 'RESPOSTA_ANALISE'] } } : {}),
+          ...(query.antes ? { revisao: { lt: query.antes } } : {}),
+          ...(query.itemId !== undefined ? { compra_item_id: query.itemId } : query.escopo === 'COMPRA' ? { compra_item_id: null } : query.escopo === 'ITENS' ? { compra_item_id: { not: null } } : {}),
+        }, orderBy: { revisao: 'desc' }, take: 51,
+        include: { correcoes: { select: { evento_id: true } } },
+      });
+      const page=rows.slice(0,50);
+      return { versaoContrato: 1, compraId, eventos: page.map(row=>({...serializar(row),corrigido:row.correcoes.length>0})), proximaAntes: rows.length>50?page[49]!.revisao:null };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
+  static async consultar(userId: number, compraId: number, compacto = false) {
     return prisma.$transaction(
       async (tx) => {
         const compra = await tx.tb_compra.findFirst({
           where: { compra_id: compraId, usuario_id: userId },
         });
         if (!compra) throw new AppError('Compra não encontrada', 404);
-        const eventos = await tx.tb_compra_evento.findMany({
-          where: { compra_id: compraId, usuario_id: userId },
-          orderBy: { revisao: 'asc' },
-        });
+        const eventos: Awaited<ReturnType<typeof tx.tb_compra_evento.findMany>>=[];
+        const acumulador=criarResumoEventosDesc();
+        if(compacto){
+          let antes:number|undefined;
+          while(true){
+            const page=await tx.tb_compra_evento.findMany({where:{compra_id:compraId,usuario_id:userId,...(antes?{revisao:{lt:antes}}:{})},orderBy:{revisao:'desc'},take:200});
+            for(const row of page){acumulador.adicionar(row);if(eventos.length<50)eventos.push(row);}
+            if(page.length<200)break;
+            antes=page[page.length-1]!.revisao;
+          }
+          eventos.reverse();
+        }else eventos.push(...await tx.tb_compra_evento.findMany({where:{compra_id:compraId,usuario_id:userId},orderBy:{revisao:'asc'}}));
+        const resumo=compacto?acumulador.resultado():resumirEventos(eventos);
         return {
           versaoContrato: 1,
           compraId,
           disponivel: true,
-          revisao: resumirEventos(eventos).revisao,
-          eventos: eventos.map(serializar),
+          revisao: resumo.revisao,
+          eventos: (compacto ? eventos.slice(-50) : eventos).map(serializar),
           resumo: {
-            ...resumirEventos(eventos),
+            ...resumo,
             valorOriginalCentavos:
               compra.compra_valor === null ? null : cents(compra.compra_valor),
             valorAposReembolsosCentavos:
               compra.compra_valor === null
                 ? null
                 : cents(compra.compra_valor) -
-                  resumirEventos(eventos).reembolsadoCentavos,
+                  resumo.reembolsadoCentavos,
           },
         };
       },
@@ -79,6 +114,7 @@ export class EventosCompraService {
       fingerprint = hash(data);
     return prisma.$transaction(
       async (tx) => {
+        await tx.$queryRaw`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id=${userId} FOR UPDATE`;
         const owned = await tx.$queryRaw<
           { compra_id: number }[]
         >`SELECT compra_id FROM public.tb_compra WHERE compra_id=${compraId} AND usuario_id=${userId} FOR UPDATE`;
@@ -123,6 +159,20 @@ export class EventosCompraService {
             'O histórico mudou. Atualize antes de salvar',
             409,
           );
+        if(data.tipo==='RESPOSTA_ANALISE') {
+          if(data.itemId||data.corrigeEventoId||data.anulado||data.dataEfetiva!==null)
+            throw new AppError('A resposta é da avaliação atual da compra; revisões são novos eventos',400);
+          if(data.confirmarImpulsiva&&data.resposta!=='CONCORDO')
+            throw new AppError('Somente a concordância explícita pode confirmar como impulsiva',400);
+          const situacao=resumirEventos(rows);
+          if(situacao.oculto||situacao.itensOcultos.length||situacao.cancelamentos)
+            throw new AppError('Análise indisponível para esta compra',409);
+          const avaliacao=await AvaliacaoService.consultarNaTransacao(tx,userId,compraId,data.avaliacaoId);
+          if(avaliacao.atualidade!=='VIGENTE'||avaliacao.resultado?.versaoMotor!==data.versaoMotor)
+            throw new AppError('A avaliação mudou. Atualize antes de responder',409);
+          if(!data.interpretacaoId.startsWith(`${data.versaoInterpretacao}:compositor-contextual-1:${data.avaliacaoId}:`))
+            throw new AppError('Referência de interpretação inválida',400);
+        }
         if (
           data.tipo === 'EXCLUSAO_REGISTRO' &&
           data.itemId &&
@@ -200,6 +250,10 @@ export class EventosCompraService {
           tipo,
           ...dados
         } = data;
+        const classificacaoAnterior=compra.compra_classificacao;
+        const dadosDecisao=data.tipo==='RESPOSTA_ANALISE'
+          ? {...dados,classificacaoAnterior,origemDecisao:data.confirmarImpulsiva?'CONFIRMACAO_ANALISE':'RESPOSTA_ANALISE',...(data.confirmarImpulsiva?{classificacao:'IMPULSIVA'}:{})}
+          : data.tipo==='CLASSIFICACAO'?{...dados,classificacaoAnterior,origemDecisao:'CLASSIFICACAO_VOLUNTARIA'}:dados;
         const evento = await tx.tb_compra_evento.create({
           data: {
             compra_id: compraId,
@@ -209,7 +263,7 @@ export class EventosCompraService {
             operacao_id: operacaoId,
             requisicao_hash: fingerprint,
             tipo,
-            dados,
+            dados: dadosDecisao,
             efetiva_em: dataEfetiva
               ? new Date(dataEfetiva + 'T00:00:00Z')
               : null,
@@ -217,12 +271,12 @@ export class EventosCompraService {
             anulado,
           },
         });
-        if (data.tipo === 'CLASSIFICACAO')
+        if (data.tipo === 'CLASSIFICACAO' || data.tipo==='RESPOSTA_ANALISE'&&data.confirmarImpulsiva)
           await tx.tb_compra.update({
             where: { compra_id: compraId },
             data: {
               compra_classificacao:
-                data.classificacao === 'PREFIRO_NAO_CLASSIFICAR'
+                data.tipo==='RESPOSTA_ANALISE'?'IMPULSIVA':data.classificacao === 'PREFIRO_NAO_CLASSIFICAR'
                   ? 'PENDENTE'
                   : data.classificacao,
             },

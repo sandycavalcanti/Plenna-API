@@ -1,18 +1,18 @@
 import { z } from 'zod';
 
-export const homeQuerySchema = z.object({ periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/) }).strict();
+export const homeQuerySchema = z.object({ periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/), versao: z.coerce.number().refine(value => value === 2 || value === 3).optional() }).strict();
 const amount = z.number().int().nonnegative().nullable();
 export const homeResumoSchema = z.object({
-  versaoContrato: z.literal(1), periodo: homeQuerySchema.shape.periodo, referenciaTemporal: z.literal('America/Sao_Paulo'),
+  versaoContrato: z.union([z.literal(1), z.literal(2), z.literal(3)]), periodo: homeQuerySchema.shape.periodo, referenciaTemporal: z.literal('America/Sao_Paulo'),
   seletor: z.object({ periodoMinimo: homeQuerySchema.shape.periodo, periodoMaximo: homeQuerySchema.shape.periodo,
     motivoLimiteInicial: z.enum(['CRIACAO_CONTA', 'COMPRA_RETROATIVA', 'DATA_CRIACAO_INDISPONIVEL']) }).strict(),
   financeiro: z.object({ comprasConfirmadas: z.number().int().nonnegative(), comprasComValor: z.number().int().nonnegative(),
     comprasSemValor: z.number().int().nonnegative(), totalConhecidoCentavos: amount, totalCentavos: amount,
     qualidade: z.enum(['SEM_COMPRAS', 'COMPLETO', 'PARCIAL', 'INSUFICIENTE']),
     cobertura: z.enum(['COMPLETA', 'PARCIAL', 'DESCONHECIDA']) }).strict(),
-  orcamento: z.object({ disponibilidade: z.enum(['REFERENCIA_ATUAL', 'INDISPONIVEL']), valorCentavos: amount,
+  orcamento: z.object({ disponibilidade: z.enum(['REFERENCIA_ATUAL', 'REFERENCIA_HISTORICA', 'INDISPONIVEL']), valorCentavos: amount,
     percentualConhecido: z.number().finite().nonnegative().nullable(), excessoConhecidoCentavos: amount,
-    vigencia: z.enum(['ATUAL_SEM_HISTORICO', 'NAO_COMPROVADA']),
+    vigencia: z.enum(['ATUAL_SEM_HISTORICO', 'NAO_COMPROVADA', 'MES_COMPROVADO', 'REFERENCIA_OBSERVADA', 'CONTINUIDADE_COMPROVADA']),
     estadoUtilizacao: z.enum(['VERDE', 'AMARELO', 'LARANJA', 'VERMELHO', 'NEUTRO']),
     motivo: z.string().nullable() }).strict(),
   limitacoes: z.array(z.string()),

@@ -9,6 +9,7 @@ import {
   VERSAO_MOTOR,
 } from './interpretacao.engine.js';
 import { respostasContextoSchema } from './contexto.schemas.js';
+import { explicarAvaliacaoPersistida, explicacaoAvaliacaoSchema } from './avaliacao.explicacao.js';
 import { separarContextoPersistido } from './contexto-eventos.js';
 
 export const calcularAvaliacaoSchema = z
@@ -23,6 +24,7 @@ export const avaliacaoSaidaSchema = z
     avaliacaoId: z.number().int().positive().nullable(),
     criadaEm: z.string().datetime().nullable(),
     resultado: resultadoInterpretacaoSchema.nullable(),
+    explicacao: explicacaoAvaliacaoSchema.nullable().optional(),
   })
   .strict();
 function canonical(value: unknown): string {
@@ -76,6 +78,7 @@ async function snapshot(
     orderBy: { revisao: 'desc' },
     include: { itens: { orderBy: { compra_item_id: 'asc' } } },
   });
+  const planejamentos = new Map((c?.itens ?? []).map(item => [item.compra_item_id, item.planejamento]));
   const dados = {
     compraId,
     ativa: p.compra_ativo === 1,
@@ -100,9 +103,7 @@ async function snapshot(
         valor: i.compra_item_valor.toString(),
         quantidade: i.compra_item_quantidade?.toString() ?? null,
         categoriaId: i.categoria_id,
-        planejamento:
-          c?.itens.find((ci) => ci.compra_item_id === i.compra_item_id)
-            ?.planejamento ?? null,
+        planejamento: planejamentos.get(i.compra_item_id) ?? null,
       })),
   };
   const hash = createHash('sha256').update(canonical(dados)).digest('hex');
@@ -110,7 +111,7 @@ async function snapshot(
 }
 type Snapshot = Awaited<ReturnType<typeof snapshot>>;
 type Row = Prisma.avaliacao_compraGetPayload<object>;
-function envelope(s: Snapshot, row: Row | null) {
+function envelope(s: Snapshot, row: Row | null, incluirExplicacao = false) {
   const motivos: string[] = [];
   if (row && row.versao_motor !== VERSAO_MOTOR)
     motivos.push('VERSAO_MOTOR_ALTERADA');
@@ -129,15 +130,42 @@ function envelope(s: Snapshot, row: Row | null) {
     avaliacaoId: row?.avaliacao_id ?? null,
     criadaEm: row?.criada_em.toISOString() ?? null,
     resultado: row && s.dados.ativa ? row.resultado : null,
+    ...(incluirExplicacao ? { explicacao: row && s.dados.ativa ? explicarAvaliacaoPersistida(row.resultado, s.dados.compraId) : null } : {}),
   });
   if (!result.success) throw Error('ANALISE_ASSESSMENT_OUTPUT_INVALID');
   return result.data;
 }
 export class AvaliacaoService {
+  // Reuses the caller's transaction so a human decision and its assessment
+  // freshness check share the purchase lock and cannot commit independently.
+  static async consultarNaTransacao(tx: Prisma.TransactionClient, userId: number, compraId: number, avaliacaoId: number) {
+    const s = await snapshot(tx,userId,compraId);
+    const row = await tx.avaliacao_compra.findFirst({where:{avaliacao_id:avaliacaoId,compra_id:compraId,usuario_id:userId}});
+    if(!row)throw new AppError('Avaliação não encontrada',404);
+    return envelope(s,row);
+  }
+  static async historico(userId: number, compraId: number, antes?: number, incluirExplicacao = false) {
+    return prisma.$transaction(async tx => {
+      const s = await snapshot(tx, userId, compraId);
+      const rows = await tx.avaliacao_compra.findMany({
+        where: { usuario_id: userId, compra_id: compraId, ...(antes === undefined ? {} : { avaliacao_id: { lt: antes } }) },
+        orderBy: { avaliacao_id: 'desc' }, take: 21,
+        select: { avaliacao_id: true, criada_em: true, contexto_revisao: true, versao_motor: true, fontes_hash: true, ...(incluirExplicacao ? { resultado: true } : {}) },
+      });
+      const page = rows.slice(0, 20);
+      return { versaoContrato: 1 as const, compraId,
+        avaliacoes: page.map(row => ({ avaliacaoId: row.avaliacao_id, criadaEm: row.criada_em.toISOString(),
+          contextoRevisao: row.contexto_revisao, versaoMotor: row.versao_motor,
+          ...(incluirExplicacao ? { explicacao: s.dados.ativa ? explicarAvaliacaoPersistida(row.resultado, compraId, true) : null } : {}),
+          atualidade: s.dados.ativa && row.versao_motor === VERSAO_MOTOR && row.fontes_hash === s.hash ? 'VIGENTE' : 'DESATUALIZADA' })),
+        proximoAntes: rows.length > 20 ? page[page.length - 1].avaliacao_id : null };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
   static async consultar(
     userId: number,
     compraId: number,
     avaliacaoId?: number,
+    incluirExplicacao = false,
   ) {
     return prisma.$transaction(
       async (tx) => {
@@ -168,7 +196,7 @@ export class AvaliacaoService {
             orderBy: { avaliacao_id: 'desc' },
           });
         }
-        return envelope(s, row);
+        return envelope(s, row, incluirExplicacao);
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );

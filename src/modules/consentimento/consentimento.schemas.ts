@@ -5,6 +5,7 @@ export const consentimentoCodigoSchema = z.enum([
   CONSENTIMENTO_CODIGOS.TERMOS_USO,
   CONSENTIMENTO_CODIGOS.EMAIL,
   CONSENTIMENTO_CODIGOS.MONITORAMENTO_TEMPO_USO,
+  CONSENTIMENTO_CODIGOS.MONITORAMENTO_ACESSOS,
   CONSENTIMENTO_CODIGOS.IA_MEMORIA,
   CONSENTIMENTO_CODIGOS.IA_PERSONALIZACAO,
   CONSENTIMENTO_CODIGOS.IA_PROATIVIDADE,
@@ -16,6 +17,5 @@ export const registrarConsentimentoSchema = z.object({
 }).strict();
 
 export const registrarConsentimentosBulkSchema = z.array(registrarConsentimentoSchema).min(1);
-
 export type RegistrarConsentimentoDTO = z.infer<typeof registrarConsentimentoSchema>;
 export type RegistrarConsentimentosBulkDTO = z.infer<typeof registrarConsentimentosBulkSchema>;

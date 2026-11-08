@@ -75,8 +75,8 @@ test('malformed periods, values, missing purchase and overlapping history refuse
  assert.throws(()=>analisarPeriodo(input({anterior:previous([],{janela:input().janela})})),/OVERLAPPING/);
  assert.throws(()=>analisarCompra({...input(),compraId:9}),/NOT_IN_SNAPSHOT/);
 });
-test('removed placeholder extensions are rejected by the definitive contract', () => {
- assert.throws(() => analisarPeriodo(input({rf017:{versaoContrato:1,utilizavel:false,disponibilidade:'SEM_AUTORIZACAO'}})), /Unrecognized key/);
+test('optional Monitoramento de tempo em aplicativos disabled extension never changes indicators', () => {
+ const a=analisarPeriodo(input()); const b=analisarPeriodo(input({rf017:{versaoContrato:1,utilizavel:false,disponibilidade:'SEM_AUTORIZACAO'}}));assert.deepEqual(a,b);
 });
 test('unknown date means insufficient evidence rather than empty observed month', () => {
  const data=input({compras:[purchase({horario:null,precisaoHorario:'DESCONHECIDO'})]});
@@ -86,6 +86,13 @@ test('unknown date means insufficient evidence rather than empty observed month'
 test('missing budget and limit remain unavailable, not known zero thresholds', () => {
  const data=input({limiteIndividual:{valor:null,vigencia:'ATUAL_SEM_HISTORICO',referencia:'missing-limit'},orcamentoMensal:{valor:null,vigencia:'ATUAL_SEM_HISTORICO',referencia:'missing-budget'}});
  const r=analisarPeriodo(data);assert.equal(r.indicadores.financeiro.estadoOrcamento,'SEM_ORCAMENTO'); assert.equal(r.indicadores.orcamento.disponibilidade,'INDISPONIVEL');assert.equal(r.indicadores.limiteIndividual.limiteCentavos,null);
+});
+test('zero individual limit is unavailable while a zero-value purchase remains known', () => {
+ const r=analisarPeriodo(input({compras:[purchase({valorLiquido:0})],limiteIndividual:{valor:0,vigencia:'ATUAL_SEM_HISTORICO',referencia:'profile:zero'}}));
+ assert.equal(r.indicadores.financeiro.total,0);
+ assert.equal(r.indicadores.limiteIndividual.disponibilidade,'INDISPONIVEL');
+ assert.equal(r.indicadores.limiteIndividual.limiteCentavos,null);
+ assert.deepEqual(r.indicadores.limiteIndividual.desvios,[]);
 });
 test('rounding comes from financeiro.ts and business-day boundaries use offsets', () => {
  const r=analisarPeriodo(input({compras:[purchase({valorLiquido:'100.005',horario:'2026-10-01T04:00:00Z'})]}));

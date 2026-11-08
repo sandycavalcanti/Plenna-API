@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { parseMonth, cents } from './financeiro.js';
-import { eventosVigentes } from './eventos.engine.js';
+import { eventosVigentes, resumirEventos } from './eventos.engine.js';
 export class EventosResumoService {
   static async consultar(userId: number, periodo: string) {
     const { start, end } = parseMonth(periodo);
@@ -10,15 +10,20 @@ export class EventosResumoService {
         const rows = await tx.tb_compra_evento.findMany({
           where: {
             usuario_id: userId,
-            compra: { compra_ativo: 1, compra_status: 'CONFIRMADA' },
+            compra: { compra_ativo: 1, compra_status: 'CONFIRMADA', compra_horario: { lt: new Date() } },
           },
           include: {
             compra: { select: { compra_horario: true, compra_valor: true } },
           },
           orderBy: { revisao: 'asc' },
         });
-        const vigente = eventosVigentes(rows),
-          ids = new Set(rows.map((r) => r.compra_id));
+        const vigente = eventosVigentes(rows);
+        const porCompra = new Map<number, typeof rows>();
+        for (const row of rows) {
+          const items = porCompra.get(row.compra_id);
+          if (items) items.push(row);
+          else porCompra.set(row.compra_id, [row]);
+        }
         let cancelamentos = 0,
           devolucoes = 0,
           reembolsadoCentavos = 0,
@@ -27,29 +32,25 @@ export class EventosResumoService {
         for (const e of vigente) {
           if (e.tipo === 'REEMBOLSO') {
             if (!e.efetiva_em) reembolsosSemData++;
-            else if (e.efetiva_em >= start && e.efetiva_em < end)
+            // DATE representa um dia civil; converter sua meia-noite UTC para
+            // São Paulo deslocaria reembolsos do primeiro dia para o mês anterior.
+            else if (e.efetiva_em.toISOString().slice(0, 7) === periodo)
               reembolsadoCentavos += Number(
                 (e.dados as { valorCentavos: number }).valorCentavos,
               );
           }
         }
-        for (const id of ids) {
-          const purchase = rows.find((r) => r.compra_id === id)!.compra;
+        for (const items of porCompra.values()) {
+          const purchase = items[0].compra;
           if (purchase.compra_horario < start || purchase.compra_horario >= end)
             continue;
-          const items = rows.filter((r) => r.compra_id === id),
-            current = eventosVigentes(items);
+          const current = eventosVigentes(items);
           cancelamentos += current.some((e) => e.tipo === 'CANCELAMENTO')
             ? 1
             : 0;
           devolucoes += current.some((e) => e.tipo === 'DEVOLUCAO') ? 1 : 0;
-          const c = current
-            .filter((e) => e.tipo === 'CLASSIFICACAO')
-            .sort((a, b) => b.revisao - a.revisao)[0];
-          if (
-            c &&
-            (c.dados as { classificacao: string }).classificacao === 'IMPULSIVA'
-          )
+          const resumo=resumirEventos(items);
+          if (!resumo.oculto&&!resumo.itensOcultos.length&&!resumo.cancelamentos&&resumo.classificacao==='IMPULSIVA')
             classificadasImpulsivas++;
         }
         return {

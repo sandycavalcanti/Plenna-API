@@ -1,4 +1,9 @@
 import { Prisma } from '@prisma/client';
+import { isUsageMonitoringEnabled } from '../tempo-uso-v2/policy.js';
+import { hasUsageStorage } from '../tempo-uso-v2/storage.js';
+import { redactLegacy } from '../tempo-uso-v2/legacy.js';
+import { readUsageTombstones } from '../tempo-uso-v2/legacy.runtime.js';
+import type { Tombstone } from '../tempo-uso-v2/contracts.js';
 import { prisma } from '../../lib/prisma.js';
 import { parseMonth } from '../compra/financeiro.js';
 import { criarSyncTempoUsoSchema } from '../tempo-uso/tempo-uso.schemas.js';
@@ -111,8 +116,14 @@ export async function consultarUsoAplicativos(
   userId: number,
   periodo: string,
   now: Date,
+  incluirAcessos = true,
 ) {
   try {
+    if (isUsageMonitoringEnabled()) {
+      const { descriptiveUsage } = await import('../tempo-uso-v2/uso-contextual.adapter.js');
+      const result=await descriptiveUsage(userId, periodo,incluirAcessos);
+      if(result)return result;
+    }
     return await prisma.$transaction(
       async (tx) => {
         const consent = await tx.tb_consentimento.findFirst({
@@ -144,8 +155,12 @@ export async function consultarUsoAplicativos(
           },
           orderBy: [{ tempo_uso_inicio: 'asc' }, { tempo_uso_id: 'asc' }],
         });
+        let visible=rows;
+        if(await hasUsageStorage(tx)){
+          visible=redactLegacy(rows,await readUsageTombstones(tx,userId,new Date(start.getTime()-26*3600000),new Date(end.getTime()+26*3600000)));
+        }
         return resumirUsoAutorizado(
-          rows,
+          visible,
           consent.consentimento_data_criacao,
           now,
         );

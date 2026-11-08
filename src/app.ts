@@ -6,6 +6,7 @@ import { authRouter } from './modules/auth/auth.routes.js';
 import { metaRouter } from './modules/meta/meta.routes.js';
 import { preferenciasCategoriaRouter } from './modules/preferencia/preferencia.routes.js';
 import { categoryRouter } from './modules/category/category.routes.js';
+import { tempoUsoMonitoramentoRouter } from './modules/monitoramento/routes.js';
 import { tempoUsoRouter } from './modules/tempo-uso/tempo-uso.routes.js';
 import { emailRouter } from './modules/email/email.routes.js';
 import { formaPagamentoRouter } from './modules/forma-pagamento/forma-pagamento.routes.js';
@@ -30,6 +31,7 @@ import { eventosCompraRouter } from './modules/compra/eventos.routes.js';
 const app = express();
 
 app.use(cors());
+app.use('/v2/tempo-uso', express.json({ limit: 512000 }));
 app.use(express.json());
 
 app.use('/users', usersRouter);
@@ -40,6 +42,7 @@ app.use('/metas', metaRouter);
 app.use('/preferencia', preferenciasCategoriaRouter);
 app.use('/categories', categoryRouter);
 app.use('/tempo-uso', tempoUsoRouter);
+app.use('/v2/tempo-uso', tempoUsoMonitoramentoRouter);
 app.use('/email', emailRouter);
 app.use('/formas-pagamento', formaPagamentoRouter);
 app.use('/compras', compraRouter);

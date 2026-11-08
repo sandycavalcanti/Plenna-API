@@ -25,6 +25,10 @@ const common = {
   versaoContrato: z.literal(1), usuarioId: id, janela,
   compras: z.array(compra), limiteIndividual: limit, orcamentoMensal: limit,
   anterior: z.object({ janela, coberturaComparavel: z.boolean(), compras: z.array(compra) }).strict().optional(),
+  rf017: z.object({
+    versaoContrato: z.literal(1), utilizavel: z.literal(false),
+    disponibilidade: z.enum(['NAO_FORNECIDA', 'SEM_AUTORIZACAO', 'DESCONHECIDA', 'PARCIAL']),
+  }).strict().optional(),
 };
 export const entradaPeriodoSchema = z.object(common).strict();
 export const entradaCompraSchema = z.object({ ...common, compraId: id }).strict();
