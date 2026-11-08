@@ -1,10 +1,12 @@
-import { classificacoesAgregadoSql, type ClassificacaoAgregada } from '../compra/eventos.consulta.js';
 import { segundosDoRegistro } from '../tempo-uso/tempo-uso.duracao.js';
+import { itemTotalCents } from '../compra/limite.service.js';
 import { legacyReadOverlay } from '../tempo-uso-v2/legacy.runtime.js';
 import { Prisma } from '@prisma/client';
+import { classificacoesAgregadoSql, type ClassificacaoAgregada } from '../compra/eventos.consulta.js';
 import { prisma } from '../../lib/prisma.js';
-import { BUSINESS_TIMEZONE, getMonthBounds, financialWhere, parseMonth, summarizeValues, cents } from '../compra/financeiro.js';
+import { BUSINESS_TIMEZONE, businessPeriod, getMonthBounds, financialWhere, parseMonth, summarizeValues, cents } from '../compra/financeiro.js';
 import { AppError } from '../../errors/AppError.js';
+import { resolverOrcamentoMensal } from '../compra/referencias.service.js';
 import type {
   AnalyticsCategoryDTO,
   AnalyticsImpulsivityDTO,
@@ -327,14 +329,14 @@ export class DashboardService {
         OR: periodDefinitions.map((period) => ({
           compra_horario: {
             gte: period.start,
-            lt: period.end,
+            lt: new Date(Math.min(period.end.getTime(), observedAt.getTime())),
           },
         })),
       }
       : {
         compra_horario: {
           gte: rangeStart,
-          lt: rangeEnd,
+          lt: new Date(Math.min(rangeEnd.getTime(), observedAt.getTime())),
         },
       };
 
@@ -347,6 +349,7 @@ export class DashboardService {
       },
       select: {
         compra_horario: true,
+        compra_email: true,
         compra_valor: true,
         compra_desconto: true,
         compra_acima_limite: true,
@@ -361,6 +364,7 @@ export class DashboardService {
           select: {
             categoria_id: true,
             compra_item_valor: true,
+            compra_item_quantidade: true,
             tb_categoria: { select: { categoria_nome: true } },
           },
         },
@@ -390,7 +394,6 @@ export class DashboardService {
           });
         }
 
-
       }
 
       if (purchase.compra_acima_limite === true) {
@@ -406,7 +409,8 @@ export class DashboardService {
 
       for (const item of purchase.tb_compra_item) {
         if (item.categoria_id === null || !item.tb_categoria) continue;
-        const itemCents = toCents(item.compra_item_valor);
+        if (purchase.compra_email && item.compra_item_quantidade === null) continue;
+        const itemCents = itemTotalCents(item.compra_item_valor, item.compra_item_quantidade ?? null);
         if (itemCents === null) continue;
 
         const existing = period.categorias.get(item.categoria_id);
@@ -454,15 +458,21 @@ export class DashboardService {
         select: { usuario_meta_valor_mensal: true, usuario_meta_valor_compra: true } });
       if (!user) throw new AppError('Usuário não encontrado', 404);
       const compras = await tx.tb_compra.findMany({ where: financialWhere(userId, start), select: { compra_valor: true } });
-      const summary = summarizeValues(compras.map(c => c.compra_valor), user.usuario_meta_valor_mensal ?? null);
-      const limite = user.usuario_meta_valor_compra == null || cents(user.usuario_meta_valor_compra) === 0 ? null : cents(user.usuario_meta_valor_compra);
+      const selectedPeriod = businessPeriod(start);
+      const reference = await resolverOrcamentoMensal(tx, userId, selectedPeriod);
+      const summary = summarizeValues(compras.map(c => c.compra_valor), reference.valor ?? (selectedPeriod === businessPeriod(new Date()) && reference.motivo !== 'ORCAMENTO_DESATIVADO' ? user.usuario_meta_valor_mensal : null));
+      const limiteCentavos = user.usuario_meta_valor_compra == null
+        ? null
+        : cents(user.usuario_meta_valor_compra);
+      const limite = limiteCentavos !== null && limiteCentavos > 0 ? limiteCentavos : null;
       return { periodo: start.toISOString().slice(0,7), timezone: BUSINESS_TIMEZONE, inicio: start.toISOString(), fimExclusivo: end.toISOString(),
         ...summary, limitePorCompra: limite === null ? null : limite / 100,
         comprasAcimaLimiteIndividual: limite === null ? null : compras.filter(c => c.compra_valor !== null && cents(c.compra_valor) > limite).length };
     }, { isolationLevel: 'RepeatableRead' });
   }
   static async findGastosPorCategoria(userId: number, periodo?: unknown): Promise<GastoCategoriaDTO[]> {
-    const { start, end } = parseMonth(periodo);
+    const { start } = parseMonth(periodo);
+    const end = financialWhere(userId, start).compra_horario.lt;
 
     const compras = await prisma.tb_compra.findMany({
       where: {
@@ -479,11 +489,13 @@ export class DashboardService {
       },
       select: {
         compra_valor: true,
+        compra_email: true,
         tb_compra_item: {
           // Itens excluídos logicamente não entram na soma por categoria.
           where: { compra_item_ativo: 1 },
           select: {
             compra_item_valor: true,
+            compra_item_quantidade: true,
             tb_categoria: { select: { categoria_nome: true } },
           },
         },
@@ -500,7 +512,10 @@ export class DashboardService {
       if (compra.compra_valor === null || compra.tb_compra_item.some(item => !item.tb_categoria)) { ignorados += 1; return false; }
       return true;
     });
-    const items = eligible.flatMap(compra => compra.tb_compra_item);
+    const items = eligible.flatMap(compra => compra.tb_compra_item.filter(item => {
+      if (compra.compra_email && item.compra_item_quantidade === null) { ignorados += 1; return false; }
+      return true;
+    }));
 
     for (const item of items) {
       // Itens sem categoria não entram nesta visão, pois o contrato do
@@ -514,7 +529,9 @@ export class DashboardService {
       // acumulam no mesmo grupo e categorias diferentes ficam separadas.
       const categoriaNome = item.tb_categoria.categoria_nome;
       const totalAtual = totalsByCategory.get(categoriaNome) ?? 0;
-      totalsByCategory.set(categoriaNome, totalAtual + toNumber(item.compra_item_valor));
+      const itemCents = itemTotalCents(item.compra_item_valor, item.compra_item_quantidade ?? null);
+      if (itemCents === null) { ignorados += 1; continue; }
+      totalsByCategory.set(categoriaNome, totalAtual + itemCents / 100);
     }
     registrarIgnorados('gastos_categoria', ignorados);
 
@@ -522,7 +539,8 @@ export class DashboardService {
   }
 
   static async findGastosPorFormaPagamento(userId: number, periodo?: unknown): Promise<GastoFormaPagamentoDTO[]> {
-    const { start, end } = parseMonth(periodo);
+    const { start } = parseMonth(periodo);
+    const end = financialWhere(userId, start).compra_horario.lt;
 
     const compras = await prisma.tb_compra.findMany({
       where: {
@@ -582,7 +600,8 @@ export class DashboardService {
   }
 
   static async findComprasAcimaLimite(userId: number, periodo?: unknown): Promise<LimiteComprasDTO> {
-    const { start, end } = parseMonth(periodo);
+    const { start } = parseMonth(periodo);
+    const end = financialWhere(userId, start).compra_horario.lt;
 
     const grupos = await prisma.tb_compra.groupBy({
       where: {
@@ -620,7 +639,8 @@ export class DashboardService {
   }
 
   static async findTempoVsGasto(userId: number, periodo?: unknown): Promise<TempoVsGastoDTO[]> {
-    const { start, end } = parseMonth(periodo);
+    const { start } = parseMonth(periodo);
+    const end = financialWhere(userId, start).compra_horario.lt;
 
     // As consultas são independentes e executadas em paralelo para reduzir
     // o tempo total necessário para montar o indicador.

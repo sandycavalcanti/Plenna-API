@@ -6,6 +6,7 @@ import { handleError } from '../../utils/handleError.js';
 
 export class DashboardController {
   static async analytics(req: AuthRequest, res: Response) {
+    res.setHeader?.('Cache-Control','no-store');
     try {
       if (!req.userId) {
         return res.status(401).json({ error: 'Token inválido' });
@@ -13,7 +14,15 @@ export class DashboardController {
 
       const query = analyticsQuerySchema.parse(req.query);
       const result = await DashboardService.analytics(req.userId, query);
-      return res.json(analyticsResponseSchema.parse(result));
+      const output = analyticsResponseSchema.safeParse(result);
+      if (!output.success) {
+        // Invalid server output is not a malformed client period. Never log values.
+        console.error('dashboard.analytics.invalid_output', {mode:query.mode,month:query.month,
+          campos:[...new Set(output.error.issues.map(i=>i.path.filter(p=>typeof p==='string').join('.')))]});
+        return res.status(500).json({message:'Não foi possível validar os indicadores do período.',code:'ANALYTICS_OUTPUT_INVALID',
+          errors:output.error.issues.map(i=>({field:i.path.filter(p=>typeof p==='string').join('.'),code:i.code}))});
+      }
+      return res.json(output.data);
     } catch (error: any) {
       return handleError(res, 500, error);
     }
