@@ -55,7 +55,18 @@ export class ConsentimentoService {
     }
     static async registrarComClient(tx, userId, codigo, status, conexaoConfirmada = false) {
         await this.bloquearUsuario(tx, userId);
-        if (codigo === CONSENTIMENTO_CODIGOS.EMAIL && status && !conexaoConfirmada) {
+        const integracaoGmail = codigo === CONSENTIMENTO_CODIGOS.EMAIL && status && !conexaoConfirmada
+            ? await tx.tb_integracao.findFirst({
+                where: {
+                    usuario_id: userId,
+                    integracao_provedor: 'GMAIL',
+                    integracao_access_token: { not: '' },
+                    integracao_refresh_token: { not: '' },
+                },
+                select: { integracao_id: true },
+            })
+            : null;
+        if (codigo === CONSENTIMENTO_CODIGOS.EMAIL && status && !conexaoConfirmada && !integracaoGmail) {
             throw new AppError('Conclua a conexão de e-mail para autorizar a captura', 409);
         }
         const tipo = await tx.tb_consentimento_tipo.findUnique({

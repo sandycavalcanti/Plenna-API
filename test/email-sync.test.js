@@ -19,6 +19,11 @@ const { RequestyProvider } = await import('../dist/src/modules/email/requesty.pr
 const { AIRateLimitError } = await import('../dist/src/modules/email/ai-provider.js');
 const { EmailClassificationEngine } = await import('../dist/src/modules/email/classification.engine.js');
 const { EmailService } = await import('../dist/src/modules/email/email.service.js');
+const { OAuthTentativaService } = await import('../dist/src/modules/email/oauth-tentativa.service.js');
+const { ConsentimentoService } = await import('../dist/src/modules/consentimento/consentimento.service.js');
+// Este arquivo usa doubles de Gmail/Prisma para testar a extração e a sincronização.
+// O cenário de bloqueio por consentimento é coberto separadamente.
+EmailService.assertCaptureConsent = async () => {};
 const { DashboardService } = await import('../dist/src/modules/dashboard/dashboard.service.js');
 const { CompraService } = await import('../dist/src/modules/compra/compra.service.js');
 const { createCompraSchema } = await import('../dist/src/modules/compra/compra.schemas.js');
@@ -110,11 +115,17 @@ test('callback OAuth redireciona para o app no sucesso', async () => {
   const originalExchange = EmailService.exchangeCodeForTokens;
   const originalEmail = EmailService.getGoogleUserEmail;
   const originalSave = EmailService.saveIntegration;
+  const originalCallback = OAuthTentativaService.callback;
+  const originalFinalizar = OAuthTentativaService.finalizar;
+  const originalRegistrar = ConsentimentoService.registrar;
   EmailService.exchangeCodeForTokens = async () => ({ access_token: 'token', expires_in: 3600, refresh_token: 'refresh' });
   EmailService.getGoogleUserEmail = async () => 'user@example.com';
   EmailService.saveIntegration = async () => ({});
+  OAuthTentativaService.callback = async () => ({ tentativaId: 'tentativa-teste', userId: 7 });
+  OAuthTentativaService.finalizar = async () => {};
+  ConsentimentoService.registrar = async () => ({});
 
-  const req = { query: { code: 'abc', state: '1' } };
+  const req = { query: { code: 'abc', state: 'A'.repeat(43) } };
   const res = fakeResponse();
   await EmailController.callback(req, res);
 
@@ -123,21 +134,34 @@ test('callback OAuth redireciona para o app no sucesso', async () => {
   EmailService.exchangeCodeForTokens = originalExchange;
   EmailService.getGoogleUserEmail = originalEmail;
   EmailService.saveIntegration = originalSave;
+  OAuthTentativaService.callback = originalCallback;
+  OAuthTentativaService.finalizar = originalFinalizar;
+  ConsentimentoService.registrar = originalRegistrar;
 });
 
 test('callback OAuth redireciona para o app no erro', async () => {
   const originalExchange = EmailService.exchangeCodeForTokens;
+  const originalCallback = OAuthTentativaService.callback;
+  const originalFinalizar = OAuthTentativaService.finalizar;
   EmailService.exchangeCodeForTokens = async () => {
     throw new Error('falha');
   };
+  OAuthTentativaService.callback = async () => ({ tentativaId: 'tentativa-teste', userId: 7 });
+  let finalizado = false;
+  OAuthTentativaService.finalizar = async (_id, status) => {
+    finalizado = status === 'FALHOU';
+  };
 
-  const req = { query: { code: 'abc', state: '1' } };
+  const req = { query: { code: 'abc', state: 'A'.repeat(43) } };
   const res = fakeResponse();
   await EmailController.callback(req, res);
 
   assert.equal(res.body, 'plenna://oauth-error');
+  assert.equal(finalizado, true);
 
   EmailService.exchangeCodeForTokens = originalExchange;
+  OAuthTentativaService.callback = originalCallback;
+  OAuthTentativaService.finalizar = originalFinalizar;
 });
 
 test('RequestyProvider rejeita ausência de API key', async () => {

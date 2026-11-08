@@ -4,6 +4,9 @@ import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import { normalizeGmailMessage } from './gmail.normalizer.js';
 import { downloadGmailAttachment } from './gmail.attachment.js';
+import { AppError } from '../../errors/AppError.js';
+import { CONSENTIMENTO_CODIGOS } from '../consentimento/consentimento.constants.js';
+import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 const googleTokenResponseSchema = z.object({
     access_token: z.string(),
     expires_in: z.number(),
@@ -43,14 +46,36 @@ function logGmailRequestError(operation, error) {
         },
     });
 }
+function isGoogleAuthorizationError(error) {
+    const axiosError = error;
+    const responseError = axiosError.response?.data?.error;
+    const responseStatus = typeof responseError === 'object' && responseError !== null ? responseError.status : undefined;
+    const responseCode = typeof responseError === 'object' && responseError !== null ? responseError.code : undefined;
+    const responseText = typeof responseError === 'string'
+        ? responseError
+        : typeof responseError === 'object' && responseError !== null
+            ? `${responseError.status ?? ''} ${responseError.message ?? ''}`
+            : '';
+    return axiosError.response?.status === 401
+        || responseCode === 401
+        || responseStatus === 'UNAUTHENTICATED'
+        || responseStatus === 'PERMISSION_DENIED'
+        || /invalid_grant|unauthorized|authentication|permission denied/i.test(responseText);
+}
 /**
  * Centraliza acesso ao Google/Gmail e validação das respostas externas.
  */
 export class EmailService {
+    static async assertCaptureConsent(userId) {
+        const autorizado = await ConsentimentoService.temConsentimentoAtivo(userId, CONSENTIMENTO_CODIGOS.EMAIL);
+        if (!autorizado) {
+            throw new AppError('Captura via e-mail desativada', 403);
+        }
+    }
     /**
      * Gera a URL OAuth do Google usando os escopos mínimos necessários.
      */
-    static generateGoogleUrl(userId) {
+    static generateGoogleUrl(state) {
         const params = new URLSearchParams({
             client_id: env.googleClientId,
             redirect_uri: env.googleRedirectUri,
@@ -58,7 +83,7 @@ export class EmailService {
             scope: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/userinfo.email'].join(' '),
             access_type: 'offline',
             prompt: 'consent',
-            state: userId.toString(),
+            state,
         });
         return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
     }
@@ -97,6 +122,8 @@ export class EmailService {
                     integracao_access_token: accessToken,
                     integracao_refresh_token: nextRefreshToken,
                     integracao_token_expira_em: expiresAt,
+                    integracao_sincronizacao_status: 'PENDENTE',
+                    integracao_ultimo_erro: null,
                 },
             });
         }
@@ -135,8 +162,83 @@ export class EmailService {
             },
         });
     }
+    static async getIntegrationStatus(userId) {
+        const integration = await prisma.tb_integracao.findFirst({
+            where: { usuario_id: userId, integracao_provedor: 'GMAIL' },
+            orderBy: { integracao_data_criacao: 'desc' },
+            select: {
+                integracao_email: true,
+                integracao_access_token: true,
+                integracao_refresh_token: true,
+                integracao_sincronizacao_status: true,
+                integracao_ultima_sincronizacao_em: true,
+                integracao_ultimo_erro: true,
+            },
+        });
+        if (!integration) {
+            return {
+                connected: false,
+                credentialsStored: false,
+                authorizationStatus: 'NOT_CONFIGURED',
+                operational: false,
+                requiresReauth: false,
+                email: null,
+                syncStatus: null,
+                lastSyncAt: null,
+            };
+        }
+        const credentialsStored = Boolean(integration.integracao_access_token?.trim() && integration.integracao_refresh_token?.trim());
+        const requiresReauth = integration.integracao_ultimo_erro === 'RECONEXAO_GMAIL_NECESSARIA';
+        return {
+            connected: credentialsStored,
+            credentialsStored,
+            // A tela não deve inferir que o Google foi consultado só porque há tokens
+            // persistidos. A integração só passa a exigir reconexão após um erro real
+            // de autorização; sem esse sinal, o estado é "credenciais armazenadas".
+            authorizationStatus: !credentialsStored ? 'NOT_CONFIGURED' : requiresReauth ? 'RECONNECT_REQUIRED' : 'CREDENTIALS_STORED',
+            operational: credentialsStored && !requiresReauth,
+            requiresReauth,
+            email: integration.integracao_email,
+            syncStatus: integration.integracao_sincronizacao_status,
+            lastSyncAt: integration.integracao_ultima_sincronizacao_em,
+        };
+    }
+    static isGoogleAuthorizationError(error) {
+        return isGoogleAuthorizationError(error);
+    }
+    static async markAuthorizationFailure(integrationId, error) {
+        if (!isGoogleAuthorizationError(error))
+            return false;
+        await prisma.tb_integracao.updateMany({
+            where: { integracao_id: integrationId, integracao_provedor: 'GMAIL' },
+            data: {
+                integracao_sincronizacao_status: 'ERRO',
+                integracao_ultimo_erro: 'RECONEXAO_GMAIL_NECESSARIA',
+            },
+        });
+        return true;
+    }
+    static async markAuthorizationFailureForUser(userId, error) {
+        if (!isGoogleAuthorizationError(error))
+            return false;
+        await prisma.tb_integracao.updateMany({
+            where: { usuario_id: userId, integracao_provedor: 'GMAIL' },
+            data: {
+                integracao_sincronizacao_status: 'ERRO',
+                integracao_ultimo_erro: 'RECONEXAO_GMAIL_NECESSARIA',
+            },
+        });
+        return true;
+    }
     static async refreshIntegrationTokens(integration) {
-        const refreshed = await this.refreshAccessToken(integration.integracao_refresh_token);
+        let refreshed;
+        try {
+            refreshed = await this.refreshAccessToken(integration.integracao_refresh_token);
+        }
+        catch (error) {
+            await this.markAuthorizationFailure(integration.integracao_id, error);
+            throw error;
+        }
         const expiresAt = new Date(Date.now() + refreshed.expires_in * 1000);
         return prisma.tb_integracao.update({
             where: { integracao_id: integration.integracao_id },

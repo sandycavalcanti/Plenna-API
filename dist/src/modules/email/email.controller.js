@@ -3,6 +3,8 @@ import { EmailSyncService } from './email-sync.service.js';
 import { handleError } from '../../utils/handleError.js';
 import { env } from '../../lib/env.js';
 import crypto from 'node:crypto';
+import { OAuthTentativaService } from './oauth-tentativa.service.js';
+import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 /**
  * Compara segredos utilizando tempo constante quando possuem o mesmo tamanho,
  * reduzindo a exposição a ataques baseados no tempo da comparação.
@@ -36,7 +38,18 @@ export class EmailController {
         try {
             if (!req.userId)
                 return res.status(401).json({ error: 'Token inválido' });
-            return res.json({ url: EmailService.generateGoogleUrl(req.userId) });
+            const tentativa = await OAuthTentativaService.iniciar(req.userId);
+            return res.json({ url: EmailService.generateGoogleUrl(tentativa.state) });
+        }
+        catch (error) {
+            return handleError(res, 500, error);
+        }
+    }
+    static async status(req, res) {
+        try {
+            if (!req.userId)
+                return res.status(401).json({ error: 'Token invalido' });
+            return res.json(await EmailService.getIntegrationStatus(req.userId));
         }
         catch (error) {
             return handleError(res, 500, error);
@@ -44,18 +57,37 @@ export class EmailController {
     }
     static async callback(req, res) {
         semCache(res);
+        let tentativaId = null;
         try {
             const { code, state } = req.query;
-            if (!code || !state) {
-                res.status(400).json({ error: 'Código e state são obrigatórios' });
+            if (typeof req.query.error === 'string') {
+                if (typeof state === 'string')
+                    await OAuthTentativaService.cancelar(state);
+                res.redirect('plenna://oauth-error');
                 return;
             }
+            if (typeof code !== 'string' || typeof state !== 'string') {
+                res.redirect('plenna://oauth-error');
+                return;
+            }
+            const tentativa = await OAuthTentativaService.callback(state);
+            tentativaId = tentativa.tentativaId;
             const tokens = await EmailService.exchangeCodeForTokens(String(code));
             const email = await EmailService.getGoogleUserEmail(tokens.access_token);
-            await EmailService.saveIntegration(Number(state), email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
+            await EmailService.saveIntegration(tentativa.userId, email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
+            await ConsentimentoService.registrar(tentativa.userId, 'EMAIL', true);
+            await OAuthTentativaService.finalizar(tentativa.tentativaId, 'CONCLUIDA');
             res.redirect(`${env.apiBaseUrl}/oauth-success.html`);
         }
         catch {
+            if (tentativaId) {
+                try {
+                    await OAuthTentativaService.finalizar(tentativaId, 'FALHOU');
+                }
+                catch {
+                    // A falha no saneamento da tentativa nÃ£o deve expor detalhes internos no redirect.
+                }
+            }
             res.redirect('plenna://oauth-error');
         }
     }
@@ -93,6 +125,7 @@ export class EmailController {
         try {
             if (!req.userId)
                 return res.status(401).json({ error: 'Token inválido' });
+            await EmailService.assertCaptureConsent(req.userId);
             const integration = await EmailService.findIntegrationByUserId(req.userId);
             if (!integration)
                 return res.status(404).json({ error: 'Integração Gmail não encontrada' });
@@ -101,6 +134,14 @@ export class EmailController {
             return res.json(messages.map((message) => ({ id: message.id, threadId: message.threadId, snippet: message.snippet, internalDate: message.internalDate, labelIds: message.labelIds })));
         }
         catch (error) {
+            if (req.userId) {
+                try {
+                    await EmailService.markAuthorizationFailureForUser(req.userId, error);
+                }
+                catch {
+                    // O erro original do Gmail continua sendo tratado sem expor detalhes internos.
+                }
+            }
             return handleError(res, 500, error);
         }
     }
@@ -108,6 +149,7 @@ export class EmailController {
         try {
             if (!req.userId)
                 return res.status(401).json({ error: 'Token inválido' });
+            await EmailService.assertCaptureConsent(req.userId);
             const integration = await EmailService.findIntegrationByUserId(req.userId);
             if (!integration)
                 return res.status(404).json({ error: 'Integração Gmail não encontrada' });
@@ -115,6 +157,14 @@ export class EmailController {
             return res.json(await EmailService.getMessage(accessToken, String(req.params.messageId)));
         }
         catch (error) {
+            if (req.userId) {
+                try {
+                    await EmailService.markAuthorizationFailureForUser(req.userId, error);
+                }
+                catch {
+                    // O erro original do Gmail continua sendo tratado sem expor detalhes internos.
+                }
+            }
             return handleError(res, 500, error);
         }
     }

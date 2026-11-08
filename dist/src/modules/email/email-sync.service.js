@@ -367,6 +367,7 @@ async function resolveExistingPurchase(userId, message, extracted, paymentMethod
     return { reconciled: transactionResult.purchase };
 }
 export async function createCompraFromMessage(userId, message, supplemental = {}, accessToken, aiProvider, classificationPath = 'DETERMINISTIC_COMPRA') {
+    await EmailService.assertCaptureConsent(userId);
     const normalizedEmail = toNormalizedEmail(message);
     const deterministic = buildExtractedPurchase(message, supplemental);
     let aiPurchase = null;
@@ -570,6 +571,7 @@ export async function createCompraFromMessage(userId, message, supplemental = {}
     }
 }
 async function createPropagandaFromMessage(userId, message, categoryId) {
+    await EmailService.assertCaptureConsent(userId);
     const horario = parseDateFromMessage(message);
     if (!horario) {
         throw new Error('Data inválida no e-mail');
@@ -706,6 +708,7 @@ export class EmailSyncService {
      */
     static async syncUser(userId) {
         console.info('[EmailSyncService] sync started');
+        await EmailService.assertCaptureConsent(userId);
         const integration = await EmailService.findIntegrationByUserId(userId);
         if (!integration) {
             throw new AppError('Integração Gmail não encontrada', 404);
@@ -720,6 +723,7 @@ export class EmailSyncService {
         const isBootstrap = previousCursor === null;
         const executionLimit = isBootstrap ? env.emailSyncInitialMessages : env.emailSyncMaxMessagesPerRun;
         try {
+            await EmailService.assertCaptureConsent(userId);
             console.info('[EmailSyncService] obtaining Gmail credentials');
             const accessToken = await EmailService.getValidAccessToken(integration);
             console.info('[EmailSyncService] Gmail credentials resolved');
@@ -741,6 +745,7 @@ export class EmailSyncService {
             let shouldFailRun = false;
             let failureReason = null;
             for (const summary of messages) {
+                await EmailService.assertCaptureConsent(userId);
                 if (result.processed >= executionLimit) {
                     shouldFailRun = true;
                     failureReason = `Limite de ${executionLimit} mensagens por execução atingido`;
@@ -752,8 +757,10 @@ export class EmailSyncService {
                 }
                 result.processed += 1;
                 console.info(`[EmailSyncService] fetching Gmail message idPresent=${Boolean(summary.id)}`);
+                await EmailService.assertCaptureConsent(userId);
                 const detail = await EmailService.getMessage(accessToken, summary.id);
                 console.info('[EmailSyncService] Gmail message fetched');
+                await EmailService.assertCaptureConsent(userId);
                 const classification = EmailClassificationEngine.classify(detail);
                 if (classification.outcome === 'COMPRA') {
                     const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase, accessToken, aiProvider);
@@ -823,6 +830,7 @@ export class EmailSyncService {
             if (shouldFailRun) {
                 throw new AppError(failureReason ?? 'Falha na classificação por IA', 500);
             }
+            await EmailService.assertCaptureConsent(userId);
             await prisma.tb_integracao.update({
                 where: { integracao_id: integration.integracao_id },
                 data: {
@@ -836,13 +844,22 @@ export class EmailSyncService {
         catch (error) {
             console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', safeErrorMessage(error));
             logSyncErrorDiagnostic(error);
-            await prisma.tb_integracao.update({
-                where: { integracao_id: integration.integracao_id },
-                data: {
-                    integracao_sincronizacao_status: 'ERRO',
-                    integracao_ultimo_erro: safeErrorMessage(error),
-                },
-            });
+            try {
+                await prisma.tb_integracao.update({
+                    where: { integracao_id: integration.integracao_id },
+                    data: {
+                        integracao_sincronizacao_status: 'ERRO',
+                        integracao_ultimo_erro: EmailService.isGoogleAuthorizationError(error)
+                            ? 'RECONEXAO_GMAIL_NECESSARIA'
+                            : safeErrorMessage(error),
+                    },
+                });
+            }
+            catch (statusError) {
+                if (!(statusError instanceof Prisma.PrismaClientKnownRequestError && statusError.code === 'P2025')) {
+                    throw statusError;
+                }
+            }
             throw error;
         }
     }
@@ -851,7 +868,17 @@ export class EmailSyncService {
             return { processedUsers: 0, lockedUsers: 0, failedUsers: 0 };
         }
         const integrations = await prisma.tb_integracao.findMany({
-            where: { integracao_provedor: 'GMAIL' },
+            where: {
+                integracao_provedor: 'GMAIL',
+                tb_usuario: {
+                    tb_consentimento: {
+                        some: {
+                            consentimento_status: true,
+                            tb_consentimento_tipo: { consentimento_tipo_codigo: 'EMAIL' },
+                        },
+                    },
+                },
+            },
             orderBy: { integracao_data_criacao: 'desc' },
             take: env.emailSyncMaxUsersPerRun,
             distinct: ['usuario_id'],

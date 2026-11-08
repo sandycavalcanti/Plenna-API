@@ -24,11 +24,40 @@ export class OAuthTentativaService {
         return { tentativa, state, segredo };
     }
     static async callback(state) {
-        const tentativa = await prisma.tb_oauth_tentativa.findUnique({ where: { oauth_state_hash: hashOAuth(state) } });
-        if (!tentativa || tentativa.oauth_status !== 'PENDENTE' || tentativa.oauth_expira_em <= new Date()) {
+        if (!/^[A-Za-z0-9_-]{43}$/.test(state)) {
             throw new AppError('Tentativa inválida ou expirada', 400);
         }
-        return tentativa.oauth_tentativa_id;
+        return prisma.$transaction(async (tx) => {
+            const tentativa = await tx.tb_oauth_tentativa.findUnique({ where: { oauth_state_hash: hashOAuth(state) } });
+            if (!tentativa || tentativa.oauth_status !== 'PENDENTE' || tentativa.oauth_expira_em <= new Date()) {
+                throw new AppError('Tentativa inválida ou expirada', 400);
+            }
+            const atualizado = await tx.tb_oauth_tentativa.updateMany({
+                where: {
+                    oauth_tentativa_id: tentativa.oauth_tentativa_id,
+                    oauth_status: 'PENDENTE',
+                    oauth_expira_em: { gt: new Date() },
+                },
+                data: { oauth_status: 'PROCESSANDO' },
+            });
+            if (atualizado.count !== 1)
+                throw new AppError('Tentativa indisponível', 409);
+            return { tentativaId: tentativa.oauth_tentativa_id, userId: tentativa.usuario_id };
+        });
+    }
+    static async finalizar(tentativaId, status) {
+        await prisma.tb_oauth_tentativa.updateMany({
+            where: { oauth_tentativa_id: tentativaId, oauth_status: 'PROCESSANDO' },
+            data: { oauth_status: status, oauth_finalizada_em: new Date() },
+        });
+    }
+    static async cancelar(state) {
+        if (!/^[A-Za-z0-9_-]{43}$/.test(state))
+            return;
+        await prisma.tb_oauth_tentativa.updateMany({
+            where: { oauth_state_hash: hashOAuth(state), oauth_status: 'PENDENTE' },
+            data: { oauth_status: 'CANCELADA', oauth_finalizada_em: new Date() },
+        });
     }
     static async verificar(tx, userId, data) {
         const tentativa = await tx.tb_oauth_tentativa.findUnique({ where: { oauth_tentativa_id: data.tentativa } });
