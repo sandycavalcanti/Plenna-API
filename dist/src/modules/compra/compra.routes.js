@@ -6,6 +6,7 @@ export const compraRouter = Router();
 // operações é obtido do JWT pelo authMiddleware, e não enviado pelo cliente.
 compraRouter.use(authMiddleware);
 compraRouter.get('/', CompraController.findAllByUserId);
+compraRouter.get('/historico', CompraController.historico);
 // Rotas fixas devem ser declaradas antes de `/:compraId` para que valores
 // como "pending" não sejam interpretados como identificadores de compra.
 compraRouter.get('/pending', CompraController.findPendingByUserId);

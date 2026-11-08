@@ -359,6 +359,7 @@ model tb_meta {
   meta_valor             Decimal                  @db.Decimal(10, 2)
   meta_data              DateTime?                @db.Date
   meta_completado        Boolean                  @default(false)
+  meta_data_conclusao    DateTime?                @db.Timestamptz(6)
   meta_data_criacao      DateTime                 @default(now()) @db.Timestamp(6)
   meta_valor_reservado   Decimal                  @default(0) @db.Decimal(10, 2)
   tb_usuario             tb_usuario               @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction)

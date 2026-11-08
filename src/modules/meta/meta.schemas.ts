@@ -73,6 +73,10 @@ export const metaMovimentacaoListQuerySchema = z.object({
   cursor: z.string().trim().min(1).max(512).optional(),
 }).strict();
 
+export const metaHistoricoQuerySchema = z.object({
+  periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/, 'Use o perÃ­odo AAAA-MM'),
+}).strict();
+
 export const metaMovimentacaoSchema = z.object({
   meta_movimentacao_id: z.number().int().positive(),
   meta_id: z.number().int().positive(),
@@ -102,6 +106,29 @@ export const metaMovimentacaoListResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 }).strict();
 
+export const metaHistoricoItemSchema = z.object({
+  meta_id: z.number().int().positive(),
+  meta_titulo: z.string(),
+  meta_descricao: z.string().nullable(),
+  meta_valor: metaMoneyOutputSchema,
+  meta_valor_reservado: metaMoneyOutputSchema,
+  progresso_percentual: z.number().finite().nonnegative(),
+  meta_completado: z.boolean(),
+  meta_data_criacao: z.string().datetime({ offset: true }),
+  meta_data_conclusao: z.string().datetime({ offset: true }).nullable(),
+  saldo_historico_disponivel: z.boolean(),
+  historico_completo: z.boolean(),
+  historico_limitacoes: z.array(z.string()).max(10),
+}).strict();
+
+export const metaHistoricoResponseSchema = z.object({
+  versaoContrato: z.literal(2),
+  periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/),
+  referenciaTemporal: z.literal('America/Sao_Paulo'),
+  metas: z.array(metaHistoricoItemSchema),
+  limitacoes: z.array(z.string()).max(20),
+}).strict();
+
 export const metaMovimentacaoErrorCodeSchema = z.enum([
   'DADOS_INVALIDOS',
   'META_NAO_ENCONTRADA',
@@ -123,8 +150,11 @@ export const metaMovimentacaoErrorSchema = z.object({
 export type MetaMovimentacaoInput = z.infer<typeof metaMovimentacaoInputSchema>;
 export type MetaMovimentacaoPath = z.infer<typeof metaMovimentacaoPathSchema>;
 export type MetaMovimentacaoListQuery = z.infer<typeof metaMovimentacaoListQuerySchema>;
+export type MetaHistoricoQuery = z.infer<typeof metaHistoricoQuerySchema>;
 export type MetaMovimentacao = z.infer<typeof metaMovimentacaoSchema>;
 export type MetaCofrinhoResumo = z.infer<typeof metaCofrinhoResumoSchema>;
 export type MetaMovimentacaoCreateResponse = z.infer<typeof metaMovimentacaoCreateResponseSchema>;
 export type MetaMovimentacaoListResponse = z.infer<typeof metaMovimentacaoListResponseSchema>;
+export type MetaHistoricoItem = z.infer<typeof metaHistoricoItemSchema>;
+export type MetaHistoricoResponse = z.infer<typeof metaHistoricoResponseSchema>;
 export type MetaMovimentacaoError = z.infer<typeof metaMovimentacaoErrorSchema>;

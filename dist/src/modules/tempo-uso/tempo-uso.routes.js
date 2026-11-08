@@ -4,6 +4,8 @@ import { TempoUsoController } from './tempo-uso.controller.js';
 export const tempoUsoRouter = Router();
 tempoUsoRouter.post('/', authMiddleware, TempoUsoController.create);
 tempoUsoRouter.get('/', authMiddleware, TempoUsoController.findAllByUserId);
+tempoUsoRouter.get('/aplicativos', authMiddleware, TempoUsoController.listarAplicativosCompra);
+tempoUsoRouter.put('/sync', authMiddleware, TempoUsoController.sync);
 tempoUsoRouter.get('/:id', authMiddleware, TempoUsoController.findById);
 tempoUsoRouter.put('/:id', authMiddleware, TempoUsoController.update);
 tempoUsoRouter.delete('/:id', authMiddleware, TempoUsoController.delete);

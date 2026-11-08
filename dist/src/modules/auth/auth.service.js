@@ -17,7 +17,7 @@ export class AuthService {
             where: { usuario_email: data.email },
         });
         if (userExists)
-            throw new AppError("Email já cadastrado", 400);
+            throw new AppError("Email já cadastrado", 409);
         const hash = await bcrypt.hash(data.senha, 10);
         const tipoTermos = await ConsentimentoService.findTipoPorCodigo(CONSENTIMENTO_CODIGOS.TERMOS_USO);
         return prisma.$transaction(async (tx) => {
@@ -36,7 +36,8 @@ export class AuthService {
                     consentimento_data_criacao: new Date(),
                 },
             });
-            return user;
+            const { usuario_senha, ...usuarioSeguro } = user;
+            return usuarioSeguro;
         });
     }
     static async login(email, password) {
@@ -48,8 +49,9 @@ export class AuthService {
                 },
             },
         });
-        if (!user)
+        if (!user || user.usuario_status !== true) {
             throw new AppError("Credenciais inválidas", 401);
+        }
         const match = await bcrypt.compare(password, user.usuario_senha);
         if (!match)
             throw new AppError("Credenciais inválidas", 401);

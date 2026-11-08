@@ -6,7 +6,15 @@ import { AppError } from '../../errors/AppError.js';
 
 type MetaDatabase = {
   tb_meta: any;
+  $transaction?: (callback: (database: MetaDatabase) => Promise<any>) => Promise<any>;
+  $queryRaw?: any;
 };
+
+async function inTransaction<T>(database: MetaDatabase, callback: (transaction: MetaDatabase) => Promise<T>) {
+  if (typeof database.$transaction === 'function') return database.$transaction(callback);
+  // Keeps the service unit-testable with the small doubles used by this module.
+  return callback(database);
+}
 
 export function serializeMeta(meta: any) {
   return {
@@ -39,13 +47,36 @@ export class MetaService {
   }
 
   static async checkMeta(userId: number, data: CheckMetaDTO, database: MetaDatabase = prisma) {
-    const meta = await database.tb_meta.findFirst({
-      where: { meta_id: data.meta_id, usuario_id: userId },
-    });
-    if (!meta) throw new AppError('Meta não encontrada', 404);
-    return database.tb_meta.update({
-      where: { meta_id: data.meta_id },
-      data: { meta_completado: data.completado },
+    return inTransaction(database, async (transaction) => {
+      // The row lock makes retries of the explicit completion action
+      // idempotent even when two requests arrive concurrently.
+      if (typeof transaction.$queryRaw === 'function') {
+        await transaction.$queryRaw`
+          SELECT meta_id
+          FROM public.tb_meta
+          WHERE meta_id = ${data.meta_id}
+            AND usuario_id = ${userId}
+          FOR UPDATE
+        `;
+      }
+
+      const meta = await transaction.tb_meta.findFirst({
+        where: { meta_id: data.meta_id, usuario_id: userId },
+      });
+      if (!meta) throw new AppError('Meta não encontrada', 404);
+
+      if (meta.meta_completado === data.completado) return meta;
+
+      const effectiveAt = new Date();
+      const updated = await transaction.tb_meta.update({
+        where: { meta_id: data.meta_id },
+        data: {
+          meta_completado: data.completado,
+          meta_data_conclusao: data.completado ? effectiveAt : null,
+        },
+      });
+
+      return updated;
     });
   }
 

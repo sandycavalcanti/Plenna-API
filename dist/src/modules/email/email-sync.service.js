@@ -14,6 +14,13 @@ import { buildPurchaseExtractionPrompt, buildPurchaseEvidenceText, isPositivePur
 import { parseFiscalAttachments, mergePurchaseSources } from './purchase-source.merge.js';
 import { processFiscalLinks } from './fiscal-link.processor.js';
 import { MetricasService } from '../compra/metricas.service.js';
+import { evaluateConfirmedPurchaseLimits } from '../compra/limite.service.js';
+import { dispatchPushAfterCommit } from '../notification/push.service.js';
+function createdPushNotifications(evaluation) {
+    return (evaluation?.alerts ?? [])
+        .filter((alert) => alert.created)
+        .map((alert) => ({ notificationId: alert.notificationId, type: alert.type }));
+}
 /**
  * Monta a janela temporal utilizada na consulta ao Gmail.
  *
@@ -309,6 +316,8 @@ async function resolveExistingPurchase(userId, message, extracted, paymentMethod
             compra_fonte: true,
             compra_pedido_externo_id: true,
             compra_valor: true,
+            compra_acima_limite: true,
+            compra_status: true,
             compra_desconto: true,
             forma_pagamento_id: true,
             compra_email_mensagem_id: true,
@@ -331,20 +340,33 @@ async function resolveExistingPurchase(userId, message, extracted, paymentMethod
     const itemsToPersist = shouldPersistPurchaseItems(match.purchase.tb_compra_item.length, candidateItems)
         ? candidateItems
         : [];
-    if (Object.keys(update).length === 0 && itemsToPersist.length === 0)
+    if (Object.keys(update).length === 0 && itemsToPersist.length === 0 && match.purchase.compra_status !== 'CONFIRMADA') {
         return { reconciled: match.purchase };
-    const updated = await prisma.$transaction(async (tx) => {
+    }
+    const transactionResult = await prisma.$transaction(async (tx) => {
         const purchase = Object.keys(update).length > 0
             ? await tx.tb_compra.update({ where: { compra_id: match.purchase.compra_id }, data: update })
             : match.purchase;
         if (itemsToPersist.length > 0) {
             await persistPurchaseItems(match.purchase.compra_id, itemsToPersist, tx);
         }
-        return purchase;
+        if (match.purchase.compra_status === 'CONFIRMADA') {
+            const limitEvaluation = await evaluateConfirmedPurchaseLimits(match.purchase.compra_id, tx);
+            await MetricasService.recalculateMonthlyMetrics(userId, match.purchase.compra_horario, tx);
+            return {
+                purchase: {
+                    ...purchase,
+                    compra_acima_limite: limitEvaluation.eligible ? limitEvaluation.purchaseAboveLimit : null,
+                },
+                createdNotifications: createdPushNotifications(limitEvaluation),
+            };
+        }
+        return { purchase, createdNotifications: [] };
     });
-    return { reconciled: updated };
+    await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
+    return { reconciled: transactionResult.purchase };
 }
-async function createCompraFromMessage(userId, message, supplemental = {}, accessToken, aiProvider, classificationPath = 'DETERMINISTIC_COMPRA') {
+export async function createCompraFromMessage(userId, message, supplemental = {}, accessToken, aiProvider, classificationPath = 'DETERMINISTIC_COMPRA') {
     const normalizedEmail = toNormalizedEmail(message);
     const deterministic = buildExtractedPurchase(message, supplemental);
     let aiPurchase = null;
@@ -497,15 +519,23 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
                     ...(persistedItems.length > 0 ? { tb_compra_item: { create: buildNestedPurchaseItems(persistedItems) } } : {}),
                 },
             });
+            let compraFinal = compra;
+            let createdNotifications = [];
             if (purchaseComplete) {
+                const limitEvaluation = await evaluateConfirmedPurchaseLimits(compra.compra_id, db);
                 // A métrica usa a mesma transação para não confirmar sem atualizar os indicadores.
                 await MetricasService.recalculateMonthlyMetrics(userId, horario, db);
+                if (limitEvaluation.eligible) {
+                    compraFinal = { ...compra, compra_acima_limite: limitEvaluation.purchaseAboveLimit };
+                }
+                createdNotifications = createdPushNotifications(limitEvaluation);
             }
-            return compra;
+            return { compra: compraFinal, createdNotifications };
         };
-        const compra = purchaseComplete
+        const transactionResult = purchaseComplete
             ? await prisma.$transaction((tx) => createPurchase(tx))
             : await createPurchase(prisma);
+        await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
         logTestEmailFlow(message, {
             classification: 'COMPRA',
             classificationPath,
@@ -518,7 +548,7 @@ async function createCompraFromMessage(userId, message, supplemental = {}, acces
             ignored: false,
             skippedDuplicate: false,
         });
-        return { created: compra };
+        return { created: transactionResult.compra };
     }
     catch (error) {
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {

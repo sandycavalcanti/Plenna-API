@@ -1,9 +1,11 @@
 import { Request, Response } from 'express';
 import { MetaService, serializeMeta } from './meta.service.js';
 import { MetaMovimentacaoError, MetaMovimentacaoService } from './meta-movimentacao.service.js';
+import { MetaHistoricoService } from './meta-historico.service.js';
 import {
   checkMetaSchema,
   createMetaSchema,
+  metaHistoricoQuerySchema,
   metaMovimentacaoInputSchema,
   metaMovimentacaoListQuerySchema,
   metaMovimentacaoPathSchema,
@@ -63,6 +65,19 @@ export class MetaController {
       const userId = authReq.userId;
       const metas = await MetaService.findAllByUserId(userId, { includeSavings: true });
       return res.status(200).json(metas.map(serializeMeta));
+    } catch (error: any) {
+      return handleError(res, 400, error);
+    }
+  }
+
+  static async findHistoricalByMonth(req: AuthRequest, res: Response) {
+    try {
+      if (!req.userId) {
+        return res.status(401).json({ error: 'Token inválido' });
+      }
+      const { periodo } = metaHistoricoQuerySchema.parse(req.query);
+      const result = await MetaHistoricoService.findByMonth(req.userId, periodo);
+      return res.status(200).json(result);
     } catch (error: any) {
       return handleError(res, 400, error);
     }

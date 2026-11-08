@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { z } from 'zod';
 import { env } from '../../lib/env.js';
-import { AIRateLimitError, } from './ai-provider.js';
+import { AIRateLimitError, AIProviderError, } from './ai-provider.js';
 import { isClassificationLabel } from './classification.engine.js';
 const requestyPurchaseSchema = z.object({
     establishment: z.string().nullable().optional(),
@@ -57,6 +57,18 @@ function extractAssistantContent(data) {
             .trim();
     }
     return '';
+}
+function extractAssistantToolResponse(data) {
+    const message = data?.choices?.[0]?.message;
+    const content = typeof message?.content === 'string'
+        ? message.content.trim()
+        : Array.isArray(message?.content)
+            ? message.content.filter((part) => part?.type === 'text').map((part) => part.text ?? '').join('\n').trim()
+            : '';
+    return {
+        content,
+        tool_calls: Array.isArray(message?.tool_calls) ? message.tool_calls : [],
+    };
 }
 function getRetryAfterMs(error) {
     const retryAfterHeader = error?.response?.headers?.['retry-after'];
@@ -260,6 +272,80 @@ export class RequestyProvider {
             }
             throw error;
         }
+    }
+    /**
+     * Responde uma conversa textual sem response_format JSON. Esta capacidade
+     * nao usa o retry do fluxo de e-mail: cada envio de chat gera no maximo uma
+     * chamada externa, evitando associar retry a uma persistencia parcial.
+     */
+    async chat(messages) {
+        if (!env.requestyApiKey) {
+            throw new AIProviderError('unavailable', 'Requesty nao esta configurado');
+        }
+        try {
+            const response = await axios.post('https://router.requesty.ai/v1/chat/completions', {
+                model: env.requestyChatModel,
+                messages,
+                temperature: 0.2,
+            }, {
+                timeout: env.requestyTimeoutMs,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${env.requestyApiKey}`,
+                },
+            });
+            const text = extractAssistantContent(response.data);
+            if (!text) {
+                throw new AIProviderError('empty', 'Requesty retornou uma resposta vazia');
+            }
+            return text;
+        }
+        catch (error) {
+            if (error instanceof AIProviderError)
+                throw error;
+            if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'AbortError') {
+                throw new AIProviderError('timeout', 'Timeout ao consultar o Requesty');
+            }
+            throw new AIProviderError('failure', 'Falha ao consultar o Requesty');
+        }
+    }
+    async chatWithTools(messages, tools) {
+        if (!env.requestyApiKey) {
+            throw new AIProviderError('unavailable', 'Requesty nao esta configurado');
+        }
+        try {
+            const response = await axios.post('https://router.requesty.ai/v1/chat/completions', {
+                model: env.requestyChatModel,
+                messages,
+                tools,
+                tool_choice: 'auto',
+                temperature: 0.2,
+            }, {
+                timeout: env.requestyTimeoutMs,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${env.requestyApiKey}`,
+                },
+            });
+            return extractAssistantToolResponse(response.data);
+        }
+        catch (error) {
+            if (error instanceof AIProviderError)
+                throw error;
+            if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'AbortError') {
+                throw new AIProviderError('timeout', 'Timeout ao consultar o Requesty');
+            }
+            throw new AIProviderError('failure', 'Falha ao consultar o Requesty');
+        }
+    }
+    async generateTitle(firstMessage) {
+        return this.chat([
+            {
+                role: 'system',
+                content: 'Gere um titulo curto e natural para esta conversa do Plenna. Responda somente com o titulo, sem aspas, markdown ou prefixos. Use no maximo 45 caracteres.',
+            },
+            { role: 'user', content: firstMessage },
+        ]);
     }
 }
 RequestyProvider.rateLimitedUntil = 0;

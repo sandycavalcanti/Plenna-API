@@ -1,3 +1,11 @@
+/** Falha sanitizada de uma capacidade conversacional, sem carregar prompt ou resposta. */
+export class AIProviderError extends Error {
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = 'AIProviderError';
+    }
+}
 /**
  * Erro genérico de rate limit usado pelo fluxo de e-mail.
  *

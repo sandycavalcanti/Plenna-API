@@ -1,30 +1,51 @@
 import { prisma } from '../../lib/prisma.js';
+import { legacyReadOverlay } from '../tempo-uso-v2/legacy.runtime.js';
+import { criarSyncTempoUsoSchema, createTempoUsoSchema, updateTempoUsoSchema } from './tempo-uso.schemas.js';
 import { AppError } from '../../errors/AppError.js';
-import { ConsentimentoService } from '../consentimento/consentimento.service.js';
-import { CONSENTIMENTO_CODIGOS } from '../consentimento/consentimento.constants.js';
+import { APLICATIVOS_COMPRA, encontrarAplicativoCompra } from './aplicativos-compra.catalog.js';
+import { sincronizarFotografiasAtomicamente, autorizarEscritaTempoUso, assertLegacyV1Compatible } from './tempo-uso.sync.js';
+import { segundosDoRegistro, minutosParaSegundos, duracaoLegada } from './tempo-uso.duracao.js';
+function normalizarRegistroLegado(registro) {
+    const segundos = segundosDoRegistro(registro);
+    return {
+        ...registro,
+        tempo_uso_duracao_segundos: segundos,
+        tempo_uso_minutos: segundos === null ? null : segundos / 60,
+        tempo_uso_data: registro.tempo_uso_data ?? registro.tempo_uso_inicio,
+    };
+}
 export class TempoUsoService {
     static async create(userId, data) {
-        const permitido = await ConsentimentoService.temConsentimentoAtivo(userId, CONSENTIMENTO_CODIGOS.MONITORAMENTO_TEMPO_USO);
-        if (!permitido) {
-            throw new AppError('O monitoramento de tempo de uso não está autorizado', 403);
-        }
-        const now = new Date();
-        const tempo = await prisma.tb_tempo_uso.create({
-            data: {
-                usuario_id: userId,
-                tempo_uso_nome: data.nome,
-                tempo_uso_minutos: data.minutos,
-                tempo_uso_data: data.data,
-                tempo_uso_data_criacao: now,
-            },
+        return prisma.$transaction(async (tx) => {
+            await autorizarEscritaTempoUso(tx, userId);
+            const entrada = createTempoUsoSchema.parse(data);
+            const tempo = await tx.tb_tempo_uso.create({ data: {
+                    usuario_id: userId, tempo_uso_nome: entrada.nome, tempo_uso_data: entrada.data,
+                    ...duracaoLegada(minutosParaSegundos(entrada.minutos)),
+                } });
+            return normalizarRegistroLegado(tempo);
         });
-        return tempo;
     }
-    static async findAllByUserId(userId) {
-        return prisma.tb_tempo_uso.findMany({
+    static async findAllByUserId(userId, mes) {
+        const registros = await prisma.tb_tempo_uso.findMany({
             where: { usuario_id: userId },
             orderBy: { tempo_uso_data_criacao: 'desc' },
         });
+        const filtered = registros.filter(registro => {
+            if (!mes)
+                return true;
+            if (registro.tempo_uso_data_local)
+                return registro.tempo_uso_data_local.toISOString().slice(0, 7) === mes;
+            const date = registro.tempo_uso_data ?? registro.tempo_uso_inicio;
+            if (!date)
+                return false;
+            const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit',
+            }).formatToParts(date).map(part => [part.type, part.value]));
+            return `${parts.year}-${parts.month}` === mes;
+        });
+        const visible = await legacyReadOverlay(userId, filtered);
+        return visible.map(normalizarRegistroLegado);
     }
     static async findById(userId, id) {
         const tempo = await prisma.tb_tempo_uso.findFirst({
@@ -32,33 +53,61 @@ export class TempoUsoService {
         });
         if (!tempo)
             throw new AppError('Registro de tempo não encontrado', 404);
-        return tempo;
+        const visible = (await legacyReadOverlay(userId, [tempo]))[0];
+        return normalizarRegistroLegado(visible);
     }
     static async update(userId, id, data) {
-        const permitido = await ConsentimentoService.temConsentimentoAtivo(userId, CONSENTIMENTO_CODIGOS.MONITORAMENTO_TEMPO_USO);
-        if (!permitido) {
-            throw new AppError('O monitoramento de tempo de uso não está autorizado', 403);
-        }
-        const tempo = await prisma.tb_tempo_uso.findFirst({
-            where: { tempo_uso_id: id, usuario_id: userId },
-        });
-        if (!tempo)
-            throw new AppError('Registro de tempo não encontrado', 404);
-        return prisma.tb_tempo_uso.update({
-            where: { tempo_uso_id: id },
-            data: {
-                tempo_uso_nome: data.nome,
-                tempo_uso_minutos: data.minutos,
-                tempo_uso_data: data.data,
-            },
+        return prisma.$transaction(async (tx) => {
+            await autorizarEscritaTempoUso(tx, userId);
+            const entrada = updateTempoUsoSchema.parse(data);
+            const tempo = await tx.tb_tempo_uso.findFirst({ where: { tempo_uso_id: id, usuario_id: userId } });
+            if (!tempo)
+                throw new AppError('Registro de tempo não encontrado', 404);
+            if (tempo.tempo_uso_origem !== 'LEGADO')
+                throw new AppError('O tempo medido pelo Android não pode ser editado manualmente', 409);
+            const segundos = entrada.minutos === undefined ? segundosDoRegistro(tempo) : minutosParaSegundos(entrada.minutos);
+            if (segundos === null)
+                throw new AppError('Informe uma duração válida para atualizar este registro anterior', 400);
+            const atualizado = await tx.tb_tempo_uso.update({ where: { tempo_uso_id: id }, data: {
+                    tempo_uso_nome: entrada.nome, tempo_uso_data: entrada.data, ...duracaoLegada(segundos),
+                } });
+            return normalizarRegistroLegado(atualizado);
         });
     }
     static async delete(userId, id) {
-        const tempo = await prisma.tb_tempo_uso.findFirst({
-            where: { tempo_uso_id: id, usuario_id: userId },
+        return prisma.$transaction(async (tx) => {
+            await tx.$queryRaw `SELECT usuario_id FROM public.tb_usuario WHERE usuario_id=${userId} FOR UPDATE`;
+            await assertLegacyV1Compatible(tx, userId);
+            const tempo = await tx.tb_tempo_uso.findFirst({
+                where: { tempo_uso_id: id, usuario_id: userId },
+            });
+            if (!tempo)
+                throw new AppError('Registro de tempo não encontrado', 404);
+            await tx.tb_tempo_uso.delete({ where: { tempo_uso_id: id } });
         });
-        if (!tempo)
-            throw new AppError('Registro de tempo não encontrado', 404);
-        await prisma.tb_tempo_uso.delete({ where: { tempo_uso_id: id } });
+    }
+    static listarAplicativosCompra() {
+        return { versao: 1, aplicativos: APLICATIVOS_COMPRA };
+    }
+    static async sync(userId, data) {
+        return sincronizarFotografiasAtomicamente(prisma, userId, () => {
+            const entrada = criarSyncTempoUsoSchema().parse(data);
+            const fotografias = entrada.registros.map((registro) => {
+                const aplicativo = encontrarAplicativoCompra(registro.packageId);
+                if (!aplicativo) {
+                    throw new AppError(`Aplicativo não autorizado para monitoramento: ${registro.packageId}`, 422);
+                }
+                return {
+                    packageId: aplicativo.packageId,
+                    nomeApp: aplicativo.nomeApp,
+                    inicio: new Date(registro.inicio),
+                    fim: new Date(registro.fim),
+                    duracaoSegundos: registro.duracaoSegundos,
+                    dataLocal: new Date(`${registro.dataLocal}T00:00:00.000Z`),
+                    timezone: registro.timezone,
+                };
+            });
+            return fotografias;
+        });
     }
 }

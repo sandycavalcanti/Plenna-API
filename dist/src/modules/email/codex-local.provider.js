@@ -155,6 +155,53 @@ export class CodexLocalProvider {
     constructor(createCodex = () => new Codex()) {
         this.createCodex = createCodex;
     }
+    async runTextual(messages, operation = 'chat') {
+        const startedAt = Date.now();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), env.codexLocalTimeoutMs);
+        timeout.unref?.();
+        console.info(`[AI] provider=codex_local operation=${operation} started`);
+        try {
+            const thread = this.createCodex().startThread({
+                sandboxMode: 'read-only',
+                approvalPolicy: 'never',
+                networkAccessEnabled: false,
+                workingDirectory: process.cwd(),
+            });
+            const prompt = messages
+                .map((message) => `${message.role.toUpperCase()}\n${message.content}`)
+                .join('\n\n');
+            const result = await thread.run(prompt, { signal: controller.signal });
+            const text = result.finalResponse.trim();
+            if (!text) {
+                throw new CodexLocalError('empty', 'Codex local retornou uma resposta vazia');
+            }
+            console.info(`[AI] provider=codex_local operation=${operation} completed durationMs=${Date.now() - startedAt}`);
+            return text;
+        }
+        catch (error) {
+            const diagnostic = diagnosticFor(error);
+            console.error(`[AI] provider=codex_local operation=${operation} failed`, diagnostic);
+            if (error instanceof CodexLocalError)
+                throw error;
+            if (controller.signal.aborted) {
+                throw new CodexLocalError('timeout', `Timeout do Codex local apos ${env.codexLocalTimeoutMs}ms`, diagnostic);
+            }
+            if (isAuthenticationError(error)) {
+                throw new CodexLocalError('unauthenticated', 'Codex local nao esta autenticado. Execute `codex login` e tente novamente.', diagnostic);
+            }
+            if (isRateLimitError(error)) {
+                throw new CodexLocalError('rate_limit', 'Codex local atingiu um limite de uso.', diagnostic);
+            }
+            if (isUnavailableError(error)) {
+                throw new CodexLocalError('unavailable', 'Codex local nao esta instalado ou nao esta disponivel para execucao.', diagnostic);
+            }
+            throw new CodexLocalError('execution', 'Falha ao executar Codex local.', diagnostic);
+        }
+        finally {
+            clearTimeout(timeout);
+        }
+    }
     async runStructured(operation, prompt, schema, instructions, outputSchema = schemaToJson(schema)) {
         const startedAt = Date.now();
         const controller = new AbortController();
@@ -227,5 +274,17 @@ export class CodexLocalProvider {
     }
     async extractPurchase(prompt) {
         return this.runStructured('purchase_extraction', prompt, requestyPurchaseExtractionSchema, buildPurchaseExtractionInstructions());
+    }
+    async chat(messages) {
+        return this.runTextual(messages, 'chat');
+    }
+    async generateTitle(firstMessage) {
+        return this.runTextual([
+            {
+                role: 'system',
+                content: 'Gere um titulo curto e natural para esta conversa do Plenna. Responda somente com o titulo, sem aspas, markdown ou prefixos. Use no maximo 45 caracteres.',
+            },
+            { role: 'user', content: firstMessage },
+        ], 'chat_title');
     }
 }

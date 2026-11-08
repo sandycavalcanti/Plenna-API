@@ -1,28 +1,42 @@
 import { prisma } from '../../lib/prisma.js';
+import { registrarAlteracoesReferencia } from '../compra/referencias.service.js';
 import { AppError } from '../../errors/AppError.js';
 export class PreferenciasCategoriaService {
+    static async withUserLock(userId, operation) {
+        return prisma.$transaction(async (tx) => {
+            const users = await tx.$queryRaw `SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${userId} FOR UPDATE`;
+            if (users.length !== 1)
+                throw new AppError('Usuário não encontrado', 404);
+            const before = await tx.tb_preferencia.findMany({ where: { usuario_id: userId } });
+            const result = await operation(tx);
+            const after = await tx.tb_preferencia.findMany({ where: { usuario_id: userId } });
+            const ids = new Set([...before, ...after].map(p => p.categoria_id));
+            await registrarAlteracoesReferencia(tx, userId, [...ids].flatMap(categoriaId => { const a = before.find(p => p.categoria_id === categoriaId), b = after.find(p => p.categoria_id === categoriaId); return String(a?.preferencia_meta) === String(b?.preferencia_meta) ? [] : [{ tipo: 'CATEGORIA', categoriaId, valor: b?.preferencia_meta ?? null }]; }));
+            return result;
+        });
+    }
     static async create(userId, data) {
         const now = new Date();
-        return prisma.tb_preferencia.create({
+        return this.withUserLock(userId, (tx) => tx.tb_preferencia.create({
             data: {
                 usuario_id: userId,
                 categoria_id: data.categoriaId,
                 preferencia_meta: data.metaMensal,
             },
-        });
+        }));
     }
     static async createMany(userId, preferencias) {
         const now = new Date();
-        return prisma.tb_preferencia.createMany({
+        return this.withUserLock(userId, (tx) => tx.tb_preferencia.createMany({
             data: preferencias.map((data) => ({
                 usuario_id: userId,
                 categoria_id: data.categoriaId,
                 preferencia_meta: data.metaMensal,
             })),
-        });
+        }));
     }
     static async replaceMany(userId, preferencias) {
-        return prisma.$transaction(async (tx) => {
+        return this.withUserLock(userId, async (tx) => {
             const results = [];
             for (const pref of preferencias) {
                 const existing = await tx.tb_preferencia.findFirst({ where: { usuario_id: userId, categoria_id: pref.categoriaId } });
@@ -76,19 +90,27 @@ export class PreferenciasCategoriaService {
         return preferencia;
     }
     static async update(userId, preferenciaId, data) {
-        await this.findById(userId, preferenciaId);
-        return prisma.tb_preferencia.update({
-            where: { preferencia_id: preferenciaId },
-            data: {
-                categoria_id: data.categoriaId,
-                preferencia_meta: data.metaMensal,
-            },
+        return this.withUserLock(userId, async (tx) => {
+            const existing = await tx.tb_preferencia.findFirst({ where: { usuario_id: userId, preferencia_id: preferenciaId } });
+            if (!existing)
+                throw new AppError('Preferência de categoria não encontrada', 404);
+            return tx.tb_preferencia.update({
+                where: { preferencia_id: preferenciaId },
+                data: {
+                    categoria_id: data.categoriaId,
+                    preferencia_meta: data.metaMensal,
+                },
+            });
         });
     }
     static async delete(userId, preferenciaId) {
-        await this.findById(userId, preferenciaId);
-        await prisma.tb_preferencia.delete({
-            where: { preferencia_id: preferenciaId },
+        await this.withUserLock(userId, async (tx) => {
+            const existing = await tx.tb_preferencia.findFirst({ where: { usuario_id: userId, preferencia_id: preferenciaId } });
+            if (!existing)
+                throw new AppError('Preferência de categoria não encontrada', 404);
+            await tx.tb_preferencia.delete({
+                where: { preferencia_id: preferenciaId },
+            });
         });
     }
 }

@@ -30,5 +30,17 @@ export const createCompraSchema = compraBaseSchema.extend({
 });
 export const updateCompraSchema = compraBaseSchema.partial().extend({
     compraStatus: z.never().optional(),
-    items: z.array(compraItemSchema).optional(),
+    items: z.array(compraItemSchema.extend({ itemId: z.number().int().positive().optional() })).optional(),
 });
+const civilDate = z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/).refine(value => {
+    const date = new Date(value + 'T12:00:00Z');
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}, 'Data inválida');
+export const historicoComprasQuerySchema = z.object({
+    mes: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/).optional(),
+    inicio: civilDate.optional(), fim: civilDate.optional(),
+    status: compraStatusSchema.optional(),
+    antes: z.coerce.number().int().positive().max(2147483647).optional(),
+    busca: z.string().trim().min(1).max(100).optional(),
+}).strict().refine(query => !(query.mes && (query.inicio || query.fim)), 'Escolha mês ou intervalo')
+    .refine(query => !!query.inicio === !!query.fim && (!query.inicio || query.inicio <= query.fim), 'Confira o intervalo');

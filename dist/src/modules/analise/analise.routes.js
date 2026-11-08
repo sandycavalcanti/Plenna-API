@@ -1,0 +1,71 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import { authMiddleware } from '../auth/auth.middleware.js';
+import { AnaliseComportamentalService } from './comportamento.service.js';
+import { HistoricoService } from './historico.service.js';
+import { DescobertasService } from './descobertas.service.js';
+import { AnaliseAutomaticaService } from './analise-automatica.service.js';
+import { handleError } from '../../utils/handleError.js';
+import { PanoramaService } from './panorama.service.js';
+import { UsoContextualService } from './uso-contextual.service.js';
+export const analisesRouter = Router();
+analisesRouter.get('/uso-contextual', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        return res.json(await UsoContextualService.consultar(req.userId, req.query));
+    }
+    catch (error) {
+        return handleError(res, 500, error);
+    }
+});
+analisesRouter.get('/panorama', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        return res.json(await PanoramaService.consultar(req.userId, req.query));
+    }
+    catch (error) {
+        return handleError(res, 500, error);
+    }
+});
+const querySchema = z.object({ periodo: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/) }).strict();
+analisesRouter.get('/compras/:compraId/automatica', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const { compraId } = z.object({ compraId: z.coerce.number().int().positive() }).parse(req.params);
+        z.object({}).strict().parse(req.query);
+        return res.json(await AnaliseAutomaticaService.compra(req.userId, compraId));
+    }
+    catch (error) {
+        return handleError(res, 500, error);
+    }
+});
+analisesRouter.get('/descobertas', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const { periodo } = querySchema.parse(req.query);
+        return res.json(await DescobertasService.consultar(req.userId, periodo));
+    }
+    catch (error) {
+        return handleError(res, 500, error);
+    }
+});
+analisesRouter.get('/historico', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        return res.json(await HistoricoService.consultar(req.userId, req.query));
+    }
+    catch (error) {
+        return handleError(res, 500, error);
+    }
+});
+analisesRouter.get('/comportamento', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const { periodo } = querySchema.parse(req.query);
+        const userId = req.userId;
+        return res.json(await AnaliseComportamentalService.consultar(userId, periodo));
+    }
+    catch (error) {
+        return handleError(res, 500, error);
+    }
+});
