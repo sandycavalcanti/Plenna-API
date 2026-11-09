@@ -119,7 +119,7 @@ const client = makeClient();
 const { ChatFirstMessageError, ChatService, hasExplicitMemoryWriteIntent } = await import('../../src/modules/chat/chat.service.js');
 const { DescobertasService } = await import('../../src/modules/analise/descobertas.service.js');
 const { buildChatContext } = await import('../../src/modules/chat/chat.context.js');
-const { PLENNA_CHAT_SYSTEM_PROMPT } = await import('../../src/modules/chat/chat.prompt.js');
+const { buildPlennaSystemPrompt } = await import('../../src/modules/chat/chat.prompt.js');
 const { AIProviderError } = await import('../../src/modules/email/ai-provider.js');
 const { RequestyProvider } = await import('../../src/modules/email/requesty.provider.js');
 const { CodexLocalError, CodexLocalProvider } = await import('../../src/modules/email/codex-local.provider.js');
@@ -153,6 +153,7 @@ beforeEach(reset);
 
 test('monta contexto com system, roles cronologicas, limite de mensagens e mensagem atual unica', () => {
   const at = new Date('2026-10-13T10:00:00.000Z');
+  const systemPrompt = buildPlennaSystemPrompt(at);
   const current = {
     mensagem_id: 3,
     historico_id: 1,
@@ -164,16 +165,16 @@ test('monta contexto com system, roles cronologicas, limite de mensagens e mensa
     { ...current },
     { mensagem_id: 1, historico_id: 1, remetente: 'user', texto: 'Antiga', mensagem_data_criacao: at },
     { mensagem_id: 2, historico_id: 1, remetente: 'assistant', texto: 'Resposta', mensagem_data_criacao: new Date(at.getTime() + 1_000) },
-  ], current, { maxMessages: 2, maxChars: PLENNA_CHAT_SYSTEM_PROMPT.length + 4 + 'Atual'.length + 30 });
+  ], current, { maxMessages: 2, maxChars: systemPrompt.length + 4 + 'Atual'.length + 30 }, at);
 
   assert.equal(result[0].role, 'system');
-  assert.equal(result[0].content, PLENNA_CHAT_SYSTEM_PROMPT);
+  assert.equal(result[0].content, systemPrompt);
   assert.deepEqual(result.slice(1).map((message) => [message.role, message.content]), [
     ['assistant', 'Resposta'],
     ['user', 'Atual'],
   ]);
   assert.equal(result.filter((message) => message.content === 'Atual').length, 1);
-  assert.ok(result.reduce((total, message) => total + message.role.length + 1 + message.content.length, 0) <= PLENNA_CHAT_SYSTEM_PROMPT.length + 4 + 'Atual'.length + 30);
+  assert.ok(result.reduce((total, message) => total + message.role.length + 1 + message.content.length, 0) <= systemPrompt.length + 4 + 'Atual'.length + 30);
 });
 
 test('falha antes da persistencia quando system prompt e mensagem atual nao cabem', async () => {

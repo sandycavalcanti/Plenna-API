@@ -3,14 +3,14 @@ import { prisma } from '../../lib/prisma.js';
 import { parseMonth, cents } from './financeiro.js';
 import { eventosVigentes, resumirEventos } from './eventos.engine.js';
 export class EventosResumoService {
-  static async consultar(userId: number, periodo: string) {
+  static async consultar(userId: number, periodo: string, now = new Date()) {
     const { start, end } = parseMonth(periodo);
     return prisma.$transaction(
       async (tx) => {
         const rows = await tx.tb_compra_evento.findMany({
           where: {
             usuario_id: userId,
-            compra: { compra_ativo: 1, compra_status: 'CONFIRMADA', compra_horario: { lt: new Date() } },
+            compra: { compra_ativo: 1, compra_status: 'CONFIRMADA', compra_horario: { lt: now } },
           },
           include: {
             compra: { select: { compra_horario: true, compra_valor: true } },

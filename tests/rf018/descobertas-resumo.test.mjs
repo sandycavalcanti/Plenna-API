@@ -167,10 +167,12 @@ test('chat answers use evidence, never diagnose or count refusals; missing sourc
   );
   assert.match(control, /não determinam/);
   assert.match(control, /não tenho respostas suficientes/);
-  assert.match(
-    responderIndicadores('Quais compras ultrapassam meu orçamento?', null),
-    /Não consegui consultar/,
+  const unavailable = responderIndicadores(
+    'Quais compras ultrapassam meu orçamento?',
+    null,
   );
+  assert.match(unavailable, /Não consegui consultar/);
+  assert.match(unavailable, /Você pode conferir/);
   assert.match(
     await consultarRespostaIndicadores(1, 'frequência 2026-09 e 2026-10'),
     /um período por vez/,

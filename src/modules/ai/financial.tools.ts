@@ -4,6 +4,7 @@ import { AppError } from '../../errors/AppError.js';
 import { CONSENTIMENTO_CODIGOS } from '../consentimento/consentimento.constants.js';
 import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 import { CompraService } from '../compra/compra.service.js';
+import { businessPeriod } from '../compra/financeiro.js';
 import { DashboardService } from '../dashboard/dashboard.service.js';
 import { analyticsQuerySchema, analyticsResponseSchema } from '../dashboard/dashboard.schemas.js';
 import { MetaService } from '../meta/meta.service.js';
@@ -196,7 +197,7 @@ function defaultDependencies(): FinancialToolDependencies {
     usage: async (userId, periodo) => {
       const authorized = await ConsentimentoService.temConsentimentoAtivo(userId, CONSENTIMENTO_CODIGOS.MONITORAMENTO_TEMPO_USO);
       if (!authorized) throw new AppError('O monitoramento de tempo de uso não está autorizado.', 403);
-      return { periodo: periodo ?? new Date().toISOString().slice(0, 7), itens: await DashboardService.findTempoVsGasto(userId, periodo), autorizado: true };
+      return { periodo: periodo ?? businessPeriod(new Date()), itens: await DashboardService.findTempoVsGasto(userId, periodo), autorizado: true };
     },
     interactions: async (userId, limite) => {
       const rows = await prisma.tb_mensagem.findMany({

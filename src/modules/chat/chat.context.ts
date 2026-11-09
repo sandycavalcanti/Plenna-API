@@ -1,7 +1,7 @@
 import { AppError } from '../../errors/AppError.js';
 import type { AIMessage } from '../email/ai-provider.js';
 import { env } from '../../lib/env.js';
-import { PLENNA_CHAT_SYSTEM_PROMPT } from './chat.prompt.js';
+import { buildPlennaSystemPrompt } from './chat.prompt.js';
 import type { PublicMessage } from './chat.contracts.js';
 
 export type ChatContextLimits = {
@@ -52,6 +52,7 @@ export function buildChatContext(
   historyMessages: ContextMessage[],
   currentMessage: ContextMessage,
   limits: ChatContextLimits = getDefaultChatContextLimits(),
+  now: Date = new Date(),
 ): AIMessage[] {
   const messagesById = new Map<number, ContextMessage>();
   for (const message of historyMessages) {
@@ -60,8 +61,9 @@ export function buildChatContext(
   messagesById.set(currentMessage.mensagem_id, currentMessage);
 
   const ordered = [...messagesById.values()].sort(compareMessages);
+  const systemPrompt = buildPlennaSystemPrompt(now);
   const required = [
-    { role: 'system' as const, content: PLENNA_CHAT_SYSTEM_PROMPT },
+    { role: 'system' as const, content: systemPrompt },
     toAIMessage(currentMessage),
   ];
   failIfRequiredMessagesDoNotFit(required, limits.maxChars);
@@ -74,7 +76,7 @@ export function buildChatContext(
     ].sort(compareMessages);
   }
 
-  const systemMessage = { role: 'system' as const, content: PLENNA_CHAT_SYSTEM_PROMPT };
+  const systemMessage = { role: 'system' as const, content: systemPrompt };
   while (contextCost([systemMessage, ...selected.map(toAIMessage)]) > limits.maxChars) {
     const removableIndex = selected.findIndex((message) => message.mensagem_id !== currentMessage.mensagem_id);
     if (removableIndex < 0) break;

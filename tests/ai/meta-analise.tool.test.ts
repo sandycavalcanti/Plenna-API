@@ -97,5 +97,9 @@ test('prompt orienta uso contextual, evidenciado e simbolico das reservas', () =
   assert.match(PLENNA_CHAT_SYSTEM_PROMPT, /analisar_metas/);
   assert.match(PLENNA_CHAT_SYSTEM_PROMPT, /nao invente fatos/);
   assert.match(PLENNA_CHAT_SYSTEM_PROMPT, /dinheiro disponivel em conta bancaria/);
+  assert.match(PLENNA_CHAT_SYSTEM_PROMPT, /companheira de planejamento financeiro/);
+  assert.match(PLENNA_CHAT_SYSTEM_PROMPT, /nao termine todas as respostas com uma pergunta/);
+  assert.match(PLENNA_CHAT_SYSTEM_PROMPT, /sem decidir por ela/);
+  assert.match(PLENNA_CHAT_SYSTEM_PROMPT, /acolhimento nao exige respostas longas/);
 });
 

@@ -1,4 +1,5 @@
 import { DescobertasService } from '../analise/descobertas.service.js';
+import { businessPeriod } from '../compra/financeiro.js';
 
 export function assuntoIndicadores(texto: string) {
   const t = texto
@@ -36,40 +37,40 @@ export function responderIndicadores(texto: string, dados: Resumo | null) {
   if (assunto === 'AUTOMATICO') {
     const a = dados?.avaliacaoAutomatica;
     if (!a)
-      return 'Não consegui consultar a análise automática agora. Confira as descobertas no aplicativo.';
+      return 'Não consegui consultar a análise automática agora. Você pode conferir as descobertas no aplicativo.';
     if (a.estado === 'DADOS_INSUFICIENTES')
       return (
         prefix +
-        'Ainda faltam registros ou referências suficientes para esta avaliação. A ausência de sinais calculáveis não significa ausência de impulso.'
+        'Ainda faltam registros ou referências suficientes para esta avaliação. Isso não permite concluir como foram suas decisões de compra, e a ausência de sinais calculáveis não significa ausência de impulso.'
       );
     if (a.estado === 'SEM_SINAIS_RELEVANTES')
       return (
         prefix +
-        'As regras disponíveis não identificaram diferenças relevantes. Isso não classifica as compras como não impulsivas; outras referências podem estar indisponíveis.'
+        'As regras disponíveis não identificaram diferenças relevantes. Isso não classifica as compras como não impulsivas; apenas indica que não houve diferenças relevantes nos registros analisados, e outras referências podem estar indisponíveis.'
       );
     return (
       prefix +
       a.descobertas.map((d) => d.mensagem).join(' ') +
-      ' As evidências e limitações estão disponíveis na análise da compra, na área protegida. A classificação continua sendo uma escolha sua.'
+      ' As evidências e limitações estão disponíveis na análise da compra, na área protegida. Esses sinais ajudam na reflexão, mas a classificação continua sendo uma escolha sua.'
     );
   }
   if (assunto === 'EVENTOS') {
     const e = dados?.eventos;
     if (!e?.disponivel)
-      return 'O histórico dessas operações ainda não está disponível. Você pode consultar os registros na área protegida de Minhas compras.';
+      return 'Ainda não consigo acessar o histórico dessas operações. Você pode consultar os registros na área protegida de Minhas compras.';
     return (
       prefix +
       `${e.cancelamentos} compra(s) com cancelamento declarado e ${e.devolucoes} com devolução, considerando compras desse mês. Reembolsos com data efetiva no mês: ${(e.reembolsadoCentavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}. Cancelamento ou devolução não comprova reembolso. ` +
       (e.reembolsosSemData
         ? 'Há reembolsos sem data, fora desse total mensal. '
         : '') +
-      `${e.classificadasImpulsivas} compra(s) desse mês foram classificadas voluntariamente como impulsivas. Para detalhes e referências da época, abra a compra na área protegida.`
+      `${e.classificadasImpulsivas} compra(s) desse mês foram classificadas voluntariamente como impulsivas. Para consultar detalhes e referências da época, abra a compra na área protegida.`
     );
   }
   if (assunto === 'CONTEXTO') {
     const p = dados?.historico?.planejamento;
     return (
-      'Frequência e valores não determinam impulsividade ou compulsividade.' +
+      'Frequência e valores, sozinhos, não determinam impulsividade ou compulsividade.' +
       (p?.conhecidas
         ? ` Você declarou ${p.contagens.SIM} compra(s) planejada(s), ${p.contagens.PARCIALMENTE} em parte e ${p.contagens.NAO} não planejada(s), entre ${p.conhecidas} respostas conhecidas em ${dados!.periodo}.`
         : ' Ainda não tenho respostas suficientes para contextualizar suas decisões.') +
@@ -80,8 +81,8 @@ export function responderIndicadores(texto: string, dados: Resumo | null) {
     const f = dados?.historico?.frequencia;
     return f && f.disponibilidade !== 'INDISPONIVEL'
       ? prefix +
-          `${f.comprasAtual} compra(s) no trecho atual e ${f.comprasAnterior} no anterior, em janelas de ${f.diasComparados.toLocaleString('pt-BR')} dias. Isso descreve os registros, sem estabelecer uma tendência.`
-      : 'Ainda não há períodos comparáveis suficientes para dizer se você está comprando mais.';
+          `${f.comprasAtual} compra(s) no trecho atual e ${f.comprasAnterior} no anterior, em janelas de ${f.diasComparados.toLocaleString('pt-BR')} dias. Esses números descrevem os registros, sem estabelecer uma tendência.`
+      : 'Ainda não há períodos comparáveis suficientes para dizer se você está comprando mais. Por enquanto, não é possível concluir uma tendência.';
   }
   const f = dados?.financeiro;
   return f
@@ -90,23 +91,24 @@ export function responderIndicadores(texto: string, dados: Resumo | null) {
         (f.financeiro.comprasComValor > 0
           ? `${(f.financeiro.totalConhecidoCentavos! / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} em valores conhecidos. `
           : 'Valores ainda não informados. ') +
-        'Para conferir quais compras ou categorias contribuíram, abra Minhas compras e selecione o período; os detalhes continuam protegidos por PIN ou biometria.'
+        'Se quiser conferir quais compras ou categorias contribuíram, abra Minhas compras e selecione o período; os detalhes continuam protegidos por PIN ou biometria.'
     : 'Não consegui consultar o resumo agora. Você pode conferir os registros em Minhas compras.';
 }
 /** First-party answer: never sends financial/contextual records to an external AI provider. */
 export async function consultarRespostaIndicadores(
   userId: number,
   texto: string,
+  now: Date = new Date(),
 ) {
   if (!assuntoIndicadores(texto)) return null;
   const dates = [...texto.matchAll(/\b([1-9]\d{3}-(?:0[1-9]|1[0-2]))\b/g)];
   if (dates.length > 1)
     return 'Escolha um período por vez, no formato AAAA-MM, para consultar os registros.';
-  const periodo = dates[0]?.[1] ?? new Date().toISOString().slice(0, 7);
+  const periodo = dates[0]?.[1] ?? businessPeriod(now);
   try {
     return responderIndicadores(
       texto,
-      await DescobertasService.consultar(userId, periodo),
+      await DescobertasService.consultar(userId, periodo, now),
     );
   } catch {
     return responderIndicadores(texto, null);

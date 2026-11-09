@@ -37,6 +37,7 @@ test('oferece orientação prática sem sugerir alterar o limite como solução'
   const budget = result.recomendacoes.find((item) => item.codigo === 'ACOMPANHAR_ORCAMENTO_EXCEDIDO');
   assert.ok(limit);
   assert.ok(budget);
+  assert.equal(limit.titulo, 'Que tal conferir seu limite de compra?');
   assert.doesNotMatch(`${limit.titulo} ${limit.mensagem}`, /revise seu limite|aumente|aumentar|modifique|modificar/i);
   assert.match(limit.mensagem, /analis|alternativas|planejamento/i);
   assert.match(budget.mensagem, /despesas|economizar|pr[oó]ximas compras/i);
@@ -53,6 +54,7 @@ test('mantém a ressalva de vigência e usa tom acolhedor para metas', () => {
   });
   const meta = result.recomendacoes.find((item) => item.codigo === 'ATENCAO_META');
   assert.ok(meta);
+  assert.equal(meta.titulo, 'Mantenha sua meta por perto');
   assert.match(meta.mensagem, /continua em andamento|pr[oó]ximos gastos|planejamento/i);
   assert.doesNotMatch(meta.mensagem, /diagn[oó]stico|culpa|sempre|nunca/i);
 });
