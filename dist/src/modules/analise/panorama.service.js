@@ -11,14 +11,14 @@ export function consultaPanoramaSql(userId, inicio, fim, detalhes, comportamento
     return Prisma.sql `WITH ${comprasElegiveisAgregadoSql(userId, inicio, fim, undefined, comportamento)},
     contextos AS MATERIALIZED (
       SELECT DISTINCT ON (c.compra_id) c.compra_id,c.contexto_id,c.respostas
-      FROM public.tb_rf018_contexto_revisao c JOIN elegiveis p ON p.compra_id=c.compra_id
+      FROM public.tb_compra_contexto_revisao c JOIN elegiveis p ON p.compra_id=c.compra_id
       WHERE c.usuario_id=${userId} ORDER BY c.compra_id,c.revisao DESC
     ), itens AS MATERIALIZED (
       SELECT i.compra_id,bool_or(ic.planejamento='NAO') AS item_nao_planejado,
         bool_or(ic.planejamento IN ('SIM','NAO','PARCIALMENTE')) AS item_conhecido
       FROM public.tb_compra_item i JOIN elegiveis p ON p.compra_id=i.compra_id
       LEFT JOIN contextos c ON c.compra_id=p.compra_id
-      LEFT JOIN public.tb_rf018_item_contexto ic ON ic.contexto_id=c.contexto_id
+      LEFT JOIN public.tb_compra_item_contexto ic ON ic.contexto_id=c.contexto_id
         AND ic.compra_id=p.compra_id AND ic.compra_item_id=i.compra_item_id
       WHERE i.compra_item_ativo=1 GROUP BY i.compra_id
     ), base AS MATERIALIZED (

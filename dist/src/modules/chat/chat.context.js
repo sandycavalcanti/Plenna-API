@@ -1,6 +1,6 @@
 import { AppError } from '../../errors/AppError.js';
 import { env } from '../../lib/env.js';
-import { PLENNA_CHAT_SYSTEM_PROMPT } from './chat.prompt.js';
+import { buildPlennaSystemPrompt } from './chat.prompt.js';
 function toAIMessage(message) {
     return {
         role: message.remetente,
@@ -32,15 +32,16 @@ export function getDefaultChatContextLimits() {
  * Monta o prompt apenas com a conversa selecionada. O system prompt nunca e
  * persistido e a mensagem atual e normalizada por id para aparecer uma unica vez.
  */
-export function buildChatContext(historyMessages, currentMessage, limits = getDefaultChatContextLimits()) {
+export function buildChatContext(historyMessages, currentMessage, limits = getDefaultChatContextLimits(), now = new Date()) {
     const messagesById = new Map();
     for (const message of historyMessages) {
         messagesById.set(message.mensagem_id, message);
     }
     messagesById.set(currentMessage.mensagem_id, currentMessage);
     const ordered = [...messagesById.values()].sort(compareMessages);
+    const systemPrompt = buildPlennaSystemPrompt(now);
     const required = [
-        { role: 'system', content: PLENNA_CHAT_SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         toAIMessage(currentMessage),
     ];
     failIfRequiredMessagesDoNotFit(required, limits.maxChars);
@@ -51,7 +52,7 @@ export function buildChatContext(historyMessages, currentMessage, limits = getDe
             currentMessage,
         ].sort(compareMessages);
     }
-    const systemMessage = { role: 'system', content: PLENNA_CHAT_SYSTEM_PROMPT };
+    const systemMessage = { role: 'system', content: systemPrompt };
     while (contextCost([systemMessage, ...selected.map(toAIMessage)]) > limits.maxChars) {
         const removableIndex = selected.findIndex((message) => message.mensagem_id !== currentMessage.mensagem_id);
         if (removableIndex < 0)

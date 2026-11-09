@@ -5,8 +5,8 @@ import { PGlite } from '@electric-sql/pglite';
 const sources = {
   tb_compra: ['compras','compra_id int,usuario_id int,compra_ativo int,compra_status text,compra_horario timestamp,compra_valor numeric,compra_classificacao text,compra_recorrencia_id int'],
   tb_compra_evento: ['eventos','evento_id int,compra_id int,usuario_id int,compra_item_id int,revisao int,tipo text,dados jsonb,corrige_evento_id int,anulado boolean'],
-  tb_rf018_contexto_revisao: ['contextos','contexto_id int,compra_id int,usuario_id int,revisao int,respostas jsonb'],
-  tb_rf018_item_contexto: ['contextoItens','contexto_id int,compra_id int,compra_item_id int,planejamento text'],
+  tb_compra_contexto_revisao: ['contextos','contexto_id int,compra_id int,usuario_id int,revisao int,respostas jsonb'],
+  tb_compra_item_contexto: ['contextoItens','contexto_id int,compra_id int,compra_item_id int,planejamento text'],
   tb_compra_item: ['itens','compra_item_id int,compra_id int,compra_item_ativo int,categoria_id int'],
   tb_categoria: ['categorias','categoria_id int,categoria_nome text'],
   tb_compra_recorrencia: ['recorrencias','compra_recorrencia_id int,usuario_id int'],

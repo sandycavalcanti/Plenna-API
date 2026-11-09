@@ -107,7 +107,7 @@ Consultas privadas usam `Cache-Control: no-store`. Revisões divergentes, opera�
 
 ## Banco e migrations
 
-O schema acrescenta `tb_rf018_contexto_revisao`, `tb_rf018_item_contexto`, `tb_rf018_avaliacao`, `tb_compra_evento` e `tb_referencia_financeira`, além de relações e índices compostos para o vínculo entre compra, usuário e item.
+O schema utiliza `tb_compra_contexto_revisao`, `tb_compra_item_contexto`, `tb_compra_avaliacao`, `tb_compra_evento` e `tb_referencia_financeira`, além de relações e índices compostos para o vínculo entre compra, usuário e item. As migrations históricas RF018 mantêm os nomes antigos por imutabilidade; a renomeação física é manual e está documentada em `docs/RF018-RENOMEACAO-TABELAS.md`.
 
 Migrations transportadas:
 
@@ -115,7 +115,7 @@ Migrations transportadas:
 2. `prisma/migrations/20261024140000_rf018_avaliacao/migration.sql`.
 3. `prisma/migrations/20261025120000_gestao_eventos_referencias/migration.sql`.
 
-As migrations antigas da `develop`, incluindo OAuth e recorrências, permanecem intactas. Esta publicação de código não aplica migrations no Neon e não realiza deploy. Antes de um futuro deploy, o responsável deverá reconciliar o histórico de migrations do ambiente; a existência das tabelas, isoladamente, não comprova que uma migration pode ser reaplicada.
+As migrations antigas da `develop`, incluindo OAuth e recorrências, permanecem intactas. Esta publicação de código não aplica migrations no Neon e não realiza deploy. A divergência conhecida entre `_prisma_migrations` e o checkout permanece fora do escopo; a renomeação usa SQL manual explícito e exige publicação coordenada do backend.
 
 ## Integração Mobile e chatbot
 

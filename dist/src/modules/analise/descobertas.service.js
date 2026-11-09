@@ -5,13 +5,13 @@ import { parseMonth } from '../compra/financeiro.js';
 import { EventosResumoService } from '../compra/eventos.resumo.js';
 import { AnaliseAutomaticaService } from './analise-automatica.service.js';
 export class DescobertasService {
-    static async consultar(userId, periodo) {
+    static async consultar(userId, periodo, now = new Date()) {
         parseMonth(periodo);
         const [financeiro, historico, eventos, automatico] = await Promise.allSettled([
-            HomeService.consultar(userId, periodo),
-            HistoricoService.consultar(userId, { periodo, mesesHistorico: 6 }),
-            Promise.resolve().then(() => EventosResumoService.consultar(userId, periodo)),
-            Promise.resolve().then(() => AnaliseAutomaticaService.periodo(userId, periodo)),
+            HomeService.consultar(userId, periodo, now),
+            HistoricoService.consultar(userId, { periodo, mesesHistorico: 6 }, now),
+            Promise.resolve().then(() => EventosResumoService.consultar(userId, periodo, now)),
+            Promise.resolve().then(() => AnaliseAutomaticaService.periodo(userId, periodo, now)),
         ]);
         // O resumo agregado omite estabelecimentos, nomes e identificadores privados de compras e itens.
         return {

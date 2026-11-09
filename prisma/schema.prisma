@@ -637,7 +637,7 @@ model contexto_compra_revisao {
   @@unique([compra_id, revisao])
   @@unique([compra_id, operacao_id])
   @@unique([contexto_id, compra_id])
-  @@map("tb_rf018_contexto_revisao")
+  @@map("tb_compra_contexto_revisao")
   @@schema("public")
 }
 
@@ -650,7 +650,7 @@ model contexto_compra_item {
   item           tb_compra_item            @relation(fields: [compra_item_id, compra_id], references: [compra_item_id, compra_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([contexto_id, compra_item_id])
-  @@map("tb_rf018_item_contexto")
+  @@map("tb_compra_item_contexto")
   @@schema("public")
 }
 
@@ -671,7 +671,7 @@ model avaliacao_compra {
 
   @@unique([compra_id, versao_motor, fontes_hash])
   @@index([compra_id, avaliacao_id])
-  @@map("tb_rf018_avaliacao")
+  @@map("tb_compra_avaliacao")
   @@schema("public")
 }
 

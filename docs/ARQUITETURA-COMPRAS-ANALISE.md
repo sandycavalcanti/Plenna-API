@@ -18,11 +18,11 @@ Não há seleção dinâmica entre tabelas nem fallback para uma implementação
 
 Os modelos de aplicação usam nomes sem referência ao requisito:
 
-- `contexto_compra_revisao` → `tb_rf018_contexto_revisao`
-- `contexto_compra_item` → `tb_rf018_item_contexto`
-- `avaliacao_compra` → `tb_rf018_avaliacao`
+- `contexto_compra_revisao` → `tb_compra_contexto_revisao`
+- `contexto_compra_item` → `tb_compra_item_contexto`
+- `avaliacao_compra` → `tb_compra_avaliacao`
 
-Os nomes físicos são preservados por `@@map` para não alterar dados nem quebrar o histórico de migrations. Os nomes antigos das pastas de migration também permanecem como histórico imutável.
+Os nomes físicos representam as entidades de compra; os nomes antigos das pastas de migration permanecem como histórico imutável. A renomeação física é executada exclusivamente pelo script manual documentado em `docs/RF018-RENOMEACAO-TABELAS.md`.
 
 ## Datas
 
@@ -30,9 +30,9 @@ Instantes continuam sendo armazenados como `timestamptz`/`Date`. Períodos civis
 
 ## Implantação da evolução de contexto
 
-1. Aplicar as migrations pendentes, incluindo `20261026100000_consolidate_context_metadata`, em um ambiente controlado.
-2. Verificar a existência das tabelas e a conversão de `__rf018_eventos_v1` para `__contexto_eventos_v1` antes de publicar a aplicação.
-3. Publicar o backend e o frontend que usam os contratos consolidados.
-4. Depois de confirmar que não existem linhas antigas e que não há rollback para uma versão anterior, remover em uma alteração posterior a leitura de `__rf018_eventos_v1` em `contexto-eventos.ts`.
+1. Confirmar backup, banco de destino, contagens e ausência das tabelas de destino.
+2. Publicar o backend compatível com `tb_compra_contexto_revisao`, `tb_compra_item_contexto` e `tb_compra_avaliacao`.
+3. Executar o script SQL manual em janela coordenada com a publicação.
+4. Executar o script de verificação e manter o rollback disponível até a validação da API.
 
-Nenhuma etapa usa `db push`, `db pull` ou alteração física executada por este trabalho. A migration é deliberadamente aditiva e idempotente para permitir execução segura uma única vez no pipeline de banco.
+Nenhuma etapa usa `db push`, `db pull`, `migrate deploy` ou migration histórica. A divergência conhecida do histórico Prisma deve ser reconciliada em trabalho próprio; ela não altera o escopo desta renomeação manual.

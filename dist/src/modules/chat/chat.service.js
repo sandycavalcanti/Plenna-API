@@ -379,13 +379,13 @@ export class ChatService {
                 titleGenerationInFlight.delete(historyId);
         }
     }
-    static async completeMessage(userId, historyId, userMessage, firstMessage, shouldGenerateTitle, db, providerFactory) {
+    static async completeMessage(userId, historyId, userMessage, firstMessage, shouldGenerateTitle, db, providerFactory, requestNow) {
         const after = await this.getHistory(userId, historyId, db);
         const persistedCurrent = after.mensagens.find((message) => message.mensagem_id === userMessage.mensagem_id);
         if (!persistedCurrent) {
             throw new AppError('Mensagem do usuario nao foi recuperada apos persistencia', 500);
         }
-        const respostaIndicadores = db === prisma ? await consultarRespostaIndicadores(userId, persistedCurrent.texto) : null;
+        const respostaIndicadores = db === prisma ? await consultarRespostaIndicadores(userId, persistedCurrent.texto, requestNow) : null;
         if (respostaIndicadores !== null) {
             const assistantMessage = await this.createAssistantMessage(userId, historyId, respostaIndicadores, db);
             const finalHistory = await this.getHistory(userId, historyId, db);
@@ -401,7 +401,7 @@ export class ChatService {
         if (!provider || typeof provider.chat !== 'function') {
             throw new AppError('Provider conversacional indisponivel', 502);
         }
-        const context = buildChatContext(after.mensagens, persistedCurrent);
+        const context = buildChatContext(after.mensagens, persistedCurrent, undefined, requestNow);
         const explicitMemoryWriteIntent = hasExplicitMemoryWriteIntent(persistedCurrent.texto);
         const automaticMemoryInMainRound = await canOfferAutomaticMemory(userId, persistedCurrent.texto, explicitMemoryWriteIntent, provider);
         const chatToolRegistry = buildChatToolRegistry(automaticMemoryInMainRound);
@@ -437,6 +437,7 @@ export class ChatService {
         assertUserId(userId);
         const parsedHistoryId = parseHistoryId(historyId);
         const parsedInput = parseMessageInput(input);
+        const requestNow = new Date();
         // Verifica ownership antes da primeira escrita e valida o minimo de contexto.
         const before = await this.getHistory(userId, parsedHistoryId, db);
         const provisionalMessage = {
@@ -446,14 +447,15 @@ export class ChatService {
             texto: parsedInput.texto,
             mensagem_data_criacao: new Date(),
         };
-        buildChatContext(before.mensagens, provisionalMessage);
+        buildChatContext(before.mensagens, provisionalMessage, undefined, requestNow);
         // A transacao termina antes da chamada externa ao provider.
         const userMessage = await this.createUserMessage(userId, parsedHistoryId, parsedInput, db);
-        return this.completeMessage(userId, parsedHistoryId, userMessage, parsedInput.texto, before.historico.historico_nome === DEFAULT_HISTORY_NAME && !before.mensagens.some((message) => message.remetente === 'user'), db, providerFactory);
+        return this.completeMessage(userId, parsedHistoryId, userMessage, parsedInput.texto, before.historico.historico_nome === DEFAULT_HISTORY_NAME && !before.mensagens.some((message) => message.remetente === 'user'), db, providerFactory, requestNow);
     }
     static async sendFirstMessage(userId, input, db = prisma, providerFactory = createAIProvider) {
         assertUserId(userId);
         const parsedInput = parseMessageInput(input);
+        const requestNow = new Date();
         const provisionalMessage = {
             mensagem_id: -1,
             historico_id: -1,
@@ -461,10 +463,10 @@ export class ChatService {
             texto: parsedInput.texto,
             mensagem_data_criacao: new Date(),
         };
-        buildChatContext([], provisionalMessage);
+        buildChatContext([], provisionalMessage, undefined, requestNow);
         const created = await this.createHistoryWithUserMessage(userId, parsedInput, db);
         try {
-            return await this.completeMessage(userId, created.historico.historico_id, created.mensagemUsuario, parsedInput.texto, true, db, providerFactory);
+            return await this.completeMessage(userId, created.historico.historico_id, created.mensagemUsuario, parsedInput.texto, true, db, providerFactory, requestNow);
         }
         catch (error) {
             const normalized = error instanceof AppError
