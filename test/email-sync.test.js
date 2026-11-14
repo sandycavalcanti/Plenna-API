@@ -407,6 +407,7 @@ test('compra manual é criada pelo backend como confirmada e não email', async 
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_forma_pagamento: {
         findUnique: async () => null,
       },
@@ -415,6 +416,7 @@ test('compra manual é criada pelo backend como confirmada e não email', async 
       },
       tb_compra: {
         create: async ({ data }) => data,
+        findFirst: async () => null,
         findMany: async () => [],
       },
       tb_compra_item: {
@@ -446,6 +448,7 @@ test('compra manual com compraValor válido funciona', async () => {
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_forma_pagamento: {
         findUnique: async () => null,
       },
@@ -454,6 +457,7 @@ test('compra manual com compraValor válido funciona', async () => {
       },
       tb_compra: {
         create: async ({ data }) => data,
+        findFirst: async () => null,
         findMany: async () => [],
       },
       tb_compra_item: {
@@ -485,6 +489,7 @@ test('compra manual apenas com items funciona', async () => {
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_forma_pagamento: {
         findUnique: async () => null,
       },
@@ -493,6 +498,7 @@ test('compra manual apenas com items funciona', async () => {
       },
       tb_compra: {
         create: async ({ data }) => data,
+        findFirst: async () => null,
         findMany: async () => [],
       },
       tb_compra_item: {
@@ -527,6 +533,7 @@ test('compra manual sem valor e sem items falha', async () => {
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_forma_pagamento: {
         findUnique: async () => null,
       },
@@ -572,6 +579,8 @@ test('PUT de compra pendente com valor nulo pode alterar outros campos sem confi
     compra_email: true,
     compra_fonte: null,
     forma_pagamento_id: null,
+    tb_usuario: { usuario_meta_valor_compra: null, usuario_meta_valor_mensal: null },
+    tb_compra_item: [],
   };
 
   prisma.tb_compra.findFirst = async () => current;
@@ -585,6 +594,7 @@ test('PUT de compra pendente com valor nulo pode alterar outros campos sem confi
       },
       tb_compra: {
         findFirst: async () => current,
+        findMany: async () => [],
         update: async ({ data }) => {
           current = { ...current, ...data };
           return current;
@@ -595,10 +605,17 @@ test('PUT de compra pendente com valor nulo pode alterar outros campos sem confi
       tb_compra_item: {
         deleteMany: async () => ({}),
         createMany: async () => ({}),
+        findMany: async () => [],
+      },
+      tb_compra_evento: {
+        findFirst: async () => null,
+        findMany: async () => [],
+        create: async () => ({}),
       },
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_metricas: {
         findFirst: async () => null,
         update: async () => ({}),
@@ -633,6 +650,7 @@ test('compra confirmada não pode perder o valor no update', async () => {
     usuario_id: 1,
     compra_status: 'CONFIRMADA',
     compra_valor: 100,
+    compra_desconto: 0,
     compra_horario: new Date('2026-08-10T12:00:00Z'),
     compra_usuario_concorda: null,
     compra_usuario_anotacao: null,
@@ -640,6 +658,8 @@ test('compra confirmada não pode perder o valor no update', async () => {
     compra_email: false,
     compra_fonte: 'Amazon',
     forma_pagamento_id: null,
+    tb_usuario: { usuario_meta_valor_compra: null, usuario_meta_valor_mensal: null },
+    tb_compra_item: [],
   };
   let draft = null;
 
@@ -666,10 +686,27 @@ test('compra confirmada não pode perder o valor no update', async () => {
       tb_compra_item: {
         deleteMany: async () => ({}),
         createMany: async () => ({}),
+        findMany: async () => [{
+          compra_item_id: 1,
+          compra_item_nome: 'Item existente',
+          categoria_id: 1,
+          compra_item_valor: 100,
+          compra_item_quantidade: null,
+        }],
+        updateMany: async () => ({}),
+      },
+      contexto_compra_item: {
+        count: async () => 0,
+      },
+      tb_compra_evento: {
+        findFirst: async () => null,
+        findMany: async () => [],
+        create: async () => ({}),
       },
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_metricas: {
         findFirst: async () => null,
         update: async () => ({}),
@@ -1268,6 +1305,8 @@ test('transição de compra impede caminhos inválidos', async () => {
     compra_email: true,
     compra_fonte: null,
     forma_pagamento_id: null,
+    tb_usuario: { usuario_meta_valor_compra: null, usuario_meta_valor_mensal: null },
+    tb_compra_item: [],
   };
   prisma.tb_compra.findFirst = async () => current;
   prisma.$transaction = async (cb) =>
@@ -1291,9 +1330,15 @@ test('transição de compra impede caminhos inválidos', async () => {
         deleteMany: async () => ({}),
         createMany: async () => ({}),
       },
+      tb_compra_evento: {
+        findFirst: async () => null,
+        findMany: async () => [],
+        create: async () => ({}),
+      },
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_metricas: {
         findFirst: async () => null,
         update: async () => ({}),
@@ -1336,6 +1381,8 @@ test('confirmação recalcula métricas e retorna compra confirmada', async () =
     compra_email: true,
     compra_fonte: null,
     forma_pagamento_id: null,
+    tb_usuario: { usuario_meta_valor_compra: null, usuario_meta_valor_mensal: null },
+    tb_compra_item: [],
   };
   let recalcCalls = 0;
 
@@ -1354,15 +1401,22 @@ test('confirmação recalcula métricas e retorna compra confirmada', async () =
           current = { ...current, ...data };
           return current;
         },
+        findMany: async () => [],
         create: async () => current,
       },
       tb_compra_item: {
         deleteMany: async () => ({}),
         createMany: async () => ({}),
       },
+      tb_compra_evento: {
+        findFirst: async () => null,
+        findMany: async () => [],
+        create: async () => ({}),
+      },
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_metricas: {
         findFirst: async () => null,
         update: async () => ({}),
@@ -1402,6 +1456,7 @@ test('compra pendente com valor nulo pode ser confirmada quando items definem va
     usuario_id: 1,
     compra_status: 'AGUARDANDO_CONFIRMACAO',
     compra_valor: null,
+    compra_desconto: 0,
     compra_horario: new Date('2026-08-10T12:00:00Z'),
     compra_usuario_concorda: null,
     compra_usuario_anotacao: null,
@@ -1409,6 +1464,8 @@ test('compra pendente com valor nulo pode ser confirmada quando items definem va
     compra_email: true,
     compra_fonte: null,
     forma_pagamento_id: null,
+    tb_usuario: { usuario_meta_valor_compra: null, usuario_meta_valor_mensal: null },
+    tb_compra_item: [],
   };
 
   prisma.tb_compra.findFirst = async () => current;
@@ -1432,10 +1489,17 @@ test('compra pendente com valor nulo pode ser confirmada quando items definem va
       tb_compra_item: {
         deleteMany: async () => ({}),
         createMany: async () => ({}),
+        findMany: async () => [],
+      },
+      tb_compra_evento: {
+        findFirst: async () => null,
+        findMany: async () => [],
+        create: async () => ({}),
       },
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_metricas: {
         findFirst: async () => null,
         update: async () => ({}),
@@ -1458,7 +1522,6 @@ test('compra pendente com valor nulo pode ser confirmada quando items definem va
       { categoriaId: 2, nome: 'Item B', valor: 30 },
     ],
   });
-
   assert.equal(result.compra.compra_status, 'CONFIRMADA');
   assert.equal(Number(result.compra.compra_valor), 80);
   assert.equal(recalcCalls.length >= 1, true);
@@ -1489,6 +1552,8 @@ test('edicao de compra confirmada recalcula métricas do mês antigo e novo', as
     compra_email: false,
     compra_fonte: null,
     forma_pagamento_id: null,
+    tb_usuario: { usuario_meta_valor_compra: null, usuario_meta_valor_mensal: null },
+    tb_compra_item: [],
   };
 
   prisma.tb_compra.findFirst = async () => current;
@@ -1512,10 +1577,17 @@ test('edicao de compra confirmada recalcula métricas do mês antigo e novo', as
       tb_compra_item: {
         deleteMany: async () => ({}),
         createMany: async () => ({}),
+        findMany: async () => [],
+      },
+      tb_compra_evento: {
+        findFirst: async () => null,
+        findMany: async () => [],
+        create: async () => ({}),
       },
       tb_usuario: {
         findFirst: async () => ({ usuario_meta_valor_compra: null }),
       },
+      $queryRaw: async () => [],
       tb_metricas: {
         findFirst: async () => null,
         update: async () => ({}),

@@ -9,8 +9,12 @@ export function bancoSimulado() {
   let falharPackage = '';
   const tx: any = {
     $queryRaw: async (sql: TemplateStringsArray, usuario: number) => {
+      const statement = sql.join('?');
+      // O caminho v1/v2 consulta o schema antes de adquirir o lock. Esse
+      // probe não é um lock e não deve contaminar as expectativas do fixture.
+      if (statement.includes('to_regclass')) return [{ current: null, relation: null }];
       chamadas.push('lock');
-      assert.match(sql.join('?'), /tb_usuario.*FOR UPDATE/);
+      assert.match(statement, /tb_usuario.*FOR UPDATE/);
       return [{ usuario_id: usuario }];
     },
     tb_consentimento: { findFirst: async (args: any) => {

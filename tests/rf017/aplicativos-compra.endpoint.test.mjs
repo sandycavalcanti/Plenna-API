@@ -28,6 +28,8 @@ async function setup() {
       return { tempo_uso_id: 123 };
     },
   }, { get: (target, key) => key in target ? target[key] : deny }),
+  $queryRaw: async () => [{ current: null, relation: null }],
+  $transaction: async (callback) => callback(prisma),
 }, { get: (target, key) => key in target ? target[key] : deny });
   // No real environment, dotenv, Prisma client or database is loaded.
   const context = vm.createContext({ process: { env: { JWT_SECRET: testKey } } });

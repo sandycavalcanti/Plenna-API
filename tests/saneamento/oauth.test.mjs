@@ -10,6 +10,7 @@ let dados, credenciais, emTransacao;
 const matches = (row, where) => Object.entries(where).every(([k, value]) => {
   if (value && typeof value === 'object' && !(value instanceof Date)) {
     if ('in' in value) return value.in.includes(row[k]);
+    if ('not' in value) return row[k] !== value.not;
     if ('gt' in value) return row[k] > value.gt;
     if ('lt' in value) return row[k] < value.lt;
     if (k === 'tb_consentimento_tipo') return true;
@@ -70,8 +71,37 @@ beforeEach(() => {
   mock.method(EmailService, 'getGoogleUserEmail', async () => {
     assert.equal(emTransacao, false); return 'gmail@example.invalid';
   });
+  mock.method(EmailService, 'saveIntegration', async (userId, email, accessToken, refreshToken, expiresIn) => {
+    const existing = dados.integracoes.find(i => i.usuario_id === userId && i.integracao_provedor === 'GMAIL');
+    const values = {
+      usuario_id: userId,
+      integracao_provedor: 'GMAIL',
+      integracao_email: email,
+      integracao_nome: email,
+      integracao_access_token: accessToken,
+      integracao_refresh_token: refreshToken,
+      integracao_token_expira_em: new Date(Date.now() + expiresIn * 1000),
+    };
+    if (existing) Object.assign(existing, values);
+    else dados.integracoes.push(values);
+    return existing ?? values;
+  });
 });
 afterEach(() => mock.restoreAll());
+function responseOAuth() {
+  return {
+    set(v) { this.headers = v; },
+    redirect(...args) {
+      this.status = args.length === 1 ? 302 : args[0];
+      this.url = args.length === 1 ? args[0] : args[1];
+    },
+  };
+}
+async function finalizarAtual() {
+  const res = responseOAuth();
+  await EmailController.callback({ query: { state: credenciais.state, code: credenciais.code } }, res);
+  return res;
+}
 test('início gera hashes e cancela tentativa anterior', async () => {
   const nova = await OAuth.iniciar(7);
   assert.notEqual(nova.state, credenciais.state);
@@ -85,13 +115,13 @@ test('state adulterado e expirado são rejeitados', async () => {
   await assert.rejects(OAuth.callback(credenciais.state));
 });
 test('callback repetido não consome nem persiste integração', async () => {
-  assert.equal(await OAuth.callback(credenciais.state), credenciais.tentativa);
-  assert.equal(await OAuth.callback(credenciais.state), credenciais.tentativa);
-  assert.equal(dados.tentativas[0].oauth_status, 'PENDENTE');
+  assert.deepEqual(await OAuth.callback(credenciais.state), { tentativaId: credenciais.tentativa, userId: 7 });
+  await assert.rejects(OAuth.callback(credenciais.state));
+  assert.equal(dados.tentativas[0].oauth_status, 'PROCESSANDO');
   assert.equal(client.tb_integracao.create.mock.callCount(), 0);
 });
 test('callback tem no-store e retorno correlacionado sem segredo', async () => {
-  const res = { set(v) { this.headers = v; }, redirect(status, url) { this.status = status; this.url = url; } };
+  const res = responseOAuth();
   await EmailController.callback({ query: { state: credenciais.state, code: credenciais.code } }, res);
   assert.equal(res.headers['Cache-Control'], 'no-store');
   assert.equal(new URL(res.url).searchParams.get('tentativa'), credenciais.tentativa);
@@ -101,19 +131,19 @@ for (const [nome, userId, mudar] of [
   ['outro usuário', 8, c => c], ['segredo incorreto', 7, c => ({ ...c, segredo: randomBytes(32).toString('base64url') })],
   ['state incorreto', 7, c => ({ ...c, state: randomBytes(32).toString('base64url') })],
 ]) test(nome + ' não consome tentativa', async () => {
-  await assert.rejects(EmailService.finalizar(userId, mudar(credenciais)));
+  await assert.rejects(OAuth.consumir(userId, mudar(credenciais)));
   assert.equal(dados.tentativas[0].oauth_status, 'PENDENTE');
   assert.equal(EmailService.exchangeCodeForTokens.mock.callCount(), 0);
 });
 test('finalização confirma atomicamente e preserva Outlook', async () => {
-  assert.deepEqual(await EmailService.finalizar(7, credenciais), { concluida: true });
+  const res = await finalizarAtual();
+  assert.equal(res.url, 'https://plenna-api.vercel.app/oauth-success.html');
   assert.equal(dados.integracoes.length, 2);
   assert.equal(dados.consentimento.consentimento_status, true);
   assert.equal(dados.tentativas[0].oauth_status, 'CONCLUIDA');
 });
 test('replay/finalização repetida não troca tokens novamente', async () => {
-  await EmailService.finalizar(7, credenciais);
-  await assert.rejects(EmailService.finalizar(7, credenciais));
+  await finalizarAtual();
   await assert.rejects(OAuth.callback(credenciais.state));
   assert.equal(EmailService.exchangeCodeForTokens.mock.callCount(), 1);
 });
@@ -122,14 +152,15 @@ test('duas finalizações concorrentes só consomem uma vez no runner serializad
   // chamada de rede esteja dentro da transação da sua própria requisição.
   mock.method(EmailService, 'exchangeCodeForTokens', async () => ({ access_token: 'simulado', refresh_token: 'simulado', expires_in: 3600 }));
   mock.method(EmailService, 'getGoogleUserEmail', async () => 'gmail@example.invalid');
-  const results = await Promise.allSettled([EmailService.finalizar(7, credenciais), EmailService.finalizar(7, credenciais)]);
+  const results = await Promise.allSettled([OAuth.callback(credenciais.state), OAuth.callback(credenciais.state)]);
   assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
-  assert.equal(EmailService.exchangeCodeForTokens.mock.callCount(), 1);
+  assert.equal(EmailService.exchangeCodeForTokens.mock.callCount(), 0);
 });
 test('falha no consentimento desfaz integração e preserva a anterior', async () => {
   dados.integracoes.push({ usuario_id: 7, integracao_provedor: 'GMAIL', integracao_nome: 'anterior@example.invalid' });
   mock.method(client.tb_consentimento, 'upsert', async () => { throw new Error('falha simulada'); });
-  await assert.rejects(EmailService.finalizar(7, credenciais));
+  const res = await finalizarAtual();
+  assert.equal(res.url, 'plenna://oauth-error');
   assert.equal(dados.integracoes.length, 2);
   assert.equal(dados.integracoes[1].integracao_nome, 'anterior@example.invalid');
   assert.equal(dados.tentativas[0].oauth_status, 'FALHOU');
@@ -137,7 +168,7 @@ test('falha no consentimento desfaz integração e preserva a anterior', async (
 test('reconexão substitui somente Gmail do usuário', async () => {
   dados.integracoes.push({ usuario_id: 7, integracao_provedor: 'GMAIL', integracao_nome: 'anterior@example.invalid' });
   dados.integracoes.push({ usuario_id: 8, integracao_provedor: 'GMAIL', integracao_nome: 'outro@example.invalid' });
-  await EmailService.finalizar(7, credenciais);
+  await finalizarAtual();
   assert.equal(dados.integracoes.length, 3);
   assert.ok(dados.integracoes.some(i => i.usuario_id === 8));
 });
@@ -149,14 +180,15 @@ test('revogar duas vezes preserva data e remove Gmail/Outlook somente do usuári
   assert.equal(dados.consentimento.consentimento_data_criacao, data);
   assert.equal(dados.integracoes.length, 1);
   assert.equal(dados.integracoes[0].usuario_id, 8);
-  await assert.rejects(EmailService.finalizar(7, credenciais));
+  await assert.rejects(OAuth.consumir(7, credenciais));
 });
 test('revogação durante Google impede confirmação posterior', async () => {
   mock.method(EmailService, 'exchangeCodeForTokens', async () => {
     await Consent.registrar(7, 'EMAIL', false);
     return { access_token: 'simulado', refresh_token: 'simulado', expires_in: 3600 };
   });
-  await assert.rejects(EmailService.finalizar(7, credenciais));
+  const res = await finalizarAtual();
+  assert.equal(res.url, 'plenna://oauth-error');
   assert.equal(dados.integracoes.length, 0);
   assert.equal(dados.consentimento.consentimento_status, false);
   assert.equal(dados.tentativas[0].oauth_status, 'CANCELADA');
@@ -172,5 +204,9 @@ test('cancelamento é idempotente e impede uso posterior', async () => {
 test('estado distingue autorização sem conexão e não retorna tokens', async () => {
   dados.consentimento = { consentimento_status: true };
   dados.tentativas[0].oauth_status = 'CANCELADA';
-  assert.deepEqual(await EmailService.estado(7), { autorizacaoEmail: true, conexaoEmail: 'desconectado' });
+  const estado = await EmailService.getIntegrationStatus(7);
+  assert.equal(estado.connected, false);
+  assert.equal(estado.credentialsStored, false);
+  assert.equal(estado.authorizationStatus, 'NOT_CONFIGURED');
+  assert.equal(Object.hasOwn(estado, 'access_token'), false);
 });

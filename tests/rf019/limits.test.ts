@@ -101,6 +101,9 @@ function makeClient() {
       findUnique: async ({ where }: Row) => ({ forma_pagamento_id: where.forma_pagamento_id }),
     },
     tb_usuario_preferencia: {},
+    tb_consentimento: {
+      findFirst: async () => ({ consentimento_id: 1 }),
+    },
     tb_preferencia: {
       findMany: async ({ where }: Row) => state.preferences.filter((row) => matches(row, where)),
     },
@@ -230,7 +233,10 @@ function makeClient() {
     },
     $queryRaw: async (query: unknown, ...values: any[]) => {
       const text = Array.isArray(query) ? query.join('?') : String(query);
-      if (text.includes('tb_compra') && text.includes('FOR UPDATE')) return [];
+      // Locks de usuário/compra são controle de concorrência, não inserts de
+      // notificação. O mock anterior confundia o lock de usuário com o SQL de
+      // persistência e contaminava state.notifications.
+      if (text.includes('FOR UPDATE')) return [];
       const [usuario_id, notificacao_tipo, notificacao_titulo, notificacao_mensagem,
         notificacao_chave_idempotencia, compra_id, categoria_id, notificacao_evento] = values;
       if (state.notifications.some((notification) => notification.notificacao_chave_idempotencia === notificacao_chave_idempotencia)) {

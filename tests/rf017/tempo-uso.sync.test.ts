@@ -89,7 +89,9 @@ test('mesma chave é atualizada; uma consulta de conflitos por lote', async () =
   assert.deepEqual(b.chamadas, ['lock', 'consentimento', 'conflitos', 'upsert', 'upsert']);
   await sincronizarFotografiasAtomicamente(b.runner, 7, [{ ...foto(), duracaoSegundos: 123 }]);
   assert.equal(b.registros().length, 2);
-  assert.equal(b.registros()[0].tempo_uso_duracao_segundos, 123);
+  // A fotografia diária é cumulativa: um reenvio menor não apaga o maior já
+  // persistido; o primeiro teste cobre o crescimento para 1200 segundos.
+  assert.equal(b.registros()[0].tempo_uso_duracao_segundos, 930);
 });
 test('falha posterior desfaz atualizações e inserções anteriores', async () => {
   const b = bancoSimulado();
