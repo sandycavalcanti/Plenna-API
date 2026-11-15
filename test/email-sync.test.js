@@ -896,10 +896,9 @@ test('sync ambígua chama IA e falha não avança timestamp', async () => {
     throw new Error('IA indisponível');
   };
   RequestyProvider.prototype.suggestCategory = async () => ({ categoryId: null });
-  prisma.tb_integracao.updateMany = async () => ({ count: 1 });
-  prisma.tb_integracao.update = async ({ data }) => {
+  prisma.tb_integracao.updateMany = async ({ data }) => {
     updates.push(data);
-    return {};
+    return { count: 1 };
   };
   prisma.tb_compra.findFirst = async () => null;
   prisma.tb_propaganda.findFirst = async () => null;
@@ -1222,10 +1221,9 @@ test('falha de suggestCategory em propaganda clara não derruba o sync', async (
   RequestyProvider.prototype.suggestCategory = async () => {
     throw new Error('Falha temporária ao sugerir categoria');
   };
-  prisma.tb_integracao.updateMany = async () => ({ count: 1 });
-  prisma.tb_integracao.update = async ({ data }) => {
+  prisma.tb_integracao.updateMany = async ({ data }) => {
     updates.push(data);
-    return {};
+    return { count: 1 };
   };
   prisma.tb_compra.findFirst = async () => null;
   prisma.tb_propaganda.findFirst = async () => null;

@@ -194,6 +194,7 @@ export class EmailService {
         integracao_refresh_token: true,
         integracao_token_expira_em: true,
         integracao_ultima_sincronizacao_em: true,
+        integracao_geracao: true,
       },
     });
   }

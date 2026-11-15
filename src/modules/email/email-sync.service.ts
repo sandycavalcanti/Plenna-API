@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import crypto from 'node:crypto';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import { AppError } from '../../errors/AppError.js';
@@ -29,7 +30,7 @@ function createdPushNotifications(evaluation: { alerts?: Array<{ created: boolea
  * Resultado da tentativa de adquirir o lock lógico da sincronização.
  */
 export type SyncAcquireResult =
-  | { acquired: true }
+  | { acquired: true; executionId: string }
   | { acquired: false; reason: 'JA_EM_ANDAMENTO' };
 
 type SyncUserResult =
@@ -771,15 +772,28 @@ export class EmailSyncService {
    * A abordagem evita o padrão SELECT -> UPDATE, que permitiria race condition
    * entre sincronizações manuais e automáticas.
    */
-  private static async acquireLock(integrationId: number): Promise<SyncAcquireResult> {
+  private static async acquireLock(integrationId: number, integrationGeneration: string): Promise<SyncAcquireResult> {
+    const now = new Date();
+    const executionId = crypto.randomUUID();
+    const leaseExpiresAt = new Date(now.getTime() + env.emailSyncLeaseMs);
     const acquired = await prisma.tb_integracao.updateMany({
       where: {
         integracao_id: integrationId,
-        integracao_sincronizacao_status: { not: 'PROCESSANDO' },
+        integracao_geracao: integrationGeneration,
+        OR: [
+          { integracao_sincronizacao_status: { not: 'PROCESSANDO' } },
+          {
+            integracao_sincronizacao_status: 'PROCESSANDO',
+            integracao_execucao_id: { not: null },
+            integracao_lease_expira_em: { lte: now },
+          },
+        ],
       },
       data: {
         integracao_sincronizacao_status: 'PROCESSANDO',
         integracao_ultimo_erro: null,
+        integracao_execucao_id: executionId,
+        integracao_lease_expira_em: leaseExpiresAt,
       },
     });
 
@@ -787,7 +801,7 @@ export class EmailSyncService {
       return { acquired: false, reason: 'JA_EM_ANDAMENTO' };
     }
 
-    return { acquired: true };
+    return { acquired: true, executionId };
   }
   /**
    * Executa a sincronização Gmail de um único usuário.
@@ -813,10 +827,56 @@ export class EmailSyncService {
       throw new AppError('Integração Gmail não encontrada', 404);
     }
 
-    const lock = await this.acquireLock(integration.integracao_id);
+    const lock = await this.acquireLock(integration.integracao_id, integration.integracao_geracao);
     if (!lock.acquired) {
       return { processed: 0, created: 0, skipped: 0, status: 'JA_EM_ANDAMENTO' as const };
     }
+
+    const lockExecutionId = lock.executionId;
+    let leaseLostError: AppError | null = null;
+    let renewalInFlight: Promise<void> | null = null;
+    const renewLease = () => {
+      if (leaseLostError) return Promise.reject(leaseLostError);
+      if (renewalInFlight) return renewalInFlight;
+
+      renewalInFlight = (async () => {
+        const now = new Date();
+        const renewed = await prisma.tb_integracao.updateMany({
+          where: {
+            integracao_id: integration.integracao_id,
+            integracao_geracao: integration.integracao_geracao,
+            integracao_sincronizacao_status: 'PROCESSANDO',
+            integracao_execucao_id: lockExecutionId,
+            // Um lease expirado nunca pode ser renovado por seu antigo dono.
+            integracao_lease_expira_em: { gt: now },
+          },
+          data: {
+            integracao_lease_expira_em: new Date(now.getTime() + env.emailSyncLeaseMs),
+          },
+        });
+
+        if (renewed.count !== 1) {
+          throw new AppError('Lock da sincronização Gmail não pertence mais a esta execução', 409);
+        }
+      })()
+        .catch((error) => {
+          leaseLostError = error instanceof AppError
+            ? error
+            : new AppError('Não foi possível renovar o lock da sincronização Gmail', 409);
+          throw leaseLostError;
+        })
+        .finally(() => {
+          renewalInFlight = null;
+        });
+
+      return renewalInFlight;
+    };
+
+    const heartbeatIntervalMs = Math.max(100, Math.floor(env.emailSyncLeaseMs / 3));
+    const heartbeat = setInterval(() => {
+      void renewLease().catch(() => undefined);
+    }, heartbeatIntervalMs);
+    heartbeat.unref?.();
 
     const startedAt = new Date();
     const previousCursor = integration.integracao_ultima_sincronizacao_em;
@@ -825,6 +885,7 @@ export class EmailSyncService {
     const executionLimit = isBootstrap ? env.emailSyncInitialMessages : env.emailSyncMaxMessagesPerRun;
 
     try {
+      await renewLease();
       await EmailService.assertCaptureConsent(userId);
       console.info('[EmailSyncService] obtaining Gmail credentials');
       const accessToken = await EmailService.getValidAccessToken(integration);
@@ -853,6 +914,7 @@ export class EmailSyncService {
       let failureReason: string | null = null;
 
       for (const summary of messages) {
+        await renewLease();
         await EmailService.assertCaptureConsent(userId);
         if (result.processed >= executionLimit) {
           shouldFailRun = true;
@@ -870,10 +932,12 @@ export class EmailSyncService {
         await EmailService.assertCaptureConsent(userId);
         const detail = await EmailService.getMessage(accessToken, summary.id);
         console.info('[EmailSyncService] Gmail message fetched');
+        await renewLease();
         await EmailService.assertCaptureConsent(userId);
         const classification = EmailClassificationEngine.classify(detail);
 
         if (classification.outcome === 'COMPRA') {
+          await renewLease();
           const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase, accessToken, aiProvider);
           if ('created' in purchaseResult) result.created += 1;
           else result.skipped += 1;
@@ -881,6 +945,7 @@ export class EmailSyncService {
         }
 
         if (classification.outcome === 'PROPAGANDA') {
+          await renewLease();
           const categories = await getPropagationCategories();
           const categoryId = await resolvePropagationCategory(aiProvider, detail, categories);
 
@@ -898,8 +963,10 @@ export class EmailSyncService {
           }
 
           try {
+            await renewLease();
             const aiResult = await aiProvider.classifyEmail(buildEmailClassificationPrompt(detail));
             if (aiResult.classificacao === 'COMPRA') {
+              await renewLease();
               const sanitizedPurchase = sanitizeAiPurchase(detail, aiResult.purchase);
               if (!sanitizedPurchase) {
                 result.skipped += 1;
@@ -913,6 +980,7 @@ export class EmailSyncService {
             }
 
             if (aiResult.classificacao === 'PROPAGANDA') {
+              await renewLease();
               const categories = await getPropagationCategories();
               let categoryId = validatePropagationCategoryId(aiResult.categoryId, categories);
               if (categoryId === null) {
@@ -942,28 +1010,46 @@ export class EmailSyncService {
         throw new AppError(failureReason ?? 'Falha na classificação por IA', 500);
       }
 
+      await renewLease();
       await EmailService.assertCaptureConsent(userId);
-      await prisma.tb_integracao.update({
-        where: { integracao_id: integration.integracao_id },
+      const finalized = await prisma.tb_integracao.updateMany({
+        where: {
+          integracao_id: integration.integracao_id,
+          integracao_geracao: integration.integracao_geracao,
+          integracao_sincronizacao_status: 'PROCESSANDO',
+          integracao_execucao_id: lockExecutionId,
+        },
         data: {
           integracao_ultima_sincronizacao_em: startedAt,
           integracao_sincronizacao_status: 'FINALIZADA',
           integracao_ultimo_erro: null,
+          integracao_execucao_id: null,
+          integracao_lease_expira_em: null,
         },
       });
+      if (finalized.count !== 1) {
+        throw new AppError('Lock da sincronização Gmail foi substituído antes da finalização', 409);
+      }
 
       return result;
     } catch (error) {
       console.error('[EmailSyncService.syncUser] Falha na sincronização Gmail:', safeErrorMessage(error));
       logSyncErrorDiagnostic(error);
       try {
-        await prisma.tb_integracao.update({
-          where: { integracao_id: integration.integracao_id },
+        await prisma.tb_integracao.updateMany({
+          where: {
+            integracao_id: integration.integracao_id,
+            integracao_geracao: integration.integracao_geracao,
+            integracao_sincronizacao_status: 'PROCESSANDO',
+            integracao_execucao_id: lockExecutionId,
+          },
           data: {
             integracao_sincronizacao_status: 'ERRO',
             integracao_ultimo_erro: EmailService.isGoogleAuthorizationError(error)
               ? 'RECONEXAO_GMAIL_NECESSARIA'
               : safeErrorMessage(error),
+            integracao_execucao_id: null,
+            integracao_lease_expira_em: null,
           },
         });
       } catch (statusError) {
@@ -972,6 +1058,8 @@ export class EmailSyncService {
         }
       }
       throw error;
+    } finally {
+      clearInterval(heartbeat);
     }
   }
 

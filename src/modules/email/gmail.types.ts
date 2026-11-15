@@ -35,6 +35,7 @@ export type GmailIntegration = {
   integracao_refresh_token: string;
   integracao_token_expira_em: Date;
   integracao_ultima_sincronizacao_em: Date | null;
+  integracao_geracao: string;
 };
 
 export type GmailMessageQueryResult = {

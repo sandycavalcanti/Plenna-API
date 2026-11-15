@@ -31,6 +31,7 @@ const emailSyncInitialMessagesRaw = process.env.EMAIL_SYNC_INITIAL_MESSAGES ?? "
 const emailSyncBatchSizeRaw = process.env.EMAIL_SYNC_BATCH_SIZE ?? "25";
 const emailSyncMaxMessagesPerRunRaw = process.env.EMAIL_SYNC_MAX_MESSAGES_PER_RUN ?? "25";
 const emailSyncMaxUsersPerRunRaw = process.env.EMAIL_SYNC_MAX_USERS_PER_RUN ?? "10";
+const emailSyncLeaseMsRaw = process.env.EMAIL_SYNC_LEASE_MS ?? "300000";
 const emailPurchaseReconciliationWindowHoursRaw = process.env.EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS ?? "48";
 const emailAttachmentMaxBytesRaw = process.env.EMAIL_ATTACHMENT_MAX_BYTES ?? "10485760";
 const emailFiscalLinkFetchEnabledRaw = process.env.EMAIL_FISCAL_LINK_FETCH_ENABLED ?? "false";
@@ -174,6 +175,7 @@ export const env = {
   emailSyncBatchSize: requirePositiveInteger("EMAIL_SYNC_BATCH_SIZE", emailSyncBatchSizeRaw),
   emailSyncMaxMessagesPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_MESSAGES_PER_RUN", emailSyncMaxMessagesPerRunRaw),
   emailSyncMaxUsersPerRun: requirePositiveInteger("EMAIL_SYNC_MAX_USERS_PER_RUN", emailSyncMaxUsersPerRunRaw),
+  emailSyncLeaseMs: requirePositiveInteger("EMAIL_SYNC_LEASE_MS", emailSyncLeaseMsRaw),
   emailPurchaseReconciliationWindowHours: requirePositiveInteger("EMAIL_PURCHASE_RECONCILIATION_WINDOW_HOURS", emailPurchaseReconciliationWindowHoursRaw),
   emailAttachmentMaxBytes: requirePositiveInteger("EMAIL_ATTACHMENT_MAX_BYTES", emailAttachmentMaxBytesRaw),
   emailFiscalLinkFetchEnabled: parseStrictBoolean("EMAIL_FISCAL_LINK_FETCH_ENABLED", emailFiscalLinkFetchEnabledRaw),
