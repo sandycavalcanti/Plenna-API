@@ -16,9 +16,10 @@ nodemailer.createTransport = opcoes => {
 beforeEach(() => {
   envioFalha = false;
   mock.method(console, 'error', () => {});
-  mock.method(client, '$queryRaw', async () => [{ limite_contagem: 1 }]);
+  mock.method(client, '$queryRaw', async (query) =>
+    query.join('').includes('public.tb_usuario') ? [{ usuario_id: 7 }] : [{ limite_contagem: 1 }]);
   mock.method(client, '$executeRaw', async () => 0);
-  mock.method(client.tb_usuario, 'findUnique', async () => ({ usuario_id: 7, usuario_email: 'teste@example.invalid', usuario_nome: 'Teste' }));
+  mock.method(client.tb_usuario, 'findFirst', async () => ({ usuario_id: 7, usuario_email: 'teste@example.invalid', usuario_nome: 'Teste' }));
   mock.method(client.tb_redefinicao_senha, 'findFirst', async () => null);
   mock.method(client.tb_redefinicao_senha, 'updateMany', async () => ({ count: 1 }));
   mock.method(client.tb_redefinicao_senha, 'create', async () => ({ redefinicao_senha_id: 11 }));
@@ -32,7 +33,7 @@ async function solicitar(body = { email: 'teste@example.invalid' }) {
 }
 const resposta = { codigo: 200, corpo: { message: 'Se houver uma conta associada a este e-mail, você receberá instruções para redefinir a senha. Caso não receba, aguarde e tente novamente.' } };
 test('conta ausente recebe resposta genérica', async () => {
-  mock.method(client.tb_usuario, 'findUnique', async () => null);
+  mock.method(client.tb_usuario, 'findFirst', async () => null);
   assert.deepEqual(await solicitar(), resposta);
 });
 test('cooldown recebe resposta genérica e não cria código', async () => {
@@ -43,12 +44,12 @@ test('cooldown recebe resposta genérica e não cria código', async () => {
 test('rate limit ocorre antes da consulta da conta', async () => {
   mock.method(client, '$queryRaw', async () => [{ limite_contagem: 21 }]);
   assert.deepEqual(await solicitar(), resposta);
-  assert.equal(client.tb_usuario.findUnique.mock.callCount(), 0);
+  assert.equal(client.tb_usuario.findFirst.mock.callCount(), 0);
 });
 test('falha do limitador fecha envio e preserva resposta', async () => {
   mock.method(client, '$queryRaw', async () => { throw new Error('SEGREDO-BANCO'); });
   assert.deepEqual(await solicitar(), resposta);
-  assert.equal(client.tb_usuario.findUnique.mock.callCount(), 0);
+  assert.equal(client.tb_usuario.findFirst.mock.callCount(), 0);
 });
 test('SMTP realizado recebe resposta genérica e usa timeout', async () => {
   assert.deepEqual(await solicitar(), resposta);
