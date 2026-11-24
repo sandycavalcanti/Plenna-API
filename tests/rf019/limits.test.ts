@@ -236,6 +236,9 @@ function makeClient() {
       // Locks de usuário/compra são controle de concorrência, não inserts de
       // notificação. O mock anterior confundia o lock de usuário com o SQL de
       // persistência e contaminava state.notifications.
+      if (text.includes('FROM public.tb_usuario') && text.includes('FOR UPDATE')) {
+        return [{ usuario_id: values[0] }];
+      }
       if (text.includes('FOR UPDATE')) return [];
       const [usuario_id, notificacao_tipo, notificacao_titulo, notificacao_mensagem,
         notificacao_chave_idempotencia, compra_id, categoria_id, notificacao_evento] = values;
@@ -361,23 +364,18 @@ test('gera somente limite por compra', async () => {
   );
 });
 
-test('limite de compra zero é configurado e qualquer compra positiva excede', async () => {
+test('limite de compra zero fica inativo e não gera alerta para compra positiva', async () => {
   configureLimits(0, null, null);
-  const current = addPurchase({ compra_valor: 0.01 });
+  addPurchase({ compra_valor: 0.01 });
   const result = await evaluateCurrent();
-  assert.equal(result.purchaseAboveLimit, true);
-  assert.equal(state.purchases[0].compra_acima_limite, true);
-  assert.equal(state.notifications[0].notificacao_evento, null);
-  assert.equal(
-    state.notifications[0].notificacao_mensagem,
-    'Esta compra ultrapassou em R$ 0,01 o limite que você definiu.',
-  );
-  assert.equal(state.notifications[0].notificacao_mensagem.includes('%'), false);
+  assert.equal(result.purchaseAboveLimit, null);
+  assert.equal(state.purchases[0].compra_acima_limite, null);
+  assert.equal(state.notifications.length, 0);
 });
 
 test('helper único de limite trata nulo, zero, igualdade, abaixo e acima', () => {
   assert.equal(calculatePurchaseAboveLimit(10, null), null);
-  assert.equal(calculatePurchaseAboveLimit(10, 0), true);
+  assert.equal(calculatePurchaseAboveLimit(10, 0), null);
   assert.equal(calculatePurchaseAboveLimit(100, 100), false);
   assert.equal(calculatePurchaseAboveLimit(99, 100), false);
   assert.equal(calculatePurchaseAboveLimit(101, 100), true);
