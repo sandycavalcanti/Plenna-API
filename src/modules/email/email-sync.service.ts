@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import { AppError } from '../../errors/AppError.js';
 import { EmailClassificationEngine, buildClassificationHaystack, extractAmount, hasStrongPurchaseEvidence } from './classification.engine.js';
+import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 import { EmailService } from './email.service.js';
 import type { GmailMessageDetail, GmailMessageQueryResult } from './gmail.types.js';
 import { AIRateLimitError, type AIProvider } from './ai-provider.js';
@@ -355,7 +356,9 @@ export function extractPropagandaEstablishment(from: string | null | undefined) 
   return candidate.toUpperCase();
 }
 
-async function resolveExistingPurchase(userId: number, message: GmailMessageDetail, extracted: ExtractedPurchase, paymentMethodId: number | null) {
+type AssertSyncLease = (tx: Prisma.TransactionClient) => Promise<void>;
+
+async function resolveExistingPurchase(userId: number, message: GmailMessageDetail, extracted: ExtractedPurchase, paymentMethodId: number | null, assertLease?: AssertSyncLease) {
   const messageDate = parseDateFromMessage(message);
   if (!messageDate || !extracted.establishment || (extracted.orderNumber === null && extracted.totalAmount === null)) return null;
 
@@ -399,6 +402,8 @@ async function resolveExistingPurchase(userId: number, message: GmailMessageDeta
   }
 
   const transactionResult = await prisma.$transaction(async (tx) => {
+    await ConsentimentoService.bloquearUsuario(tx, userId);
+    await assertLease?.(tx);
     const purchase = Object.keys(update).length > 0
       ? await tx.tb_compra.update({ where: { compra_id: match.purchase.compra_id }, data: update })
       : match.purchase;
@@ -429,6 +434,7 @@ export async function createCompraFromMessage(
   accessToken?: string,
   aiProvider?: AIProvider | null,
   classificationPath: 'DETERMINISTIC_COMPRA' | 'AI_COMPRA' = 'DETERMINISTIC_COMPRA',
+  assertLease?: AssertSyncLease,
 ) {
   await EmailService.assertCaptureConsent(userId);
   const normalizedEmail = toNormalizedEmail(message);
@@ -448,7 +454,10 @@ export async function createCompraFromMessage(
   }
 
   const attachmentFiscal = accessToken
-    ? await parseFiscalAttachments(message.attachments ?? [], (metadata) => EmailService.downloadAttachment(accessToken, message.id, metadata))
+    ? await parseFiscalAttachments(message.attachments ?? [], async (metadata) => {
+        await EmailService.assertCaptureConsent(userId);
+        return EmailService.downloadAttachment(accessToken, message.id, metadata);
+      })
     : { nfe: [], danfe: [] };
   // Links externos sao enriquecimento opt-in; com a flag desligada nenhum DNS
   // e nenhuma URL do email sao acessados, preservando o fluxo anterior.
@@ -491,7 +500,7 @@ export async function createCompraFromMessage(
   const paymentMethod = extracted.paymentMethod.rawName
     ? await PaymentMethodResolver.resolve(extracted.paymentMethod.rawName)
     : null;
-  const existing = await resolveExistingPurchase(userId, message, extracted, paymentMethod?.id ?? null);
+  const existing = await resolveExistingPurchase(userId, message, extracted, paymentMethod?.id ?? null, assertLease);
   if (existing) {
     // Observabilidade restrita aos fixtures permite distinguir reconciliação de
     // falha sem registrar assunto, corpo, valores ou identificadores pessoais.
@@ -616,9 +625,11 @@ export async function createCompraFromMessage(
       }
       return { compra: compraFinal, createdNotifications };
     };
-    const transactionResult = purchaseComplete
-      ? await prisma.$transaction((tx) => createPurchase(tx))
-      : await createPurchase(prisma);
+    const transactionResult = await prisma.$transaction(async (tx) => {
+      await ConsentimentoService.bloquearUsuario(tx, userId);
+      await assertLease?.(tx);
+      return createPurchase(tx);
+    });
     await dispatchPushAfterCommit(userId, transactionResult.createdNotifications);
     logTestEmailFlow(message, {
       classification: 'COMPRA',
@@ -653,23 +664,27 @@ export async function createCompraFromMessage(
   }
 }
 
-async function createPropagandaFromMessage(userId: number, message: GmailMessageDetail, categoryId: number | null) {
+async function createPropagandaFromMessage(userId: number, message: GmailMessageDetail, categoryId: number | null, assertLease: AssertSyncLease) {
   await EmailService.assertCaptureConsent(userId);
   const horario = parseDateFromMessage(message);
   if (!horario) {
     throw new Error('Data inválida no e-mail');
   }
   try {
-    const propaganda = await prisma.tb_propaganda.create({
-      data: {
-        usuario_id: userId,
-        categoria_id: categoryId,
-        propaganda_email_mensagem_id: message.id,
-        propaganda_remetente: message.from ?? null,
-        propaganda_assunto: message.subject ?? null,
-        propaganda_estabelecimento: extractPropagandaEstablishment(message.from),
-        propaganda_data_recebimento: horario,
-      },
+    const propaganda = await prisma.$transaction(async (tx) => {
+      await ConsentimentoService.bloquearUsuario(tx, userId);
+      await assertLease?.(tx);
+      return tx.tb_propaganda.create({
+        data: {
+          usuario_id: userId,
+          categoria_id: categoryId,
+          propaganda_email_mensagem_id: message.id,
+          propaganda_remetente: message.from ?? null,
+          propaganda_assunto: message.subject ?? null,
+          propaganda_estabelecimento: extractPropagandaEstablishment(message.from),
+          propaganda_data_recebimento: horario,
+        },
+      });
     });
     return { created: propaganda };
   } catch (error) {
@@ -833,6 +848,22 @@ export class EmailSyncService {
     }
 
     const lockExecutionId = lock.executionId;
+    const leaseOwner = {
+      integracao_id: integration.integracao_id,
+      integracao_geracao: integration.integracao_geracao,
+      integracao_sincronizacao_status: 'PROCESSANDO' as const,
+      integracao_execucao_id: lockExecutionId,
+    };
+    const assertLease: AssertSyncLease = async tx => {
+      const now = new Date();
+      const result = await tx.tb_integracao.updateMany({
+        where: { ...leaseOwner, integracao_lease_expira_em: { gt: now } },
+        data: { integracao_lease_expira_em: new Date(now.getTime() + env.emailSyncLeaseMs) },
+      });
+      if (result.count !== 1) {
+        throw new AppError('Lock da sincronização Gmail não pertence mais a esta execução', 409);
+      }
+    };
     let leaseLostError: AppError | null = null;
     let renewalInFlight: Promise<void> | null = null;
     const renewLease = () => {
@@ -890,12 +921,17 @@ export class EmailSyncService {
       console.info('[EmailSyncService] obtaining Gmail credentials');
       const accessToken = await EmailService.getValidAccessToken(integration);
       console.info('[EmailSyncService] Gmail credentials resolved');
+      await EmailService.assertCaptureConsent(userId);
       console.info('[EmailSyncService] listing Gmail messages');
       const messages = await EmailService.listMessages(
         accessToken,
         query,
         env.emailSyncBatchSize,
-        isBootstrap ? env.emailSyncInitialMessages : undefined
+        isBootstrap ? env.emailSyncInitialMessages : undefined,
+        async () => {
+          await renewLease();
+          await EmailService.assertCaptureConsent(userId);
+        },
       );
       console.info(`[EmailSyncService] Gmail messages fetched count=${messages.length} bootstrap=${isBootstrap}`);
       console.info('[EmailSyncService] creating AI provider');
@@ -938,7 +974,7 @@ export class EmailSyncService {
 
         if (classification.outcome === 'COMPRA') {
           await renewLease();
-          const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase, accessToken, aiProvider);
+          const purchaseResult = await createCompraFromMessage(userId, detail, classification.purchase, accessToken, aiProvider, 'DETERMINISTIC_COMPRA', assertLease);
           if ('created' in purchaseResult) result.created += 1;
           else result.skipped += 1;
           continue;
@@ -949,7 +985,7 @@ export class EmailSyncService {
           const categories = await getPropagationCategories();
           const categoryId = await resolvePropagationCategory(aiProvider, detail, categories);
 
-          const promoResult = await createPropagandaFromMessage(userId, detail, categoryId);
+          const promoResult = await createPropagandaFromMessage(userId, detail, categoryId, assertLease);
           if ('created' in promoResult) result.created += 1;
           else result.skipped += 1;
           continue;
@@ -973,7 +1009,7 @@ export class EmailSyncService {
                 continue;
               }
 
-              const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase, accessToken, aiProvider, 'AI_COMPRA');
+              const purchaseResult = await createCompraFromMessage(userId, detail, sanitizedPurchase, accessToken, aiProvider, 'AI_COMPRA', assertLease);
               if ('created' in purchaseResult) result.created += 1;
               else result.skipped += 1;
               continue;
@@ -986,7 +1022,7 @@ export class EmailSyncService {
               if (categoryId === null) {
                 categoryId = await resolvePropagationCategory(aiProvider, detail, categories);
               }
-              const promoResult = await createPropagandaFromMessage(userId, detail, categoryId);
+              const promoResult = await createPropagandaFromMessage(userId, detail, categoryId, assertLease);
               if ('created' in promoResult) result.created += 1;
               else result.skipped += 1;
               continue;
@@ -1073,6 +1109,7 @@ export class EmailSyncService {
       where: {
         integracao_provedor: 'GMAIL',
         tb_usuario: {
+          usuario_status: true,
           tb_consentimento: {
             some: {
               consentimento_status: true,

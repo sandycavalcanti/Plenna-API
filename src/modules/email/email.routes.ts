@@ -5,6 +5,7 @@ import { authMiddleware } from '../auth/auth.middleware.js';
 export const emailRouter = Router();
 
 emailRouter.get('/connect', authMiddleware, EmailController.connect);
+emailRouter.post('/connect/cancel', authMiddleware, EmailController.cancelConnect);
 emailRouter.get('/status', authMiddleware, EmailController.status);
 emailRouter.get('/callback', EmailController.callback);
 emailRouter.post('/sync', authMiddleware, EmailController.sync);

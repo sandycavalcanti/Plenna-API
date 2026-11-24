@@ -113,6 +113,10 @@ async function findDueCandidateIds(db: RecurrenceDatabase, runDate: Date, limit:
     SELECT compra_recorrencia_id
     FROM public.tb_compra_recorrencia
     WHERE compra_recorrencia_status = 'ATIVA'
+      AND EXISTS (
+        SELECT 1 FROM public.tb_usuario u
+        WHERE u.usuario_id = tb_compra_recorrencia.usuario_id AND u.usuario_status = true
+      )
       AND compra_recorrencia_proxima_ocorrencia IS NOT NULL
       AND compra_recorrencia_proxima_ocorrencia <= ${runDate}
     ORDER BY compra_recorrencia_proxima_ocorrencia ASC, compra_recorrencia_id ASC
@@ -136,6 +140,11 @@ async function lockDueRecurrence(tx: any, recurrenceId: number, runDate: Date) {
     FROM public.tb_compra_recorrencia
     WHERE compra_recorrencia_id = ${recurrenceId}
       AND compra_recorrencia_status = 'ATIVA'
+      AND EXISTS (
+        SELECT 1 FROM public.tb_usuario u
+        WHERE u.usuario_id = tb_compra_recorrencia.usuario_id AND u.usuario_status = true
+        FOR UPDATE SKIP LOCKED
+      )
       AND compra_recorrencia_proxima_ocorrencia IS NOT NULL
       AND compra_recorrencia_proxima_ocorrencia <= ${runDate}
     FOR UPDATE SKIP LOCKED

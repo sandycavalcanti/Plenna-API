@@ -1,5 +1,7 @@
 import axios from 'axios';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import type { GmailIntegration, GmailMessageDetail, GmailMessageSummary } from './gmail.types.js';
@@ -130,8 +132,8 @@ export class EmailService {
     return userInfoSchema.parse(response.data).email;
   }
 
-  static async saveIntegration(userId: number, email: string, accessToken: string, refreshToken: string | undefined, expiresIn: number) {
-    const existing = await prisma.tb_integracao.findFirst({
+  static async saveIntegration(userId: number, email: string, accessToken: string, refreshToken: string | undefined, expiresIn: number, db: Prisma.TransactionClient) {
+    const existing = await db.tb_integracao.findFirst({
       where: { usuario_id: userId, integracao_provedor: 'GMAIL' },
       orderBy: { integracao_data_criacao: 'desc' },
     });
@@ -143,20 +145,23 @@ export class EmailService {
     if (!nextRefreshToken) throw new Error('Refresh token ausente');
 
     if (existing) {
-      return prisma.tb_integracao.update({
+      return db.tb_integracao.update({
         where: { integracao_id: existing.integracao_id },
         data: {
           integracao_email: email,
           integracao_access_token: accessToken,
           integracao_refresh_token: nextRefreshToken,
           integracao_token_expira_em: expiresAt,
+          integracao_geracao: randomUUID(),
+          integracao_execucao_id: null,
+          integracao_lease_expira_em: null,
           integracao_sincronizacao_status: 'PENDENTE',
           integracao_ultimo_erro: null,
         },
       });
     }
 
-    return prisma.tb_integracao.create({
+    return db.tb_integracao.create({
       data: {
         usuario_id: userId,
         integracao_email: email,
@@ -248,10 +253,10 @@ export class EmailService {
     return isGoogleAuthorizationError(error);
   }
 
-  static async markAuthorizationFailure(integrationId: number, error: unknown) {
+  static async markAuthorizationFailure(integrationId: number, error: unknown, generation?: string) {
     if (!isGoogleAuthorizationError(error)) return false;
     await prisma.tb_integracao.updateMany({
-      where: { integracao_id: integrationId, integracao_provedor: 'GMAIL' },
+      where: { integracao_id: integrationId, integracao_provedor: 'GMAIL', ...(generation ? { integracao_geracao: generation } : {}) },
       data: {
         integracao_sincronizacao_status: 'ERRO',
         integracao_ultimo_erro: 'RECONEXAO_GMAIL_NECESSARIA',
@@ -277,13 +282,16 @@ export class EmailService {
     try {
       refreshed = await this.refreshAccessToken(integration.integracao_refresh_token);
     } catch (error) {
-      await this.markAuthorizationFailure(integration.integracao_id, error);
+      await this.markAuthorizationFailure(integration.integracao_id, error, integration.integracao_geracao);
       throw error;
     }
     const expiresAt = new Date(Date.now() + refreshed.expires_in * 1000);
 
     return prisma.tb_integracao.update({
-      where: { integracao_id: integration.integracao_id },
+      where: {
+        integracao_id: integration.integracao_id,
+        integracao_geracao: integration.integracao_geracao,
+      },
       data: {
         integracao_access_token: refreshed.access_token,
         integracao_token_expira_em: expiresAt,
@@ -301,12 +309,14 @@ export class EmailService {
     accessToken: string,
     query: string,
     maxResults = 25,
-    maxTotal?: number
+    maxTotal?: number,
+    beforePage?: () => Promise<void>,
   ): Promise<GmailMessageSummary[]> {
     const messages: GmailMessageSummary[] = [];
     let pageToken: string | undefined;
 
     do {
+      await beforePage?.();
       let response;
       try {
         response = await axios.get('https://gmail.googleapis.com/gmail/v1/users/me/messages', {
