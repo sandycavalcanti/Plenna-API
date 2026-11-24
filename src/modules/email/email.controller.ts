@@ -3,6 +3,8 @@ import { AuthRequest } from '../auth/auth.middleware.js';
 import { EmailService } from './email.service.js';
 import { EmailSyncService } from './email-sync.service.js';
 import { handleError } from '../../utils/handleError.js';
+import { z } from 'zod';
+import { prisma } from '../../lib/prisma.js';
 import { env } from '../../lib/env.js';
 import crypto from 'node:crypto';
 import { OAuthTentativaService } from './oauth-tentativa.service.js';
@@ -40,12 +42,29 @@ export class EmailController {
   static async connect(req: AuthRequest, res: Response) {
     try {
       if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+      semCache(res);
       const tentativa = await OAuthTentativaService.iniciar(req.userId);
-      return res.json({ url: EmailService.generateGoogleUrl(tentativa.state) });
+      return res.json({ url: EmailService.generateGoogleUrl(tentativa.state), ...tentativa });
     } catch (error: any) {
       return handleError(res, 500, error);
     }
   }
+  static async cancelConnect(req: AuthRequest, res: Response) {
+    semCache(res);
+    try {
+      if (!req.userId) return res.status(401).json({ error: 'Token inválido' });
+      const attempt = z.object({
+        tentativa: z.uuid(),
+        state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+        segredo: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+      }).parse(req.body);
+      await OAuthTentativaService.encerrar(req.userId, attempt, 'CANCELADA');
+      return res.status(204).send();
+    } catch (error: unknown) {
+      return handleError(res, 400, error);
+    }
+  }
+
   static async status(req: AuthRequest, res: Response) {
     try {
       if (!req.userId) return res.status(401).json({ error: 'Token invalido' });
@@ -74,11 +93,18 @@ export class EmailController {
       tentativaId = tentativa.tentativaId;
       const tokens = await EmailService.exchangeCodeForTokens(String(code));
       const email = await EmailService.getGoogleUserEmail(tokens.access_token);
-      await EmailService.saveIntegration(tentativa.userId, email, tokens.access_token, tokens.refresh_token, tokens.expires_in);
-      await ConsentimentoService.registrar(tentativa.userId, 'EMAIL', true);
-      await OAuthTentativaService.finalizar(tentativa.tentativaId, 'CONCLUIDA');
+      await prisma.$transaction(async (tx) => {
+        await ConsentimentoService.bloquearUsuario(tx, tentativa.userId);
+        const finalizada = await tx.tb_oauth_tentativa.updateMany({
+          where: { oauth_tentativa_id: tentativa.tentativaId, oauth_status: 'PROCESSANDO' },
+          data: { oauth_status: 'CONCLUIDA', oauth_finalizada_em: new Date() },
+        });
+        if (finalizada.count !== 1) throw new Error('Tentativa indisponível');
+        await EmailService.saveIntegration(tentativa.userId, email, tokens.access_token, tokens.refresh_token, tokens.expires_in, tx);
+        await ConsentimentoService.registrarComClient(tx, tentativa.userId, 'EMAIL', true);
+      });
 
-      res.redirect(`${env.apiBaseUrl}/oauth-success.html`);
+      res.redirect(`${env.apiBaseUrl}/oauth-success.html?tentativa=${encodeURIComponent(tentativa.tentativaId)}`);
     } catch {
       if (tentativaId) {
         try {

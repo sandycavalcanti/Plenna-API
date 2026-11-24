@@ -117,27 +117,33 @@ test('callback salva a integração no usuário associado à tentativa, não no 
     exchange: EmailService.exchangeCodeForTokens,
     email: EmailService.getGoogleUserEmail,
     save: EmailService.saveIntegration,
-    consent: ConsentimentoService.registrar,
+    consent: ConsentimentoService.registrarComClient,
+    transaction: prisma.$transaction,
   };
+  prisma.$transaction = async callback => callback({
+    $queryRaw: async () => [{ usuario_id: 42 }],
+    tb_oauth_tentativa: { updateMany: async () => ({ count: 1 }) },
+  });
   let savedUserId;
   OAuthTentativaService.callback = async () => ({ tentativaId: 'attempt-user-bound', userId: 42 });
   OAuthTentativaService.finalizar = async () => {};
   EmailService.exchangeCodeForTokens = async () => ({ access_token: 'access', refresh_token: 'refresh', expires_in: 3600 });
   EmailService.getGoogleUserEmail = async () => 'person@example.com';
   EmailService.saveIntegration = async userId => { savedUserId = userId; return {}; };
-  ConsentimentoService.registrar = async () => ({});
+  ConsentimentoService.registrarComClient = async () => ({});
   try {
     const response = fakeResponse();
     await EmailController.callback({ query: { code: 'code', state: 'D'.repeat(43) } }, response);
     assert.equal(savedUserId, 42);
-    assert.equal(response.body, `${env.apiBaseUrl}/oauth-success.html`);
+    assert.equal(response.body, `${env.apiBaseUrl}/oauth-success.html?tentativa=attempt-user-bound`);
   } finally {
     OAuthTentativaService.callback = originals.callback;
     OAuthTentativaService.finalizar = originals.finalizar;
     EmailService.exchangeCodeForTokens = originals.exchange;
     EmailService.getGoogleUserEmail = originals.email;
     EmailService.saveIntegration = originals.save;
-    ConsentimentoService.registrar = originals.consent;
+    ConsentimentoService.registrarComClient = originals.consent;
+    prisma.$transaction = originals.transaction;
   }
 });
 

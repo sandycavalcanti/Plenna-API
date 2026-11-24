@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma.js';
+import { ConsentimentoService } from '../consentimento/consentimento.service.js';
 import { AppError } from '../../errors/AppError.js';
 import type { Prisma } from '@prisma/client';
 
@@ -17,26 +18,29 @@ export class DeviceService {
   static async registerPushToken(userId: number, pushToken: string, platform: string) {
     const now = new Date();
 
-    return prisma.tb_dispositivo.upsert({
-      where: { dispositivo_push_token: pushToken },
-      update: {
-        usuario_id: userId,
-        dispositivo_plataforma: platform,
-        dispositivo_ativo: 1,
-        dispositivo_ultimo_erro: null,
-        dispositivo_ultima_utilizacao_em: now,
-        dispositivo_data_modificacao: now,
-      },
-      create: {
-        usuario_id: userId,
-        dispositivo_push_token: pushToken,
-        dispositivo_plataforma: platform,
-        dispositivo_ativo: 1,
-        dispositivo_ultima_utilizacao_em: now,
-        dispositivo_data_criacao: now,
-        dispositivo_data_modificacao: now,
-      },
-      select: publicDeviceSelect,
+    return prisma.$transaction(async (tx) => {
+      await ConsentimentoService.bloquearUsuario(tx, userId);
+      return tx.tb_dispositivo.upsert({
+        where: { dispositivo_push_token: pushToken },
+        update: {
+          usuario_id: userId,
+          dispositivo_plataforma: platform,
+          dispositivo_ativo: 1,
+          dispositivo_ultimo_erro: null,
+          dispositivo_ultima_utilizacao_em: now,
+          dispositivo_data_modificacao: now,
+        },
+        create: {
+          usuario_id: userId,
+          dispositivo_push_token: pushToken,
+          dispositivo_plataforma: platform,
+          dispositivo_ativo: 1,
+          dispositivo_ultima_utilizacao_em: now,
+          dispositivo_data_criacao: now,
+          dispositivo_data_modificacao: now,
+        },
+        select: publicDeviceSelect,
+      });
     });
   }
 

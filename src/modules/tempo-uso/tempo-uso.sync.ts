@@ -26,7 +26,7 @@ export async function autorizarEscritaTempoUso(tx: TempoUsoTransaction, usuarioI
   if (!Number.isSafeInteger(usuarioId) || usuarioId <= 0) throw new AppError('Token inválido', 401);
   const usuarios = await tx.$queryRaw<{
     usuario_id: number;
-  }[]>`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${usuarioId} FOR UPDATE`;
+  }[]>`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${usuarioId} AND usuario_status = true FOR UPDATE`;
   if (usuarios.length !== 1) throw new AppError('Usuário não encontrado', 404);
   const consentimento = await tx.tb_consentimento.findFirst({
     where: {

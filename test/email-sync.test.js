@@ -24,10 +24,14 @@ const { ConsentimentoService } = await import('../dist/src/modules/consentimento
 // Este arquivo usa doubles de Gmail/Prisma para testar a extração e a sincronização.
 // O cenário de bloqueio por consentimento é coberto separadamente.
 EmailService.assertCaptureConsent = async () => {};
+ConsentimentoService.bloquearUsuario = async () => {};
 const { DashboardService } = await import('../dist/src/modules/dashboard/dashboard.service.js');
 const { CompraService } = await import('../dist/src/modules/compra/compra.service.js');
 const { createCompraSchema } = await import('../dist/src/modules/compra/compra.schemas.js');
 const { prisma } = await import('../dist/src/lib/prisma.js');
+const transactionStub = async callback => callback(prisma);
+prisma.$transaction = transactionStub;
+test.afterEach(() => { prisma.$transaction = transactionStub; });
 const { env } = await import('../dist/src/lib/env.js');
 const { PaymentMethodResolver } = await import('../dist/src/modules/forma-pagamento/payment-method.resolver.js');
 
@@ -117,26 +121,31 @@ test('callback OAuth redireciona para o app no sucesso', async () => {
   const originalSave = EmailService.saveIntegration;
   const originalCallback = OAuthTentativaService.callback;
   const originalFinalizar = OAuthTentativaService.finalizar;
-  const originalRegistrar = ConsentimentoService.registrar;
+  const originalRegistrar = ConsentimentoService.registrarComClient;
+  const originalTransaction = prisma.$transaction;
+  prisma.$transaction = async callback => callback({
+    tb_oauth_tentativa: { updateMany: async () => ({ count: 1 }) },
+  });
   EmailService.exchangeCodeForTokens = async () => ({ access_token: 'token', expires_in: 3600, refresh_token: 'refresh' });
   EmailService.getGoogleUserEmail = async () => 'user@example.com';
   EmailService.saveIntegration = async () => ({});
   OAuthTentativaService.callback = async () => ({ tentativaId: 'tentativa-teste', userId: 7 });
   OAuthTentativaService.finalizar = async () => {};
-  ConsentimentoService.registrar = async () => ({});
+  ConsentimentoService.registrarComClient = async () => ({});
 
   const req = { query: { code: 'abc', state: 'A'.repeat(43) } };
   const res = fakeResponse();
   await EmailController.callback(req, res);
 
-  assert.equal(res.body, `${env.apiBaseUrl}/oauth-success.html`);
+  assert.equal(res.body, `${env.apiBaseUrl}/oauth-success.html?tentativa=tentativa-teste`);
 
   EmailService.exchangeCodeForTokens = originalExchange;
   EmailService.getGoogleUserEmail = originalEmail;
   EmailService.saveIntegration = originalSave;
   OAuthTentativaService.callback = originalCallback;
   OAuthTentativaService.finalizar = originalFinalizar;
-  ConsentimentoService.registrar = originalRegistrar;
+  ConsentimentoService.registrarComClient = originalRegistrar;
+  prisma.$transaction = originalTransaction;
 });
 
 test('callback OAuth redireciona para o app no erro', async () => {
@@ -586,6 +595,8 @@ test('PUT de compra pendente com valor nulo pode alterar outros campos sem confi
   prisma.tb_compra.findFirst = async () => current;
   prisma.$transaction = async (cb) =>
     cb({
+      tb_propaganda: prisma.tb_propaganda,
+      tb_integracao: prisma.tb_integracao,
       tb_forma_pagamento: {
         findUnique: async () => null,
       },
@@ -668,6 +679,8 @@ test('compra confirmada não pode perder o valor no update', async () => {
     (() => {
       draft = { ...current };
       return cb({
+      tb_propaganda: prisma.tb_propaganda,
+      tb_integracao: prisma.tb_integracao,
       tb_forma_pagamento: {
         findUnique: async () => null,
       },
@@ -1309,6 +1322,8 @@ test('transição de compra impede caminhos inválidos', async () => {
   prisma.tb_compra.findFirst = async () => current;
   prisma.$transaction = async (cb) =>
     cb({
+      tb_propaganda: prisma.tb_propaganda,
+      tb_integracao: prisma.tb_integracao,
       tb_forma_pagamento: {
         findUnique: async () => ({ forma_pagamento_id: 1 }),
       },
@@ -1387,6 +1402,8 @@ test('confirmação recalcula métricas e retorna compra confirmada', async () =
   prisma.tb_compra.findFirst = async () => current;
   prisma.$transaction = async (cb) =>
     cb({
+      tb_propaganda: prisma.tb_propaganda,
+      tb_integracao: prisma.tb_integracao,
       tb_forma_pagamento: {
         findUnique: async () => ({ forma_pagamento_id: 1 }),
       },
@@ -1469,6 +1486,8 @@ test('compra pendente com valor nulo pode ser confirmada quando items definem va
   prisma.tb_compra.findFirst = async () => current;
   prisma.$transaction = async (cb) =>
     cb({
+      tb_propaganda: prisma.tb_propaganda,
+      tb_integracao: prisma.tb_integracao,
       tb_forma_pagamento: {
         findUnique: async () => ({ forma_pagamento_id: 1 }),
       },
@@ -1557,6 +1576,8 @@ test('edicao de compra confirmada recalcula métricas do mês antigo e novo', as
   prisma.tb_compra.findFirst = async () => current;
   prisma.$transaction = async (cb) =>
     cb({
+      tb_propaganda: prisma.tb_propaganda,
+      tb_integracao: prisma.tb_integracao,
       tb_forma_pagamento: {
         findUnique: async () => ({ forma_pagamento_id: 1 }),
       },

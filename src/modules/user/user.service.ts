@@ -1,4 +1,7 @@
 import bcrypt from 'bcrypt';
+import { randomUUID } from 'node:crypto';
+import { ConsentimentoService } from '../consentimento/consentimento.service.js';
+import { revokeUsageAssociations } from '../tempo-uso-v2/consent.js';
 import { prisma } from '../../lib/prisma.js';
 import { CreateUserDTO, UpdateUserDTO } from './user.schemas.js';
 import { AppError } from '../../errors/AppError.js';
@@ -96,13 +99,32 @@ export class UsersService {
 
   // DELETE (soft delete)
   static async delete(id: number) {
-    await this.findById(id);
+    await prisma.$transaction(async (tx) => {
+      await ConsentimentoService.bloquearUsuario(tx, id);
 
-    await prisma.tb_usuario.update({
-      where: { usuario_id: id },
-      data: {
-        usuario_status: false,
-      },
+      // Preserve references to the old identity and release its login identifier.
+      await tx.tb_usuario.update({
+        where: { usuario_id: id },
+        data: {
+          usuario_status: false,
+          usuario_email: `deleted:${id}`,
+          usuario_senha: randomUUID(),
+        },
+      });
+
+      const where = { usuario_id: id };
+      await tx.tb_integracao.deleteMany({ where });
+      await tx.tb_oauth_tentativa.deleteMany({ where });
+      await tx.tb_redefinicao_senha.deleteMany({ where });
+      const [pushStorage] = await tx.$queryRaw<{ relation: string | null }[]>`
+        SELECT to_regclass('public.tb_dispositivo')::text AS relation
+      `;
+      if (pushStorage?.relation) await tx.tb_dispositivo.deleteMany({ where });
+      await tx.tb_consentimento.updateMany({
+        where: { ...where, tb_consentimento_tipo: { consentimento_tipo_codigo: { not: 'TERMOS_USO' } } },
+        data: { consentimento_status: false },
+      });
+      await revokeUsageAssociations(tx, id);
     });
   }
 

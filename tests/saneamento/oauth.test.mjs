@@ -137,7 +137,7 @@ for (const [nome, userId, mudar] of [
 });
 test('finalização confirma atomicamente e preserva Outlook', async () => {
   const res = await finalizarAtual();
-  assert.equal(res.url, 'https://plenna-api.vercel.app/oauth-success.html');
+  assert.equal(res.url, `https://plenna-api.vercel.app/oauth-success.html?tentativa=${credenciais.tentativa}`);
   assert.equal(dados.integracoes.length, 2);
   assert.equal(dados.consentimento.consentimento_status, true);
   assert.equal(dados.tentativas[0].oauth_status, 'CONCLUIDA');
@@ -193,6 +193,24 @@ test('revogação durante Google impede confirmação posterior', async () => {
   assert.equal(dados.consentimento.consentimento_status, false);
   assert.equal(dados.tentativas[0].oauth_status, 'CANCELADA');
 });
+test('cancelar a tentativa durante o Google impede vínculo tardio', async () => {
+  mock.method(EmailService, 'exchangeCodeForTokens', async () => {
+    const response = {
+      set() {},
+      status(status) { this.statusCode = status; return this; },
+      send() {},
+    };
+    await EmailController.cancelConnect({ userId: 7, body: credenciais }, response);
+    assert.equal(response.statusCode, 204);
+    return { access_token: 'simulado', refresh_token: 'simulado', expires_in: 3600 };
+  });
+  const res = await finalizarAtual();
+  assert.equal(res.url, 'plenna://oauth-error');
+  assert.equal(dados.integracoes.filter(i => i.integracao_provedor === 'GMAIL').length, 0);
+  assert.equal(dados.consentimento, null);
+  assert.equal(dados.tentativas[0].oauth_status, 'CANCELADA');
+});
+
 test('não permite concessão EMAIL fora da conexão confirmada', async () => {
   await assert.rejects(Consent.registrar(7, 'EMAIL', true));
 });

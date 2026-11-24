@@ -47,6 +47,7 @@ export class ConsentimentoService {
       where: {
         usuario_id: userId,
         consentimento_status: true,
+        tb_usuario: { usuario_status: true },
         tb_consentimento_tipo: { consentimento_tipo_codigo: codigo },
       },
       select: { consentimento_id: true },
@@ -60,7 +61,7 @@ export class ConsentimentoService {
   }
 
   static async bloquearUsuario(tx: Prisma.TransactionClient, userId: number) {
-    const usuarios = await tx.$queryRaw<{ usuario_id: number }[]>`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${userId} FOR UPDATE`;
+    const usuarios = await tx.$queryRaw<{ usuario_id: number }[]>`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${userId} AND usuario_status = true FOR UPDATE`;
     if (usuarios.length !== 1) throw new AppError('Usuário não encontrado', 404);
   }
 

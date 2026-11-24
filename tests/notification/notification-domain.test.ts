@@ -76,7 +76,12 @@ function makeClient() {
         return { count: rows.length };
       },
     },
-    $queryRaw: async (_query: unknown, ...values: any[]) => {
+    $transaction: async (callback: (tx: any) => Promise<unknown>) => callback(client),
+    $queryRaw: async (query: unknown, ...values: any[]) => {
+      const sql = Array.isArray(query) ? query.join('?') : String(query);
+      if (sql.includes('FROM public.tb_usuario') && sql.includes('FOR UPDATE')) {
+        return [{ usuario_id: values[0] }];
+      }
       if (forcedQueryError) {
         const error = forcedQueryError;
         forcedQueryError = null;

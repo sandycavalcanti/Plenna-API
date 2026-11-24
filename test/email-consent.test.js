@@ -69,15 +69,20 @@ test('syncUser bloqueia captura manual antes de consultar o Gmail sem consentime
 });
 
 test('cron filtra integrações Gmail pelo consentimento EMAIL ativo', async () => {
+  const { env } = await import('../dist/src/lib/env.js');
+  const originalEnabled = env.emailSyncEnabled;
   const originalFindMany = prisma.tb_integracao.findMany;
+  env.emailSyncEnabled = true;
   let query;
   prisma.tb_integracao.findMany = async args => { query = args; return []; };
   try {
     await EmailSyncService.syncAllUsers();
+    assert.equal(query.where.tb_usuario.usuario_status, true);
     assert.equal(query.where.tb_usuario.tb_consentimento.some.consentimento_status, true);
     assert.equal(query.where.tb_usuario.tb_consentimento.some.tb_consentimento_tipo.consentimento_tipo_codigo, 'EMAIL');
   } finally {
     prisma.tb_integracao.findMany = originalFindMany;
+    env.emailSyncEnabled = originalEnabled;
   }
 });
 

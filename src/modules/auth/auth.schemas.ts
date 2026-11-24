@@ -10,14 +10,14 @@ const passwordSchema = z
 const resetCodeSchema = z.string().regex(/^\d{6}$/, "O código deve conter 6 dígitos");
 
 export const registerSchema = z.object({
-  email: z.string().email(),
+  email: emailSchema,
   senha: z.string().min(6),
   nome: z.string().min(2),
   aceitouTermos: z.literal(true, { message: 'É preciso aceitar os termos de uso' }),
 });
 
 export const loginSchema = z.object({
-  email: z.string().email(),
+  email: emailSchema,
   senha: z.string().min(6)
 });
 

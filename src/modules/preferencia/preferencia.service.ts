@@ -7,7 +7,7 @@ import { AppError } from '../../errors/AppError.js';
 export class PreferenciasCategoriaService {
   private static async withUserLock<T>(userId: number, operation: (tx: Prisma.TransactionClient) => Promise<T>) {
     return prisma.$transaction(async (tx) => {
-      const users = await tx.$queryRaw<{ usuario_id: number }[]>`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${userId} FOR UPDATE`;
+      const users = await tx.$queryRaw<{ usuario_id: number }[]>`SELECT usuario_id FROM public.tb_usuario WHERE usuario_id = ${userId} AND usuario_status = true FOR UPDATE`;
       if (users.length !== 1) throw new AppError('Usuário não encontrado', 404);
       const before=await tx.tb_preferencia.findMany({where:{usuario_id:userId}});
       const result=await operation(tx);
