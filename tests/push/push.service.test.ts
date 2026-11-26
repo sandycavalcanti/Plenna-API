@@ -22,6 +22,13 @@ type Device = {
 };
 
 let devices: Device[] = [];
+let notifications: Array<{
+  notificacao_id: number;
+  usuario_id: number;
+  notificacao_titulo: string;
+  notificacao_mensagem: string;
+}> = [];
+let notificationQueries = 0;
 let fetchCalls: Array<{ url: string; init: RequestInit }> = [];
 let fetchImplementation: ((url: string, init: RequestInit) => Promise<Response>) | null = null;
 let failDeviceUpdate = false;
@@ -37,13 +44,35 @@ const db = {
       return { count: matches.length };
     },
   },
+  tb_notificacao: {
+    findMany: async ({ where }: any) => {
+      notificationQueries += 1;
+      const ids = new Set(where.notificacao_id.in);
+      return notifications.filter((notification) =>
+        notification.usuario_id === where.usuario_id && ids.has(notification.notificacao_id));
+    },
+  },
 };
 
 (globalThis as any).prismaRuntime = { client: db, pool: { end: async () => {} } };
 
 const { PushService } = await import('../../src/modules/notification/push.service.ts');
 
-const notification = (notificationId: number, type = 'LIMITE_MENSAL') => ({ notificationId, type });
+const notification = (
+  notificationId: number,
+  type = 'LIMITE_MENSAL',
+  userId = 1,
+  title = `Título ${notificationId}`,
+  message = `Mensagem ${notificationId}`,
+) => {
+  notifications.push({
+    notificacao_id: notificationId,
+    usuario_id: userId,
+    notificacao_titulo: title,
+    notificacao_mensagem: message,
+  });
+  return { notificationId, type };
+};
 
 function makeDevice(id: number, overrides: Partial<Device> = {}): Device {
   return {
@@ -99,6 +128,8 @@ function sentMessages() {
 
 beforeEach(() => {
   devices = [];
+  notifications = [];
+  notificationQueries = 0;
   fetchCalls = [];
   fetchImplementation = null;
   failDeviceUpdate = false;
@@ -132,12 +163,57 @@ test('respeita batching máximo de 100 mensagens', async () => {
   assert.deepEqual(fetchCalls.map((call) => JSON.parse(String(call.init.body)).length), [100, 1]);
 });
 
-test('payload usa título e corpo genéricos', async () => {
+test('payload usa o título e o corpo persistidos', async () => {
   devices.push(makeDevice(1));
-  await makeService().dispatchForUser(1, [notification(10, 'LIMITE_COMPRA')]);
+  await makeService().dispatchForUser(1, [notification(
+    10,
+    'LIMITE_COMPRA',
+    1,
+    'Alerta de limite por compra',
+    'Esta compra ultrapassou seu limite em R$ 25,00. Valor da compra: R$ 125,00.',
+  )]);
   const [message] = sentMessages();
-  assert.equal(message.title, 'Plenna');
-  assert.equal(message.body, 'Você tem uma nova atualização no seu planejamento.');
+  assert.equal(message.title, 'Alerta de limite por compra');
+  assert.equal(message.body, 'Esta compra ultrapassou seu limite em R$ 25,00. Valor da compra: R$ 125,00.');
+});
+
+test('consulta notificações em lote e envia somente as do usuário destinatário', async () => {
+  devices.push(makeDevice(1));
+  const candidates = [
+    notification(11, 'SAZONAL', 1, 'Cuidado com a urgência da Black Friday', 'Revise suas metas antes de comprar.'),
+    notification(12, 'SAZONAL', 2, 'Privado', 'Não deve ser enviado'),
+    { notificationId: 13, type: 'SAZONAL' },
+  ];
+
+  await makeService().dispatchForUser(1, candidates);
+
+  assert.equal(notificationQueries, 1);
+  assert.equal(sentMessages().length, 1);
+  assert.equal(sentMessages()[0].title, 'Cuidado com a urgência da Black Friday');
+  assert.equal(sentMessages()[0].body, 'Revise suas metas antes de comprar.');
+});
+
+test('usa o conteúdo persistido da notificação proativa', async () => {
+  devices.push(makeDevice(1));
+  await makeService().dispatchForUser(1, [notification(
+    14,
+    'PROATIVA',
+    1,
+    'Nova mensagem da Plenna',
+    'Você tem uma nova mensagem da Plenna.',
+  )]);
+
+  const [message] = sentMessages();
+  assert.equal(message.title, 'Nova mensagem da Plenna');
+  assert.equal(message.body, 'Você tem uma nova mensagem da Plenna.');
+});
+
+test('não envia candidatos sem notificação persistida', async () => {
+  devices.push(makeDevice(1));
+  const result = await makeService().dispatchForUser(1, [{ notificationId: 999, type: 'SAZONAL' }]);
+
+  assert.deepEqual(result, { attempted: 0, succeeded: 0, failed: 0, deactivated: 0, skipped: 1 });
+  assert.equal(fetchCalls.length, 0);
 });
 
 test('payload contém somente identificadores mínimos na data', async () => {

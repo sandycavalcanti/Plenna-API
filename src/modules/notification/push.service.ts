@@ -1,17 +1,15 @@
 import type { notificacao_tipo_enum } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { env } from '../../lib/env.js';
 import { prisma } from '../../lib/prisma.js';
-import { DeviceService, type DeviceDatabase } from './device.service.js';
+import { DeviceService } from './device.service.js';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const MAX_EXPO_BATCH_SIZE = 100;
 const MAX_PUSH_RETRIES = 5;
-const DEFAULT_PUSH_BODY = 'Você tem uma nova atualização no seu planejamento.';
-
 export type PushNotificationCandidate = {
   notificationId: number;
   type: notificacao_tipo_enum | string;
-  body?: string;
 };
 
 export type PushDispatchResult = {
@@ -54,10 +52,19 @@ type ExpoResponseItem = {
 type PushFetch = typeof fetch;
 
 type PushServiceDependencies = {
-  db?: DeviceDatabase;
+  db?: PushDatabase;
   fetchImplementation?: PushFetch;
   settings?: Partial<PushSettings>;
   sleep?: (milliseconds: number) => Promise<void>;
+};
+
+type PushDatabase = Pick<Prisma.TransactionClient, 'tb_dispositivo' | 'tb_notificacao'>;
+
+type PersistedNotification = {
+  notificacao_id: number;
+  usuario_id: number;
+  notificacao_titulo: string;
+  notificacao_mensagem: string;
 };
 
 function defaultSettings(): PushSettings {
@@ -131,7 +138,7 @@ async function defaultSleep(milliseconds: number) {
 }
 
 export class PushService {
-  private readonly db: DeviceDatabase;
+  private readonly db: PushDatabase;
   private readonly fetchImplementation: PushFetch;
   private readonly settings: PushSettings;
   private readonly sleep: (milliseconds: number) => Promise<void>;
@@ -150,14 +157,21 @@ export class PushService {
     if (notifications.length === 0) return emptyResult();
     if (!this.settings.enabled) return { ...emptyResult(), skipped: notifications.length };
 
+    const persistedNotifications = await this.listPersistedNotifications(userId, notifications);
+    const eligibleNotifications = notifications.filter((notification) => persistedNotifications.has(notification.notificationId));
+    const skippedNotifications = notifications.length - eligibleNotifications.length;
+    if (eligibleNotifications.length === 0) {
+      return { ...emptyResult(), skipped: skippedNotifications };
+    }
+
     const devices = await DeviceService.listActiveByUserId(userId, this.db) as PushDevice[];
     if (devices.length === 0) return { ...emptyResult(), skipped: notifications.length };
 
-    const entries = devices.flatMap((device) => notifications.map((notification) => ({ device, notification })));
-    const result: PushDispatchResult = { ...emptyResult(), attempted: entries.length };
+    const entries = devices.flatMap((device) => eligibleNotifications.map((notification) => ({ device, notification })));
+    const result: PushDispatchResult = { ...emptyResult(), attempted: entries.length, skipped: skippedNotifications };
 
     for (const batch of chunk(entries, this.settings.batchSize)) {
-      const outcomes = await this.sendBatch(batch);
+      const outcomes = await this.sendBatch(batch, persistedNotifications);
       for (const [index, outcome] of outcomes.entries()) {
         const entry = batch[index];
         if (!entry) continue;
@@ -174,6 +188,27 @@ export class PushService {
     return result;
   }
 
+  private async listPersistedNotifications(
+    userId: number,
+    notifications: PushNotificationCandidate[],
+  ): Promise<Map<number, PersistedNotification>> {
+    const notificationIds = [...new Set(notifications.map(({ notificationId }) => notificationId))];
+    const rows = await this.db.tb_notificacao.findMany({
+      where: {
+        usuario_id: userId,
+        notificacao_id: { in: notificationIds },
+      },
+      select: {
+        notificacao_id: true,
+        usuario_id: true,
+        notificacao_titulo: true,
+        notificacao_mensagem: true,
+      },
+    }) as PersistedNotification[];
+
+    return new Map(rows.map((notification) => [notification.notificacao_id, notification]));
+  }
+
   private async recordOutcome(deviceId: number, outcome: PushOutcome) {
     try {
       await DeviceService.recordPushAttempt(deviceId, {
@@ -186,11 +221,14 @@ export class PushService {
     }
   }
 
-  private async sendBatch(batch: PushEntry[]): Promise<PushOutcome[]> {
+  private async sendBatch(
+    batch: PushEntry[],
+    persistedNotifications: Map<number, PersistedNotification>,
+  ): Promise<PushOutcome[]> {
     const messages = batch.map(({ device, notification }) => ({
       to: device.dispositivo_push_token,
-      title: 'Plenna',
-      body: notification.body ?? DEFAULT_PUSH_BODY,
+      title: persistedNotifications.get(notification.notificationId)!.notificacao_titulo,
+      body: persistedNotifications.get(notification.notificationId)!.notificacao_mensagem,
       data: {
         notificationId: notification.notificationId,
         type: notification.type,

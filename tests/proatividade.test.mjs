@@ -220,7 +220,10 @@ test('criação proativa é idempotente, isola usuários e envia push somente ap
   ]);
   assert.equal([first.estado, second.estado].sort().join(','), 'CRIADA,EXISTENTE');
   assert.equal(dispatched.length, 1);
-  assert.equal(dispatched[0].notifications[0].body, 'Você tem uma nova mensagem da Plenna.');
+  assert.deepEqual(dispatched[0].notifications[0], {
+    notificationId: first.notificacaoId,
+    type: 'PROATIVA',
+  });
 
   const other = await new ProactivityService({ consent: consent(), repository: sharedRepository, recommendations: recommendations([candidate({ id: 11, chave: 'other-user-key' })]) }).processUser(2, { now, timezone: 'UTC' });
   assert.equal(other.estado, 'CRIADA');

@@ -230,7 +230,6 @@ export class ProactivityService {
         await this.dispatchPush(userId, [{
           notificationId: persisted.record.notificationId,
           type: 'PROATIVA',
-          body: 'Você tem uma nova mensagem da Plenna.',
         }]);
       } catch {
         // Push é best effort; o histórico e a notificação persistidos são a
