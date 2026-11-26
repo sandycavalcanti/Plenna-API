@@ -277,7 +277,7 @@ export class CompraService {
       const rows = await tx.tb_compra.findMany({
         where: { usuario_id: userId, compra_ativo: 1,
             ...(query.busca ? { compra_fonte: { contains: query.busca, mode: 'insensitive' as const } } : {}),
-          compra_status: query.status ?? { in: ['CONFIRMADA','AGUARDANDO_CONFIRMACAO','IGNORADA'] },
+          compra_status: query.status ?? { in: ['CONFIRMADA','AGUARDANDO_CONFIRMACAO'] },
           ...(range ? { compra_horario: range } : {}),
           ...(cursor ? { OR: [ { compra_horario: { lt: cursor.compra_horario } },
             { compra_horario: cursor.compra_horario, compra_id: { lt: cursor.compra_id } } ] } : {}),
@@ -513,7 +513,12 @@ export class CompraService {
 
   static async findById(userId: number, compraId: number) {
     const compra = await prisma.tb_compra.findFirst({
-      where: { compra_id: compraId, usuario_id: userId, compra_ativo: 1 },
+      where: {
+        compra_id: compraId,
+        usuario_id: userId,
+        compra_ativo: 1,
+        compra_status: { in: ['CONFIRMADA', 'AGUARDANDO_CONFIRMACAO'] },
+      },
       select: publicPurchaseSelect,
     });
     if (!compra) throw new AppError('Compra não encontrada', 404);

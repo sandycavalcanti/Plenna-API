@@ -3,6 +3,7 @@ import { z } from 'zod';
 // representa o ciclo operacional da compra. Os dois conceitos são independentes.
 const compraClassificacaoSchema = z.enum(['PENDENTE', 'IMPULSIVA', 'NAO_IMPULSIVA']);
 const compraStatusSchema = z.enum(['AGUARDANDO_CONFIRMACAO', 'CONFIRMADA', 'IGNORADA']);
+const historicoCompraStatusSchema = z.enum(['AGUARDANDO_CONFIRMACAO', 'CONFIRMADA']);
 
 export const compraItemSchema = z.object({
   categoriaId: z.coerce.number().int().positive(),
@@ -47,7 +48,7 @@ const civilDate = z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$
 export const historicoComprasQuerySchema = z.object({
   mes: z.string().regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/).optional(),
   inicio: civilDate.optional(), fim: civilDate.optional(),
-  status: compraStatusSchema.optional(),
+  status: historicoCompraStatusSchema.optional(),
   antes: z.coerce.number().int().positive().max(2147483647).optional(),
   busca: z.string().trim().min(1).max(100).optional(),
 }).strict().refine(query => !(query.mes && (query.inicio || query.fim)), 'Escolha mês ou intervalo')

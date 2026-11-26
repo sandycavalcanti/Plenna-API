@@ -23,7 +23,7 @@ test.before(async()=>{const app=express();app.use('/compras',compraRouter);serve
 test.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
 test.beforeEach(()=>{queries=[];rows=Array.from({length:105},(_,index)=>({compra_id:index+1,usuario_id:7,compra_ativo:1,
   compra_status:index%3===0?'IGNORADA':'CONFIRMADA',compra_horario:new Date(Date.UTC(2026,4,index+1,12)),compra_valor:10}));});
-test('histórico completo pagina meses diferentes sem repetir empates e inclui estados finais suportados',async()=>{
+test('histórico completo pagina sem repetir empates e exclui estados internos ignorados',async()=>{
  rows[1].compra_horario=rows[0].compra_horario;
  rows[54].compra_horario=rows[55].compra_horario;
  rows.push({...rows[0],compra_id:999,usuario_id:8},{...rows[0],compra_id:998,compra_ativo:0});
@@ -31,17 +31,23 @@ test('histórico completo pagina meses diferentes sem repetir empates e inclui e
  do {const page=await CompraService.historico(7,antes?{antes}:{});assert.ok(page.compras.length<=50);
    ids.push(...page.compras.map(row=>row.compra_id));antes=page.proximoCursor;
  }while(antes);
- assert.equal(ids.length,105);assert.equal(new Set(ids).size,105);assert.ok(ids.includes(1));assert.ok(!ids.includes(999));
+  assert.equal(ids.length,70);assert.equal(new Set(ids).size,70);assert.ok(!ids.includes(1));assert.ok(!ids.includes(999));
+  assert.ok(ids.every(id => id % 3 !== 1));
  assert.ok(queries.every(query=>query.take===51));
  await assert.rejects(CompraService.historico(7,{antes:999}),error=>error.statusCode===404);
 });
 test('mês e intervalo usam data da compra em São Paulo e status é independente',async()=>{
  rows=[{compra_id:1,usuario_id:7,compra_ativo:1,compra_status:'IGNORADA',compra_horario:new Date('2026-10-01T02:59:59Z')},
    {compra_id:2,usuario_id:7,compra_ativo:1,compra_status:'CONFIRMADA',compra_horario:new Date('2026-10-01T03:00:00Z')}];
- assert.deepEqual((await CompraService.historico(7,{mes:'2026-09',status:'IGNORADA'})).compras.map(row=>row.compra_id),[1]);
+  assert.equal(historicoComprasQuerySchema.safeParse({status:'IGNORADA'}).success,false);
  assert.deepEqual((await CompraService.historico(7,{inicio:'2026-10-01',fim:'2026-10-01'})).compras.map(row=>row.compra_id),[2]);
- for(const query of [{inicio:'2026-02-30',fim:'2026-03-01'},{mes:'2026-10',inicio:'2026-10-01',fim:'2026-10-02'},{status:'CANCELADA'},{inicio:'2026-10-02',fim:'2026-10-01'}])
+  for(const query of [{inicio:'2026-02-30',fim:'2026-03-01'},{mes:'2026-10',inicio:'2026-10-01',fim:'2026-10-02'},{status:'CANCELADA'},{inicio:'2026-10-02',fim:'2026-10-01'}])
    assert.equal(historicoComprasQuerySchema.safeParse(query).success,false);
+});
+
+test('detalhe direto trata compra ignorada como inexistente',async()=>{
+  rows=[{compra_id:1,usuario_id:7,compra_ativo:1,compra_status:'IGNORADA',compra_horario:new Date('2026-10-01T12:00:00Z')}];
+  await assert.rejects(CompraService.findById(7,1),error=>error.statusCode===404);
 });
 
 test('rota autenticada entrega página limitada e rejeita filtro ou cursor inválido',async()=>{
@@ -58,7 +64,7 @@ test('rota autenticada entrega página limitada e rejeita filtro ou cursor invá
 
 test('busca usa estabelecimento no backend, preserva propriedade e pagina??o',async()=>{
  rows.forEach((r,i)=>r.compra_fonte=i%2?'Mercado Exemplo':'Outra loja');rows.push({...rows[1],usuario_id:8,compra_id:999});
- const page=await CompraService.historico(7,{busca:'mErCaDo'});assert.equal(page.compras.length,50);assert.ok(page.proximoCursor);assert.ok(page.compras.every(r=>r.usuario_id===7&&r.compra_fonte==='Mercado Exemplo'));
+ const page=await CompraService.historico(7,{busca:'mErCaDo'});assert.equal(page.compras.length,35);assert.equal(page.proximoCursor,null);assert.ok(page.compras.every(r=>r.usuario_id===7&&r.compra_fonte==='Mercado Exemplo'&&r.compra_status!=='IGNORADA'));
  assert.equal(historicoComprasQuerySchema.safeParse({busca:'x'.repeat(101)}).success,false);
 });
 
@@ -68,7 +74,7 @@ test('rota bloqueia meses e intervalos fora da conta sem excluir importações d
    const response=await fetch(base+query,{headers:{Authorization:`Bearer ${token}`}});
    assert.equal(response.status,400);
  }
- const retro={...rows[0],compra_id:900,compra_horario:new Date('2010-02-02T12:00:00Z')};
+ const retro={...rows[0],compra_id:900,compra_status:'CONFIRMADA',compra_horario:new Date('2010-02-02T12:00:00Z')};
  const future={...rows[0],compra_id:901,compra_horario:new Date('9999-01-01T12:00:00Z')};
  rows=[retro,future];
  assert.deepEqual((await CompraService.historico(7,{})).compras.map(r=>r.compra_id),[900]);
